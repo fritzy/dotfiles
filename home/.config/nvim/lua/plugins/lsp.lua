@@ -208,7 +208,19 @@ return {
 				bashls = {},
 				-- clangd = {},
 				-- gopls = {},
-				ruff = {},
+				pyright = {
+					settings = {
+						python = {
+							analysis = {
+								diagnosticSeverityOverrides = {
+									reportOptionalCall = "none",
+									reportOptionalMemberAccess = "none",
+								},
+							},
+						},
+					}
+				},
+				-- ruff = {},
 				-- rust_analyzer = {},
 				-- ... etc. See `:help lspconfig-all` for a list of all the pre-configured LSPs
 				--
