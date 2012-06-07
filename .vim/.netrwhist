@@ -1,0 +1,9 @@
+let g:netrw_dirhistmax  =10
+let g:netrw_dirhist_cnt =7
+let g:netrw_dirhist_1='/Users/fritzy/dev/markitup/bin'
+let g:netrw_dirhist_2='/Users/fritzy/.ssh'
+let g:netrw_dirhist_3='/Users/fritzy/dev/att_webhooks/src/server/dbapi/scripts/repeat_schedule'
+let g:netrw_dirhist_4='/Users/fritzy/dev/andbangapi/api/models/scripts/chat_1'
+let g:netrw_dirhist_5='/Users/fritzy/.zsh'
+let g:netrw_dirhist_6='/Volumes/Falcon Time Machine/Backups.backupdb/falcon/2012-05-15-161118/Macintosh HD/Users/fritzy/.vim'
+let g:netrw_dirhist_7='/Users/fritzy/local/lib/node_modules/thoonk/scripts/feed'
