@@ -14,27 +14,29 @@ set number
 set nocompatible               " be iMproved
 filetype off                   " required!
 
-set rtp+=~/.vim/bundle/vundle/
-call vundle#rc()
+set rtp+=~/.vim/bundle/Vundle.vim
+call vundle#begin()
 
-Bundle "pangloss/vim-javascript"
-Bundle "godlygeek/tabular"
-Bundle "tpope/vim-surround"
-Bundle "scrooloose/nerdcommenter"
-Bundle 'airblade/vim-gitgutter'
-Bundle "tpope/vim-markdown"
-Bundle 'bling/vim-airline'
-Bundle "kchmck/vim-coffee-script"
-Bundle 'flazz/vim-colorschemes'
+Plugin 'gmarik/Vundle.vim'
+Plugin 'pangloss/vim-javascript'
+Plugin 'godlygeek/tabular'
+Plugin 'tpope/vim-surround'
+Plugin 'scrooloose/nerdcommenter'
+Plugin 'tpope/vim-markdown'
+Plugin 'bling/vim-airline'
+Plugin 'kchmck/vim-coffee-script'
+Plugin 'flazz/vim-colorschemes'
+Plugin 'scrooloose/nerdtree.git'
+
+call vundle#end()            " required
+filetype plugin indent on    " required
 
 colorscheme jellybeans
 
 filetype plugin indent on
 
-
 set laststatus=2   " Always show the statusline
 set encoding=utf-8 " Necessary to show Unicode glyphs
-
 
 set gfn=Monospace\ 8
 set autoindent smartindent
@@ -78,7 +80,16 @@ function TabToggle()
         echo "tabs are spaces"
     endif
 endfunction
+
+function TwoSpaces()
+  set sw=2
+  set softtabstop=2
+  set expandtab
+  echo "tabs are 2 spaces"
+endfunction
+
 nmap <S-t> mz:execute TabToggle()<CR>'z
+nmap <S-s> mz:execute TwoSpaces()<CR>'z
 
 function NumToggle()
     if &number
@@ -94,36 +105,5 @@ vmap <Leader>a= :Tabularize /=<CR>
 nmap <Leader>a: :Tabularize /:\zs<CR>
 vmap <Leader>a: :Tabularize /:\zs<CR>
 
-
-"set grepprg=grep\ -nH\ $*
-"let g:tex_flavor='latex'
-
-function! DoPrettyXML()
-  " save the filetype so we can restore it later
-  let l:origft = &ft
-  set ft=
-  " delete the xml header if it exists. This will
-  " permit us to surround the document with fake tags
-  " without creating invalid xml.
-  1s/<?xml .*?>//e
-  " insert fake tags around the entire document.
-  " This will permit us to pretty-format excerpts of
-  " XML that may contain multiple top-level elements.
-  0put ='<PrettyXML>'
-  $put ='</PrettyXML>'
-  silent %!xmllint --format -
-  " xmllint will insert an <?xml?> header. it's easy enough to delete
-  " if you don't want it.
-  " delete the fake tags
-  2d
-  $d
-  " restore the 'normal' indentation, which is one extra level
-  " too deep due to the extra tags we wrapped around the document.
-  silent %<
-  " back to home
-  1
-  " restore the filetype
-  exe "set ft=" . l:origft
-endfunction
-command! PrettyXML call DoPrettyXML()
-
+map <C-n> :NERDTreeToggle<CR>
+autocmd bufenter * if (winnr("$") == 1 && exists("b:NERDTreeType") && b:NERDTreeType == "primary") | q | endif
