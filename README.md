@@ -1,3 +1,6 @@
-## Finally got a basic dotfiles started.
+# @fritzy dotfiles
 
-Still a mess and incomplete.`
+Using [twpayne/chezmoi](https://github.com/twpayne/chezmoi)
+
+## includes
+* neovim config
