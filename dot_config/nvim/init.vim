@@ -70,7 +70,8 @@ nnoremap tl  :tabnext<CR>
 nnoremap th  :tabprev<CR>
 nnoremap tk  :tablast<CR>
 nnoremap tt  :tabedit<Space>
-nnoremap tm  :tabm<Space>
+nnoremap tmh  :-tabm<CR>
+nnoremap tml  :+tabm<CR>
 nnoremap td  :tabclose<CR>
 " Alternatively use
 nnoremap tn :tabnew<CR>
