@@ -66,6 +66,8 @@ nmap('tn', ':tabnew<CR>')
 
 -- auto resize splits
 nmap('<Leader>=', ':wincmd =<CR>')
+nmap('<leader>n', ':set number! norelativenumber<CR>')
+nmap('<leader>r', ':set rnu!<CR>')
 
 nmap('<C-e>', ':vertical resize +1<CR>')
 nmap('<C-b>', ':vertical resize -1<CR>')
