@@ -37,7 +37,7 @@ fi
 # other architectures may or may not work in the future
 
 # maybe an old version has already been pulled and we're just upgrading
-rm $nvim_file_part.tar.gz
+rm -f $nvim_file_part.tar.gz
 rm -rf $HOME/.local/opt/$nvim_file_part
 
 # ensuring we have target directories
@@ -52,12 +52,12 @@ mkdir -p $HOME/.config/nvim
 #   echo "Doing something cool with codespaces"
 # fi
 
-if [ "machine_os" == "macos" ]; then
+if [[ $machine_os == "macos" ]]; then
   echo "Checking for stow in brew"
   # if stow isn't installed, install it
-  brew list stow || brew install stow
+  (brew list stow || brew install stow) > /dev/null
   stow --adopt .
-elif [ "machine_os" == "Linux" ]; then
+elif [[ $machine_os == "Linux" ]]; then
   if [[ ! -z $(which apt-get) ]]; then
     echo "Installing stow and applying dotfiles"
     sudo apt update
@@ -86,13 +86,18 @@ if [ $? -eq 0 ]; then
   nvim --headless "+MasonInstall typescript-language-server eslint-lsp" +qa > /dev/null 2> /dev/null
 
   if [[ $PATH != *"$HOME/.local/bin"* ]]; then
+    echo "Adding path to $HOME/.profile"
     echo "" >> $HOME/.profile
     echo "# add dot-local path" >> $HOME/.profile
     echo -e "export PATH=\$HOME/.local/bin:\$PATH" >> $HOME/.profile
   fi
-  if [[ $(alias) != *"vi=\"nvim\""* ]]; then
+
+
+  if [[ -z $(grep "alias vi=\"nvim\"" $shell_file) ]]; then
+    echo "Adding alias to $shell_file"
     echo "" >> $shell_file
     echo -e "alias vi=\"nvim\"" >> $shell_file
+    echo -e "alias vim=\"nvim\"" >> $shell_file
   fi
   echo "Done bootstrapping neovim (nvim)."
   echo

@@ -1,6 +1,6 @@
-.git
-.gitignore
-*.tar.gz
-*.tgz
+\.git
+\.gitignore
+.+\.tar\.gz
+.+\.tgz
 bootstrap.sh
 README.md
