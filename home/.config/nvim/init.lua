@@ -4,6 +4,7 @@ vim.g.mapleader = ","
 require("config.lazy")
 require("plugin_config.lsp_config")
 
+
 vim.opt.termguicolors = true
 vim.opt.background = 'dark'
 --vim.opt.ayucolor = "mirage"
@@ -18,10 +19,12 @@ if vim.g.neovide then
 end
 
 -- vim.opt.backspace = 2
+-- for js
 vim.opt.shiftwidth = 2
 vim.opt.softtabstop = 2
 vim.opt.expandtab = true
 
+-- on macos
 vim.opt.clipboard = 'unnamedplus'
 
 -- show invisible
