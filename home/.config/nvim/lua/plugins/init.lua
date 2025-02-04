@@ -25,7 +25,7 @@ return {
       -- your configuration comes here
       -- or leave it empty to use the default settings
       -- refer to the configuration section below
-      bigfile = { enabled = true },
+      bigfile = { enabled = false },
       dashboard = {
         enabled = true,
         --pane_gap = 4,
@@ -37,7 +37,7 @@ return {
             height = 12,
             padding = {1,1},
             section = "terminal",
-            cmd = "cat ~/.config/nvim/ansi/enterprise.ansi"
+            cmd = "cat ~/.config/nvim/ansi/enterprise.ansi; sleep .1"
           },
           {
             pane = 1,
@@ -59,6 +59,17 @@ return {
             pane = 1,
             section = "startup",
             padding = 1,
+          },
+          {
+            pane = 2,
+            width = 65,
+            height = 12,
+            padding = {1,1},
+            enabled = function ()
+              return Snacks.git.get_root() ~= nil
+            end,
+            section = "terminal",
+            cmd = "cat ~/.config/nvim/ansi/github.ansi; sleep .1"
           },
           {
             pane = 2,
@@ -119,10 +130,10 @@ return {
       indent = { enabled = true },
       input = { enabled = true },
       picker = { enabled = true },
-      notifier = { enabled = true },
+      notifier = { enabled = false },
       quickfile = { enabled = true },
-      scroll = { enabled = true },
-      statuscolumn = { enabled = true },
+      scroll = { enabled = false },
+      statuscolumn = { enabled = false },
       words = { enabled = true },
     },
 
