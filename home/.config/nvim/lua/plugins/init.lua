@@ -63,7 +63,7 @@ return {
           {
             pane = 2,
             enabled = function ()
-              return in_git
+              return Snacks.git.get_root() ~= nil
             end,
             icon = " ",
             desc = "Browse Repo",
@@ -78,7 +78,7 @@ return {
             local cmds = {
               {
                 title = "Open Issues",
-                cmd = "gh issue list -L 3",
+                cmd = "gh issue list -L 3; sleep .1",
                 key = "i",
                 action = function()
                   vim.fn.jobstart("gh issue list --web", { detach = true })
@@ -89,7 +89,7 @@ return {
               {
                 icon = " ",
                 title = "Open PRs",
-                cmd = "gh pr list -L 3",
+                cmd = "gh pr list -L 3; sleep .1",
                 key = "P",
                 action = function()
                   vim.fn.jobstart("gh pr list --web", { detach = true })
@@ -99,7 +99,7 @@ return {
               {
                 icon = " ",
                 title = "Git Status",
-                cmd = "git --no-pager diff --stat -B -M -C",
+                cmd = "git --no-pager diff --stat -B -M -C; sleep .1",
                 height = 10,
               },
             }
