@@ -45,7 +45,7 @@ return {
             icon = " ",
             title = "Recent Files",
             section = "recent_files",
-            limit = 10,
+            limit = 5,
             indent = 2,
             padding = 1,
           },
@@ -55,24 +55,21 @@ return {
             gap = 0,
             padding = 1,
           },
-          {
-            pane = 1,
-            section = "startup",
-            padding = 1,
-          },
+          --[[
           {
             pane = 2,
             width = 65,
-            height = 12,
-            padding = {1,1},
+            height = 6,
+            padding = {1 , 1},
             enabled = function ()
               return Snacks.git.get_root() ~= nil
             end,
             section = "terminal",
             cmd = "cat ~/.config/nvim/ansi/github.ansi; sleep .1"
           },
+          --]]
           {
-            pane = 2,
+            pane = 1,
             enabled = function ()
               return Snacks.git.get_root() ~= nil
             end,
@@ -87,6 +84,13 @@ return {
           function()
             local in_git = Snacks.git.get_root() ~= nil
             local cmds = {
+              {
+                icon = " ",
+                title = "Git Status",
+                cmd = "git --no-pager diff --stat -B -M -C; sleep .1",
+                height = 5,
+              },
+              --[[
               {
                 title = "Open Issues",
                 cmd = "gh issue list -L 3; sleep .1",
@@ -107,16 +111,11 @@ return {
                 end,
                 height = 7,
               },
-              {
-                icon = " ",
-                title = "Git Status",
-                cmd = "git --no-pager diff --stat -B -M -C; sleep .1",
-                height = 10,
-              },
+              --]]
             }
             return vim.tbl_map(function(cmd)
               return vim.tbl_extend("force", {
-                pane = 2,
+                pane = 1,
                 section = "terminal",
                 enabled = in_git,
                 padding = 1,
@@ -125,6 +124,11 @@ return {
               }, cmd)
             end, cmds)
           end,
+          {
+            pane = 1,
+            section = "startup",
+            padding = 1,
+          },
         },
       },
       indent = { enabled = true },

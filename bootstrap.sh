@@ -47,6 +47,10 @@ have_stow=false
 # We could have special cases for $CODESPACES in the future.
 # For now, it's not necessary.
 #
+# Setup:
+#  - Enable dotfiles for codespaces
+#  - The path will be something like /workspaces/.codespaces/.persistedshare/dotfiles
+#
 # if [ "$CODESPACES" == "true" ]; then
 #   echo "Doing something cool with codespaces"
 # fi
