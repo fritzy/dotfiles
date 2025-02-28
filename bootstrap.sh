@@ -66,7 +66,7 @@ if [[ $machine_os == "macos" ]]; then
   echo
   echo "Updating kitty tty..."
   update-kitty
-elif [[ $machine_os == "Linux" ]]; then
+elif [[ $machine_os == "linux" ]]; then
   if [[ ! -z $(which apt-get) ]]; then
     echo "Installing stow and applying dotfiles"
     sudo apt update
