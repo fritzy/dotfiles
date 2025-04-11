@@ -44,44 +44,51 @@ mkdir -p $HOME/.config/nvim
 
 have_stow=false
 
-# We could have special cases for $CODESPACES in the future.
-# For now, it's not necessary.
-#
-# Setup:
-#  - Enable dotfiles for codespaces
-#  - The path will be something like /workspaces/.codespaces/.persistedshare/dotfiles
-#
-# if [ "$CODESPACES" == "true" ]; then
-#   echo "Doing something cool with codespaces"
-# fi
+# Function to detect the default package manager
+detect_package_manager() {
+  if [[ $machine_os == "macos" ]]; then
+    if command -v brew &> /dev/null; then
+      echo "brew"
+    else
+      echo "none"
+    fi
+  elif [[ $machine_os == "linux" ]]; then
+    if command -v apt-get &> /dev/null; then
+      echo "apt-get"
+    elif command -v pacman &> /dev/null; then
+      echo "pacman"
+    else
+      echo "none"
+    fi
+  else
+    echo "none"
+  fi
+}
 
-if [[ $machine_os == "macos" ]]; then
+# Detect the package manager
+package_manager=$(detect_package_manager)
+
+# Install stow based on the detected package manager
+if [[ $package_manager == "brew" ]]; then
   echo "Checking for stow in brew"
-  # if stow isn't installed, install it
   (brew list stow || brew install stow) > /dev/null
   have_stow=true
-  echo
-  echo "Syncing macos apps"
-  stow -t ~ macos
-  echo
-  echo "Updating kitty tty..."
-  update-kitty
-elif [[ $machine_os == "linux" ]]; then
-  if [[ ! -z $(which apt-get) ]]; then
-    echo "Installing stow and applying dotfiles"
-    sudo apt update
-    sudo apt install -y stow
-    stow -t ~ home
-    have_stow=true
-    machine_os="linux"
-  else
-    echo "No brew nor apt, so we can't install stow."
-    echo "Forcing replacement of $HOME/.config/nvim ..."
-    # no gods or kings, only man
-    rm -rf $HOME/.config/nvim
-    cp -R ./home/.config/nvim/* $HOME/.config/nvim/
-  fi
+elif [[ $package_manager == "apt-get" ]]; then
+  echo "Installing stow using apt-get"
+  sudo apt update
+  sudo apt install -y stow
+  have_stow=true
+elif [[ $package_manager == "pacman" ]]; then
+  echo "Installing stow using pacman"
+  sudo pacman -Sy --noconfirm stow
+  have_stow=true
+else
+  echo "No supported package manager found. Manual installation required."
+  echo "Forcing replacement of $HOME/.config/nvim ..."
+  rm -rf $HOME/.config/nvim
+  cp -R ./home/.config/nvim/* $HOME/.config/nvim/
 fi
+
 if [[ $have_stow = true ]]; then
   echo
   echo "Syncing home config..."
@@ -93,7 +100,7 @@ echo "Downloading latest neovim...$nvim_file_part.tar.gz"
 curl -LO https://github.com/neovim/neovim/releases/latest/download/$nvim_file_part.tar.gz
 if [ $? -eq 0 ]; then
   echo "Success, installing..."
-  rm $HOME/.local/bin/nvim
+  rm -f $HOME/.local/bin/nvim
   tar -C $HOME/.local/opt -xzf $nvim_file_part.tar.gz
   ln -s $HOME/.local/opt/$nvim_file_part/bin/nvim $HOME/.local/bin/nvim
   echo "Bootstrapping neovim config... (may take some time)"
@@ -102,11 +109,11 @@ if [ $? -eq 0 ]; then
   # setup lanuage servers
   nvim --headless "+MasonInstall typescript-language-server eslint-lsp" +qa > /dev/null 2> /dev/null
 
-  if [[ $PATH != *"$HOME/.local/bin"* ]]; then
+  if ! grep -q "export PATH=\$HOME/.local/bin:\$PATH" $HOME/.profile; then
     echo "Adding path to $HOME/.profile"
     echo "" >> $HOME/.profile
     echo "# add dot-local path" >> $HOME/.profile
-    echo -e "export PATH=\$HOME/.local/bin:\$PATH" >> $HOME/.profile
+    echo "export PATH=\$HOME/.local/bin:\$PATH" >> $HOME/.profile
   fi
 
   if [[ -z $(grep "alias vi=\"nvim\"" $shell_file) ]]; then
@@ -123,4 +130,5 @@ if [ $? -eq 0 ]; then
   echo
 else
   echo "Failed to download neovim, aborting."
+  exit 1
 fi
