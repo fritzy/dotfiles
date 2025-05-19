@@ -9,6 +9,8 @@
 
 machine_os=$(uname)
 machine_arch=$(uname -m)
+nvim_config=$HOME/.config/nvim
+nvim_bin=$HOME/.local/bin/nvim
 
 if [ "$machine_os" == "Darwin" ]; then
   machine_os="macos"
@@ -40,7 +42,7 @@ rm -rf $HOME/.local/opt/$nvim_file_part
 # ensuring we have target directories
 mkdir -p $HOME/.local/opt
 mkdir -p $HOME/.local/bin
-mkdir -p $HOME/.config/nvim
+mkdir -p $nvim_config
 
 have_stow=false
 
@@ -84,9 +86,9 @@ elif [[ $package_manager == "pacman" ]]; then
   have_stow=true
 else
   echo "No supported package manager found. Manual installation required."
-  echo "Forcing replacement of $HOME/.config/nvim ..."
-  rm -rf $HOME/.config/nvim
-  cp -R ./home/.config/nvim/* $HOME/.config/nvim/
+  echo "Forcing replacement of $nvim_config ..."
+  rm -rf $nvim_config
+  cp -R ./home/.config/nvim/* $nvim_config/
 fi
 
 if [[ $have_stow = true ]]; then
@@ -100,14 +102,14 @@ echo "Downloading latest neovim...$nvim_file_part.tar.gz"
 curl -LO https://github.com/neovim/neovim/releases/latest/download/$nvim_file_part.tar.gz
 if [ $? -eq 0 ]; then
   echo "Success, installing..."
-  rm -f $HOME/.local/bin/nvim
+  rm -f $nvim_bin
   tar -C $HOME/.local/opt -xzf $nvim_file_part.tar.gz
-  ln -s $HOME/.local/opt/$nvim_file_part/bin/nvim $HOME/.local/bin/nvim
+  ln -s $HOME/.local/opt/$nvim_file_part/bin/nvim $nvim_bin
   echo "Bootstrapping neovim config... (may take some time)"
   # install Lazy plugins
-  nvim --headless "+Lazy! sync" +qa > /dev/null
+  $nvim_bin --headless "+Lazy! sync" +qa > /dev/null
   # setup lanuage servers
-  nvim --headless "+MasonInstall typescript-language-server eslint-lsp" +qa > /dev/null 2> /dev/null
+  $nvim_bin --headless "+MasonInstall typescript-language-server eslint-lsp" +qa > /dev/null 2> /dev/null
 
   if ! grep -q "export PATH=\$HOME/.local/bin:\$PATH" $HOME/.profile; then
     echo "Adding path to $HOME/.profile"
@@ -126,7 +128,7 @@ if [ $? -eq 0 ]; then
   echo
   echo "Installed at:"
   echo "$HOME/.local/opt/$nvim_file_part ->"
-  echo "$HOME/.local/bin/nvim"
+  echo "$nvim_bin"
   echo
 else
   echo "Failed to download neovim, aborting."
