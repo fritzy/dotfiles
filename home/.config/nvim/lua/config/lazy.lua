@@ -19,6 +19,9 @@ vim.opt.rtp:prepend(lazypath)
 -- loading lazy.nvim so that mappings are correct.
 -- This is also a good place to setup other settings (vim.opt)
 
+-- ok that's what I did
+require("config.options")
+
 -- Setup lazy.nvim
 require("lazy").setup({
   spec = {
@@ -31,3 +34,5 @@ require("lazy").setup({
   -- automatically check for plugin updates
   checker = { enabled = true },
 })
+
+require("config.keymap")
