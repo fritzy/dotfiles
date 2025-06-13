@@ -1,7 +1,32 @@
+local grep_opts = {
+    "rg",
+    "--vimgrep",
+    "--hidden",
+    "--follow",
+    "--glob",
+    '"!**/.git/*"',
+    "--column",
+    "--line-number",
+    "--no-heading",
+    "--color=always",
+    "--smart-case",
+    "--max-columns=4096",
+    "-e",
+}
+
 return {
   'ibhagwan/fzf-lua',
   dependencies = { 'echasnovski/mini.icons' },
-  opts = {},
+  opts = {
+    grep = {
+      cwd_prompt = false,
+      --prompt = Utils.icons.misc.search .. " ",
+      --input_prompt = "Grep For ❯ ",
+      cmd = table.concat(grep_opts, " "),
+      hidden = true,
+      follow = true,
+    },
+  },
   keys = {
     {
       '<leader>ff',

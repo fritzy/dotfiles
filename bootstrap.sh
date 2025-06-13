@@ -1,5 +1,11 @@
 #!/bin/bash
 
+hello() {
+  echo "Hello $1"
+}
+
+hello("Hi")
+
 # Purpose: Install and boostrap neovim on Mac and Codespaces.
 # It could be extended for more than neovim, but this is my primary need.
 #

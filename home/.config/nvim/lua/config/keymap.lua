@@ -1,4 +1,6 @@
 vim.keymap.set('n', '-', '<cmd>Oil --float<CR>', { desc="Open parent dir in oil" })
+vim.keymap.set('n', 'gl', function() vim.diagnostic.open_float() end, { desc= "Open Diagnostics in Float"})
+vim.keymap.set('n', 'gb', '<C-t>', { desc= "[G]o [B]ack"})
 
 local function map(mode, shortcut, command)
   vim.api.nvim_set_keymap(
@@ -10,10 +12,10 @@ local function nmap(shortcut, command)
   map('n', shortcut, command)
 end
 
-local function imap(shortcut, command)
-  map('i', shortcut, command)
-end
-
+-- local function imap(shortcut, command)
+--   map('i', shortcut, command)
+-- end
+--
 -- buffer navigation shortcuts
 nmap('<C-l>', '<C-W>l')
 nmap('<C-h>', '<C-W>h')
