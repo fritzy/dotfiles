@@ -1,7 +1,6 @@
 return {
-  'ahmedkhalf/project.nvim',
-  init = function()
-    require('project_nvim').setup({
-    })
-  end
+	"DrKJeff16/project.nvim",
+	init = function()
+		require("project_nvim").setup({})
+	end,
 }

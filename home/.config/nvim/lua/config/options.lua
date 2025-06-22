@@ -2,19 +2,19 @@ vim.g.mapleader = ","
 vim.g.localmapleader = "//"
 
 -- some of this taken from nvim-lua/kickstart.nvim/init.lua
-
 vim.g.have_nerd_font = true
 
 vim.o.number = true
 vim.o.relativenumber = true
 
-vim.o.mouse = 'a'
+vim.o.mouse = "a"
 
 -- we already have the mode in the statusline plugin
 vim.o.showmode = false
 
 vim.schedule(function()
-  vim.o.clipboard = 'unnamedplus'
+	--vim.o.clipboard = "unnamedplus"
+	vim.cmd("set clipboard=unnamed,unnamedplus")
 end)
 
 vim.o.breakindent = true
@@ -29,7 +29,7 @@ vim.o.ignorecase = true
 vim.o.smartcase = true
 
 vim.o.list = true
-vim.opt.listchars = { tab = '» ', trail = '·', nbsp = '␣' }
+vim.opt.listchars = { tab = "» ", trail = "·", nbsp = "␣" }
 
 -- Minimal number of screen lines to keep above and below the cursor.
 vim.o.scrolloff = 10
