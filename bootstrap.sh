@@ -1,11 +1,5 @@
 #!/bin/bash
 
-hello() {
-  echo "Hello $1"
-}
-
-hello("Hi")
-
 # Purpose: Install and boostrap neovim on Mac and Codespaces.
 # It could be extended for more than neovim, but this is my primary need.
 #
@@ -18,10 +12,39 @@ machine_arch=$(uname -m)
 nvim_config=$HOME/.config/nvim
 nvim_bin=$HOME/.local/bin/nvim
 
+OPTS=$(getopt -o a --long appimage -n 'bootstrap.sh' -- "$@")
+
+if [ $? -ne 0 ]; then
+  echo "Failed to parse options" >&2
+  exit 1
+fi
+
+## Reset the positional parameters to the parsed options
+eval set -- "$OPTS"
+
+appimage=false
+
+## Process the options
+while true; do
+  case "$1" in
+    -a | --appimage)
+      appimage=true
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+  esac
+done
+
 if [ "$machine_os" == "Darwin" ]; then
   machine_os="macos"
 elif [[ $machine_os == "Linux" ]]; then
   machine_os="linux"
+fi
+if [[ $machine_arch == "aarch64" ]]; then
+  machine_arch="arm64"
 fi
 
 echo "Bootstrapping ... $machine_os :: $machine_arch"
@@ -38,19 +61,19 @@ nvim_file_part="nvim-$machine_os-$machine_arch"
 # - nvim-macos-x86_64.tar.gz (I still have one)
 # - nvim-macos-arm64.tar.gz
 # - nvim-linu-x86_64.tar.gz (codespaces, etc)
+# - appimage variants when flag present
 #
 # other architectures may or may not work in the future
 
 # maybe an old version has already been pulled and we're just upgrading
 rm -f *.tar.gz
+rm -f *.appimage
 rm -rf $HOME/.local/opt/$nvim_file_part
 
 # ensuring we have target directories
 mkdir -p $HOME/.local/opt
 mkdir -p $HOME/.local/bin
 mkdir -p $nvim_config
-
-have_stow=false
 
 # Function to detect the default package manager
 detect_package_manager() {
@@ -74,27 +97,32 @@ detect_package_manager() {
 }
 
 # Detect the package manager
-package_manager=$(detect_package_manager)
+
+have_stow=$(command -v stow >/dev/null 2>&1 && echo true || echo false)
+echo "Stow installed: $have_stow"
 
 # Install stow based on the detected package manager
-if [[ $package_manager == "brew" ]]; then
-  echo "Checking for stow in brew"
-  (brew list stow || brew install stow) > /dev/null
-  have_stow=true
-elif [[ $package_manager == "apt-get" ]]; then
-  echo "Installing stow using apt-get"
-  sudo apt update
-  sudo apt install -y stow
-  have_stow=true
-elif [[ $package_manager == "pacman" ]]; then
-  echo "Installing stow using pacman"
-  sudo pacman -Sy --noconfirm stow
-  have_stow=true
-else
-  echo "No supported package manager found. Manual installation required."
-  echo "Forcing replacement of $nvim_config ..."
-  rm -rf $nvim_config
-  cp -R ./home/.config/nvim/* $nvim_config/
+if [ "$have_stow" != "true" ]; then
+  package_manager=$(detect_package_manager)
+  if [[ $package_manager == "brew" ]]; then
+    echo "Checking for stow in brew"
+    (brew list stow || brew install stow) > /dev/null
+    have_stow=true
+  elif [[ $package_manager == "apt-get" ]]; then
+    echo "Installing stow using apt-get"
+    sudo apt update
+    sudo apt install -y stow
+    have_stow=true
+  elif [[ $package_manager == "pacman" ]]; then
+    echo "Installing stow using pacman"
+    sudo pacman -Sy --noconfirm stow
+    have_stow=true
+  else
+    echo "No supported package manager found. Manual installation required."
+    echo "Forcing replacement of $nvim_config ..."
+    rm -rf $nvim_config
+    cp -R ./home/.config/nvim/* $nvim_config/
+  fi
 fi
 
 if [[ $have_stow = true ]]; then
@@ -103,14 +131,25 @@ if [[ $have_stow = true ]]; then
   stow -v -t ~ home
 fi
 
+nvim_full_file=$nvim_file_part.tar.gz
+if [[ $appimage == "true" ]]; then
+  nvim_full_file=$nvim_file_part.appimage
+fi
+
 echo
-echo "Downloading latest neovim...$nvim_file_part.tar.gz"
-curl -LO https://github.com/neovim/neovim/releases/latest/download/$nvim_file_part.tar.gz
+echo "Downloading latest neovim...$nvim_full_file"
+curl -LO https://github.com/neovim/neovim/releases/latest/download/$nvim_full_file
 if [ $? -eq 0 ]; then
   echo "Success, installing..."
   rm -f $nvim_bin
-  tar -C $HOME/.local/opt -xzf $nvim_file_part.tar.gz
-  ln -s $HOME/.local/opt/$nvim_file_part/bin/nvim $nvim_bin
+  if [[ $appimage == "true" ]]; then
+    cp $nvim_full_file $HOME/.local/opt/$nvim_file_part
+    ln -s $HOME/.local/opt/$nvim_file_part $nvim_bin
+    chmod +x $HOME/.local/opt/$nvim_file_part
+  else
+    tar -C $HOME/.local/opt -xzf $nvim_file_part.tar.gz
+    ln -s $HOME/.local/opt/$nvim_file_part/bin/nvim $nvim_bin
+  fi
   echo "Bootstrapping neovim config... (may take some time)"
   # install Lazy plugins
   $nvim_bin --headless "+Lazy! sync" +qa > /dev/null

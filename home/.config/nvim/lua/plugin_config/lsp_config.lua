@@ -6,14 +6,14 @@ require("mason-lspconfig").setup({
 
 local lspconfig = require('lspconfig')
 lspconfig.ts_ls.setup({
-  settings = {
-    diagnostics = {
-      ignoredCodes = {
-        7016, -- Could not find a declaration file for module...
-        80001, -- File is a CommonJS module ...
-      },
-    }
-  },
+  -- settings = {
+  --   diagnostics = {
+  --     ignoredCodes = {
+  --       7016, -- Could not find a declaration file for module...
+  --       80001, -- File is a CommonJS module ...
+  --     },
+  --   }
+  -- },
   filetypes = {
     "javascript",
     "typescript"
