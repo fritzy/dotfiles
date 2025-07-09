@@ -57,4 +57,7 @@ return {
 			desc = "Find File (fzf)",
 		},
 	},
+	config = function()
+		vim.ui.select = require('fzf-lua').register_ui_select()
+	end,
 }

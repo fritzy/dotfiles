@@ -8,6 +8,9 @@ vim.keymap.set("n", "<leader>cf", function()
 		lsp_format = "fallback",
 	})
 end, { desc = "Format current file" })
+vim.keymap.set("n", "<leader>cc", function()
+	vim.cmd("CopilotChatToggle")
+end, { desc = "Toggle CopilotChat" })
 
 vim.keymap.set("n", "<leader>j", function()
 	require("treesj").toggle()
