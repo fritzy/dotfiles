@@ -4,7 +4,13 @@ return {
   opts = {
     content = {
       inactive = function()
-        return '%#MiniStatuslineInactive# [%n] %F%='
+        local filename = MiniStatusline.section_filename({ trunc_width = 140 })
+        return MiniStatusline.combine_groups({
+          { hl = 'MiniStatuslineDevinfo',  strings = { '[%n]' } },
+          '%<', -- Mark general truncate point
+          { hl = 'MiniStatuslineFilename', strings = { filename } },
+          '%=', -- End left alignment
+        })
       end,
     },
   },
