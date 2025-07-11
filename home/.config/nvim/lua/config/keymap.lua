@@ -10,6 +10,7 @@ vim.keymap.set("n", "<leader>cf", function()
 end, { desc = "Format current file" })
 vim.keymap.set("n", "<leader>cc", function()
 	vim.cmd("CopilotChatToggle")
+	vim.cmd("wincmd =")
 end, { desc = "Toggle CopilotChat" })
 
 vim.keymap.set("n", "<leader>j", function()

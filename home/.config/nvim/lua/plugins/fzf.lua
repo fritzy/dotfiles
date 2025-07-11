@@ -36,6 +36,13 @@ return {
 			desc = "Find File (fzf)",
 		},
 		{
+			"<leader>fr",
+			function()
+				require("fzf-lua").oldfiles()
+			end,
+			desc = "Find File (fzf)",
+		},
+		{
 			"<leader>fg",
 			function()
 				require("fzf-lua").live_grep()
