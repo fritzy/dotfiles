@@ -65,6 +65,6 @@ return {
 		},
 	},
 	config = function()
-		vim.ui.select = require('fzf-lua').register_ui_select()
+		--vim.ui.select = require('fzf-lua').register_ui_select()
 	end,
 }

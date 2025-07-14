@@ -7,7 +7,7 @@ return {
 			-- Mason must be loaded before its dependents so we need to set it up here.
 			-- NOTE: `opts = {}` is the same as calling `require('mason').setup({})`
 			{ "mason-org/mason.nvim", opts = {} },
-			"mason-org/mason-lspconfig.nvim",
+			"mason-org/mason-lspconfig.nvim", -- 2.0 doesn't really do anything beyond translating names
 			"WhoIsSethDaniel/mason-tool-installer.nvim",
 
 			-- Useful status updates for LSP.
@@ -208,7 +208,7 @@ return {
 				bashls = {},
 				-- clangd = {},
 				-- gopls = {},
-				pyright = {},
+				ruff = {},
 				-- rust_analyzer = {},
 				-- ... etc. See `:help lspconfig-all` for a list of all the pre-configured LSPs
 				--
@@ -225,6 +225,25 @@ return {
 					-- filetypes = { ... },
 					-- capabilities = {},
 					settings = {
+						Lua = {
+							runtime = {
+								version = "LuaJit",
+							},
+							diagnostics = {
+								globals = {
+									"vim",
+									"require",
+								},
+							},
+							workspace = {
+								-- Make the server aware of Neovim runtime files
+								library = vim.api.nvim_get_runtime_file("", true),
+							},
+							-- Do not send telemetry data containing a randomized but unique identifier
+							telemetry = {
+								enable = false,
+							},
+						},
 						-- Lua = {
 						--   completion = {
 						--     callSnippet = 'Replace',
@@ -251,27 +270,19 @@ return {
 			-- for you, so that they are available from within Neovim.
 			local ensure_installed = vim.tbl_keys(servers or {})
 			vim.list_extend(ensure_installed, {
-				"stylua", -- Used to format Lua code
+				-- "stylua", -- Used to format Lua code
 				"isort",
-				"black", -- format python code
+				"ruff", -- format python code -- replaced black
 				"prettierd", -- format javascript
 			})
 			require("mason-tool-installer").setup({ ensure_installed = ensure_installed })
 
-			require("mason-lspconfig").setup({
-				ensure_installed = {}, -- explicitly set to an empty table (Kickstart populates installs via mason-tool-installer)
-				automatic_installation = false,
-				handlers = {
-					function(server_name)
-						local server = servers[server_name] or {}
-						-- This handles overriding only values explicitly passed
-						-- by the server configuration above. Useful when disabling
-						-- certain features of an LSP (for example, turning off formatting for ts_ls)
-						server.capabilities = vim.tbl_deep_extend("force", {}, capabilities, server.capabilities or {})
-						require("lspconfig")[server_name].setup(server)
-					end,
-				},
-			})
+			-- mason lspconfig doesn't do this for us anymore
+			for server_name, server in pairs(servers or {}) do
+				server.capabilities = vim.tbl_deep_extend("force", {}, capabilities, server.capabilities or {})
+				require("lspconfig")[server_name].setup(server)
+			end
+			require('mason-lspconfig').setup()
 		end,
 	},
 }

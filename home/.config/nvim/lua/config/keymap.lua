@@ -2,6 +2,9 @@ vim.keymap.set("n", "-", "<cmd>Oil --float<CR>", { desc = "Open parent dir in oi
 vim.keymap.set("n", "gl", function()
 	vim.diagnostic.open_float()
 end, { desc = "Open Diagnostics in Float" })
+vim.keymap.set("n", "gL", function()
+	require("fzf-lua").diagnostics_document()
+end, { desc = "Open Diagnostics in Float" })
 vim.keymap.set("n", "gb", "<C-t>", { desc = "[G]o [B]ack" })
 vim.keymap.set("n", "<leader>cf", function()
 	require("conform").format({
