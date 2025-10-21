@@ -292,7 +292,7 @@ return {
 			-- mason lspconfig doesn't do this for us anymore
 			for server_name, server in pairs(servers or {}) do
 				server.capabilities = vim.tbl_deep_extend("force", {}, capabilities, server.capabilities or {})
-				require("lspconfig")[server_name].setup(server)
+				vim.lsp.config(server_name, server)
 			end
 			require('mason-lspconfig').setup()
 		end,

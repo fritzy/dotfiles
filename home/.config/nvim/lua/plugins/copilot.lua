@@ -1,6 +1,7 @@
 return {
   'github/copilot.vim',
   config = function()
+    vim.g.copilot_node_command = 'nvm exec 22 node'
     vim.g.copilot_filetypes = {
       ['*'] = false, -- Disable Copilot for all file types
     }
