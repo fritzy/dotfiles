@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# Changes directory to checked out repo, respecting worktrees
+
+# Usage:
+# ghcd [user]/[repo][/worktree]
+# ghcd add [dir]
+#
+# Config [~/.config/ghcd.ini]
+# [directories]
+# [user]/[repo] = [dir]
+
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/ghcd.ini"
+DEFAULT_BASE="$HOME/github"
+
+die() { echo "$1" >&2; exit 1; }
+
+parse_config() {
+    local key="$1"
+    [[ -f "$CONFIG" ]] || return
+    awk -F' = ' -v key="$key" '
+        /^\[directories\]/ { in_section=1; next }
+        /^\[/ { in_section=0 }
+        in_section && $1 == key { print $2; exit }
+    ' "$CONFIG"
+}
+
+write_config() {
+    local key="$1" value="$2"
+    mkdir -p "$(dirname "$CONFIG")"
+
+    if [[ ! -f "$CONFIG" ]]; then
+        printf '[directories]\n%s = %s\n' "$key" "$value" > "$CONFIG"
+        return
+    fi
+
+    if ! grep -q '^\[directories\]' "$CONFIG"; then
+        printf '\n[directories]\n%s = %s\n' "$key" "$value" >> "$CONFIG"
+        return
+    fi
+
+    if grep -qF "$key = " "$CONFIG"; then
+        sed -i "s|^$key = .*|$key = $value|" "$CONFIG"
+    else
+        sed -i "/^\[directories\]/a $key = $value" "$CONFIG"
+    fi
+}
+
+cmd_add() {
+    local dir="${1:-$PWD}"
+    dir="$(realpath "$dir")"
+    [[ -d "$dir" ]] || die "Not a directory: $dir"
+
+    local remote_url
+    remote_url="$(git -C "$dir" remote get-url origin 2>/dev/null)" \
+        || die "Not a git repo: $dir"
+
+    local user_repo
+    user_repo="$(sed -E 's|.*github\.com[:/]([^/]+/[^/]+)$|\1|; s|\.git$||' <<< "$remote_url")"
+    [[ "$user_repo" =~ ^[^/]+/[^/]+$ ]] || die "Could not parse user/repo from remote: $remote_url"
+
+    write_config "$user_repo" "$dir"
+    echo "Added: $user_repo = $dir" >&2
+}
+
+cmd_cd() {
+    local input="$1"
+    [[ -n "$input" ]] || die "Usage: ghcd [user]/[repo][/worktree]"
+
+    IFS='/' read -ra parts <<< "$input"
+    local user="${parts[0]}" repo="${parts[1]}" worktree="${parts[2]}"
+    [[ -n "$user" && -n "$repo" ]] || die "Expected user/repo, got: $input"
+    local user_repo="$user/$repo"
+
+    local repo_dir
+    repo_dir="$(parse_config "$user_repo")"
+    [[ -n "$repo_dir" ]] || repo_dir="$DEFAULT_BASE/$user_repo"
+    [[ -d "$repo_dir" ]] || die "Directory not found: $repo_dir"
+
+    if [[ -n "$worktree" ]]; then
+        local wt_dir
+        wt_dir="$(git -C "$repo_dir" worktree list --porcelain 2>/dev/null | awk -v wt="$worktree" '
+            /^worktree / { dir=$2 }
+            /^branch /   { branch=$2; sub(".*/", "", branch) }
+            branch == wt { print dir; exit }
+        ')"
+        [[ -n "$wt_dir" ]] || die "Worktree '$worktree' not found in $repo_dir"
+        echo "$wt_dir"
+    else
+        echo "$repo_dir"
+    fi
+}
+
+case "$1" in
+    add) cmd_add "$2" ;;
+    *)   cmd_cd "$1" ;;
+esac
