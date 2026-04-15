@@ -1,0 +1,77 @@
+vim.pack.add({ 'https://github.com/folke/snacks.nvim' })
+
+require('snacks').setup({
+  bigfile = { enabled = false },
+  dashboard = {
+    enabled = true,
+    width = 65,
+    sections = {
+      {
+        pane = 1,
+        width = 65,
+        height = 12,
+        padding = { 1, 1 },
+        section = "terminal",
+        cmd = "cat ~/.config/nvim/ansi/enterprise.ansi; sleep .1"
+      },
+      {
+        pane = 1,
+        width = 67,
+        icon = " ",
+        title = "Recent Files",
+        section = "recent_files",
+        limit = 5,
+        indent = 2,
+        padding = 1,
+      },
+      {
+        pane = 1,
+        section = "keys",
+        gap = 0,
+        padding = 1,
+      },
+      {
+        pane = 1,
+        enabled = function()
+          return Snacks.git.get_root() ~= nil
+        end,
+        icon = " ",
+        desc = "Browse Repo",
+        padding = 1,
+        key = "b",
+        action = function()
+          Snacks.gitbrowse()
+        end,
+      },
+      function()
+        local in_git = Snacks.git.get_root() ~= nil
+        local cmds = {
+          {
+            icon = " ",
+            title = "Git Status",
+            cmd = "git --no-pager diff --stat -B -M -C; sleep .1",
+            height = 5,
+          },
+        }
+        return vim.tbl_map(function(cmd)
+          return vim.tbl_extend("force", {
+            pane = 1,
+            section = "terminal",
+            enabled = in_git,
+            padding = 1,
+            ttl = 5 * 60,
+            indent = 3,
+          }, cmd)
+        end, cmds)
+      end,
+    },
+  },
+  indent = { enabled = true },
+  input = { enabled = true },
+  picker = { enabled = true },
+  notifier = { enabled = false },
+  quickfile = { enabled = true },
+  scroll = { enabled = false },
+  statuscolumn = { enabled = false },
+  words = { enabled = true },
+})

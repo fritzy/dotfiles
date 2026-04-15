@@ -42,3 +42,9 @@ vim.o.expandtab = true
 vim.o.smarttab = true
 vim.o.smartindent = true
 vim.o.autoindent = true
+
+vim.o.autoread = true
+vim.o.updatetime = 1000
+vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold", "CursorHoldI" }, {
+	command = "checktime",
+})

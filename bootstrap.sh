@@ -185,10 +185,8 @@ if [[ $install_nvim == "true" ]]; then
 
   if [[ -f $nvim_bin ]]; then
     echo "Bootstrapping neovim config... (may take some time)"
-    # install Lazy plugins
-    $nvim_bin --headless "+Lazy! sync" +qa > /dev/null
-    # setup language servers
-    $nvim_bin --headless "+MasonInstall typescript-language-server eslint-lsp" +qa > /dev/null 2> /dev/null
+    # install vim.pack plugins (force skips confirmation prompts)
+    $nvim_bin --headless -c "lua vim.pack.update(nil, {force=true})" -c "qa" > /dev/null
 
     if ! grep -q "export PATH=\$HOME/.local/bin:\$PATH" $HOME/.profile; then
       echo "Adding path to $HOME/.profile"
