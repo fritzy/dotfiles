@@ -72,6 +72,34 @@ mkdir -p $HOME/.local/bin
 mkdir -p $HOME/.local/brew
 mkdir -p $nvim_config
 
+# Provide a wget shim backed by curl when wget is absent (e.g. coldbrew needs it)
+if ! command -v wget &>/dev/null && command -v curl &>/dev/null; then
+  cat > "$HOME/.local/bin/wget" << 'WGET_SHIM'
+#!/bin/bash
+# curl-based wget compatibility shim
+curl_args=("-L")
+output=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -q|--quiet) curl_args+=("-s") ;;
+    -O-)        output="-" ;;
+    -O)         shift; output="$1" ;;
+    -O*)        output="${1#-O}" ;;
+    http*|ftp*) url="$1" ;;
+    *) ;;
+  esac
+  shift
+done
+if [[ -n "$output" && "$output" != "-" ]]; then
+  exec curl "${curl_args[@]}" -o "$output" "$url"
+else
+  exec curl "${curl_args[@]}" "$url"
+fi
+WGET_SHIM
+  chmod +x "$HOME/.local/bin/wget"
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 # Bootstrap Homebrew to $HOME/.local/brew on macOS if not already present
 if [[ $machine_os == "macos" ]] && ! command -v brew &> /dev/null; then
   echo "Bootstrapping Homebrew to $HOME/.local/brew..."
@@ -202,6 +230,16 @@ have_stow=$(command -v stow >/dev/null 2>&1 && echo true || echo false)
 if [[ $have_stow = true ]]; then
   echo
   echo "Syncing home config..."
+  # Back up any real files that would block stow (e.g. pre-existing terminfo entries)
+  while IFS= read -r conflict; do
+    rel="${conflict#* existing target }"
+    rel="${rel%% *}"   # keep only the path (stop at first space)
+    target="$HOME/$rel"
+    if [[ -e "$target" && ! -L "$target" ]]; then
+      echo "Backing up conflicting file: $target -> $target.bak"
+      mv "$target" "$target.bak"
+    fi
+  done < <(stow -n -v -t ~ home 2>&1 | grep "existing target")
   stow -v -t ~ home
 else
   echo "stow not available. Forcing replacement of $nvim_config ..."
@@ -223,7 +261,12 @@ fi
 if ! command -v starship &> /dev/null && [[ ! -f $HOME/.local/bin/starship ]]; then
   echo
   echo "Installing starship..."
-  $eget_bin starship/starship --to $HOME/.local/bin
+  if ldd /bin/sh 2>/dev/null | grep -q musl; then
+    starship_libc="musl"
+  else
+    starship_libc="gnu"
+  fi
+  $eget_bin starship/starship --to $HOME/.local/bin --asset "${machine_arch}-unknown-linux-${starship_libc}"
 fi
 
 have_sufficient_system_nvim() {

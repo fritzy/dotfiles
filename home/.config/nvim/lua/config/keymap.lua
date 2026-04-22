@@ -32,11 +32,11 @@ end
 --   map('i', shortcut, command)
 -- end
 --
--- buffer navigation shortcuts
-nmap("<C-l>", "<C-W>l", "Jump to left split")
-nmap("<C-h>", "<C-W>h", "Jump to right split")
-nmap("<C-j>", "<C-W>j", "Jump to lower split")
-nmap("<C-k>", "<C-W>k", "Jump to upper split")
+-- buffer/pane navigation (zellij-aware)
+nmap("<C-h>", "<cmd>ZellijNavigateLeft<cr>", "Navigate left")
+nmap("<C-j>", "<cmd>ZellijNavigateDown<cr>", "Navigate down")
+nmap("<C-k>", "<cmd>ZellijNavigateUp<cr>", "Navigate up")
+nmap("<C-l>", "<cmd>ZellijNavigateRight<cr>", "Navigate right")
 
 -- indenting
 map("v", ",", "<gv")
