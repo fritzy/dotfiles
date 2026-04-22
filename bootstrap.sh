@@ -87,6 +87,20 @@ if [[ $machine_os == "macos" ]] && ! command -v brew &> /dev/null; then
   fi
 fi
 
+# On Alpine-based systems, bootstrap coldbrew (rootless, aports-backed) instead
+# of using apk directly. Requires bubblewrap to be present on the host.
+if [[ $machine_os == "linux" ]] && command -v apk &> /dev/null && ! command -v coldbrew &> /dev/null; then
+  echo "Bootstrapping coldbrew to $HOME/.local/opt/coldbrew..."
+  if ! command -v bwrap &> /dev/null; then
+    echo "Warning: bubblewrap (bwrap) not found on host — coldbrew requires it to run packages." >&2
+  fi
+  if [[ ! -d $HOME/.local/opt/coldbrew ]]; then
+    git clone https://gitlab.postmarketos.org/postmarketOS/coldbrew "$HOME/.local/opt/coldbrew"
+  fi
+  ln -sf "$HOME/.local/opt/coldbrew/coldbrew" "$HOME/.local/bin/coldbrew"
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 # Function to detect the default package manager
 detect_package_manager() {
   if [[ $machine_os == "macos" ]]; then
@@ -101,7 +115,12 @@ detect_package_manager() {
     elif command -v pacman &> /dev/null; then
       echo "pacman"
     elif command -v apk &> /dev/null; then
-      echo "apk"
+      # Alpine detected, but we use coldbrew rather than apk directly.
+      if command -v coldbrew &> /dev/null || [[ -x $HOME/.local/bin/coldbrew ]]; then
+        echo "coldbrew"
+      else
+        echo "none"
+      fi
     elif command -v nix-env &> /dev/null; then
       echo "nix-env"
     else
@@ -112,39 +131,72 @@ detect_package_manager() {
   fi
 }
 
-# Install a package if not already present
+# Return 0 if the package is already present on the system.
+# Most packages ship a binary of the same name; a few (shell plugins) don't,
+# so we check known file locations as a fallback.
+package_present() {
+  local pkg=$1
+  command -v "$pkg" &> /dev/null && return 0
+  case $pkg in
+    zsh-autosuggestions)
+      local candidates=(
+        /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+        /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+        /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+        /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+        "$HOME/.local/opt/coldbrew/prefix/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
+      )
+      local f
+      for f in "${candidates[@]}"; do
+        [[ -f $f ]] && return 0
+      done
+      return 1
+      ;;
+  esac
+  return 1
+}
+
 install_package() {
   local pkg=$1
-  if command -v "$pkg" &> /dev/null; then
-    echo "$pkg already installed, skipping."
-    return
-  fi
   local pm=$(detect_package_manager)
   echo "Installing $pkg via $pm..."
   case $pm in
     brew)    brew install "$pkg" ;;
     apt-get) sudo apt-get install -y "$pkg" ;;
     pacman)  sudo pacman -Sy --needed --noconfirm "$pkg" ;;
-    apk)     sudo apk add "$pkg" ;;
+    coldbrew)
+      coldbrew install "$pkg"
+      coldbrew wrap "$pkg" 2>/dev/null || true
+      ;;
     nix-env) nix-env -iA "nixpkgs.$pkg" ;;
     *)       echo "No supported package manager found, skipping $pkg." ;;
   esac
 }
 
 echo
-echo "Installing packages: ${packages[*]}"
-pm_updated=false
+echo "Checking packages: ${packages[*]}"
+to_install=()
 for pkg in "${packages[@]}"; do
   if [[ " ${skip_packages[*]} " == *" $pkg "* ]]; then
     echo "Skipping $pkg (--no-$pkg)."
     continue
   fi
-  if [[ $(detect_package_manager) =~ ^(apt-get|apk)$ && $pm_updated == false ]]; then
-    sudo $(detect_package_manager) update -qq
-    pm_updated=true
+  if package_present "$pkg"; then
+    echo "$pkg already installed, skipping."
+    continue
   fi
-  install_package "$pkg"
+  to_install+=("$pkg")
 done
+
+if (( ${#to_install[@]} > 0 )); then
+  pm=$(detect_package_manager)
+  if [[ $pm == "apt-get" ]]; then
+    sudo apt-get update -qq
+  fi
+  for pkg in "${to_install[@]}"; do
+    install_package "$pkg"
+  done
+fi
 
 have_stow=$(command -v stow >/dev/null 2>&1 && echo true || echo false)
 if [[ $have_stow = true ]]; then
@@ -167,14 +219,36 @@ if ! command -v eget &> /dev/null && [[ ! -f $eget_bin ]]; then
   rm -f eget.sh
 fi
 
-if [[ $install_nvim == "true" ]]; then
+# Install starship prompt (referenced in .zshrc)
+if ! command -v starship &> /dev/null && [[ ! -f $HOME/.local/bin/starship ]]; then
+  echo
+  echo "Installing starship..."
+  $eget_bin starship/starship --to $HOME/.local/bin
+fi
+
+have_sufficient_system_nvim() {
+  local sys_nvim=/usr/bin/nvim
+  [[ -x $sys_nvim ]] || return 1
+  local ver
+  ver=$("$sys_nvim" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1) || return 1
+  local major=${ver%.*} minor=${ver#*.}
+  (( major > 0 )) && return 0
+  (( minor >= 12 )) && return 0
+  return 1
+}
+
+if [[ $install_nvim == "true" ]] && have_sufficient_system_nvim; then
+  echo "System neovim at /usr/bin/nvim is >= 0.12, skipping install."
+  nvim_bin=/usr/bin/nvim
+elif [[ $install_nvim == "true" ]]; then
   echo
   echo "Installing neovim..."
   pm=$(detect_package_manager)
   if [[ $pm == "pacman" ]]; then
     sudo pacman -Sy --needed --noconfirm neovim
-  elif [[ $pm == "apk" ]]; then
-    sudo apk add neovim
+  elif [[ $pm == "coldbrew" ]]; then
+    coldbrew install neovim
+    coldbrew wrap nvim 2>/dev/null || true
   elif [[ $pm == "nix-env" ]]; then
     nix-env -iA nixpkgs.neovim
   elif [[ $appimage == "true" ]]; then
@@ -182,8 +256,10 @@ if [[ $install_nvim == "true" ]]; then
   else
     $eget_bin neovim/neovim --to $HOME/.local/bin
   fi
+fi
 
-  if [[ -f $nvim_bin ]]; then
+if [[ $install_nvim == "true" ]]; then
+  if [[ -x $nvim_bin ]]; then
     echo "Bootstrapping neovim config... (may take some time)"
     # install vim.pack plugins (force skips confirmation prompts)
     $nvim_bin --headless -c "lua vim.pack.update(nil, {force=true})" -c "qa" > /dev/null
