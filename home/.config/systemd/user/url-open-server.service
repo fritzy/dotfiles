@@ -1,0 +1,9 @@
+[Unit]
+Description=Browser server for remote SSH URL opening
+
+[Service]
+ExecStart=%h/.scripts/url-open-server
+Restart=always
+
+[Install]
+WantedBy=default.target

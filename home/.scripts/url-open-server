@@ -1,0 +1,14 @@
+#!/bin/bash
+socket=/tmp/url-open.sock
+rm -f "$socket"
+python3 -c "
+import socket, subprocess
+s = socket.socket(socket.AF_UNIX)
+s.bind('/tmp/url-open.sock')
+s.listen()
+while True:
+    conn, _ = s.accept()
+    url = conn.recv(4096).decode().strip()
+    subprocess.Popen(['xdg-open', url])
+    conn.close()
+"
