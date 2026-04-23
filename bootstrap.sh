@@ -11,7 +11,17 @@ nvim_bin=$HOME/.local/bin/nvim
 eget_bin=$HOME/.local/bin/eget
 
 # Packages to install via the system package manager
-packages=(stow fzf zsh-autosuggestions)
+packages=(stow fzf zsh-autosuggestions nc)
+
+# Maps "command:package_manager" -> actual package name, for commands whose
+# package name differs from the command itself.
+declare -A pkg_names=(
+  [nc:brew]="netcat"
+  [nc:apt-get]="netcat-openbsd"
+  [nc:pacman]="openbsd-netcat"
+  [nc:coldbrew]="netcat-openbsd"
+  [nc:nix-env]="netcat"
+)
 
 pkg_long_opts=$(printf "no-%s," "${packages[@]}")
 OPTS=$(getopt -o a --long "appimage,no-nvim,${pkg_long_opts%,}" -n 'bootstrap.sh' -- "$@")
@@ -187,16 +197,17 @@ package_present() {
 install_package() {
   local pkg=$1
   local pm=$(detect_package_manager)
+  local actual_pkg="${pkg_names[$pkg:$pm]:-$pkg}"
   echo "Installing $pkg via $pm..."
   case $pm in
-    brew)    brew install "$pkg" ;;
-    apt-get) sudo apt-get install -y "$pkg" ;;
-    pacman)  sudo pacman -Sy --needed --noconfirm "$pkg" ;;
+    brew)    brew install "$actual_pkg" ;;
+    apt-get) sudo apt-get install -y "$actual_pkg" ;;
+    pacman)  sudo pacman -Sy --needed --noconfirm "$actual_pkg" ;;
     coldbrew)
-      coldbrew install "$pkg"
+      coldbrew install "$actual_pkg"
       coldbrew wrap "$pkg" 2>/dev/null || true
       ;;
-    nix-env) nix-env -iA "nixpkgs.$pkg" ;;
+    nix-env) nix-env -iA "nixpkgs.$actual_pkg" ;;
     *)       echo "No supported package manager found, skipping $pkg." ;;
   esac
 }
