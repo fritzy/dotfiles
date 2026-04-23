@@ -1,0 +1,11 @@
+[Unit]
+Description=URL open socket (accepts URLs over ssh reverse forward)
+
+[Socket]
+ListenStream=/tmp/url-open.sock
+Accept=yes
+SocketMode=0600
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

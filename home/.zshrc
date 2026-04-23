@@ -127,6 +127,11 @@ for fzf_keybindings in \
   fi
 done
 
+# On Chainguard workstation, route URL opens back to the laptop via ssh reverse forward.
+if [ -r /etc/os-release ] && grep -q '^ID=chainguard$' /etc/os-release; then
+  export BROWSER="$HOME/.scripts/url-open"
+fi
+
 # The next line updates PATH for the Google Cloud SDK.
 if [ -f '/home/nathan.fritz/.local/opt/google-cloud-sdk/path.zsh.inc' ]; then . '/home/nathan.fritz/.local/opt/google-cloud-sdk/path.zsh.inc'; fi
 

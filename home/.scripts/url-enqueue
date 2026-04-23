@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+read -r url || exit 0
+case "$url" in
+    http://*|https://*) printf '%s\n' "$url" > /tmp/url-open.fifo ;;
+    *) exit 0 ;;
+esac

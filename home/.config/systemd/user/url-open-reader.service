@@ -1,0 +1,11 @@
+[Unit]
+Description=xdg-open dispatcher (reads URLs from FIFO)
+
+[Service]
+ExecStartPre=/usr/bin/bash -c 'rm -f /tmp/url-open.fifo && mkfifo -m 0600 /tmp/url-open.fifo'
+ExecStart=/home/nathan.fritz/.scripts/url-dispatch
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target

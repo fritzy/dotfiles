@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+while true; do
+    while IFS= read -r url; do
+        case "$url" in
+            http://*|https://*) xdg-open "$url" >/dev/null 2>&1 & ;;
+        esac
+    done < /tmp/url-open.fifo
+done

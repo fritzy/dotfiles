@@ -1,0 +1,7 @@
+[Unit]
+Description=URL open handler (per-connection)
+
+[Service]
+Type=oneshot
+ExecStart=/home/nathan.fritz/.scripts/url-enqueue
+StandardInput=socket
