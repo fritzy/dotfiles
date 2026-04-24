@@ -37,6 +37,10 @@ nmap("<C-h>", "<cmd>ZellijNavigateLeft<cr>", "Navigate left")
 nmap("<C-j>", "<cmd>ZellijNavigateDown<cr>", "Navigate down")
 nmap("<C-k>", "<cmd>ZellijNavigateUp<cr>", "Navigate up")
 nmap("<C-l>", "<cmd>ZellijNavigateRight<cr>", "Navigate right")
+map("t", "<C-h>", "<cmd>ZellijNavigateLeft<cr>", "Navigate left")
+map("t", "<C-j>", "<cmd>ZellijNavigateDown<cr>", "Navigate down")
+map("t", "<C-k>", "<cmd>ZellijNavigateUp<cr>", "Navigate up")
+map("t", "<C-l>", "<cmd>ZellijNavigateRight<cr>", "Navigate right")
 
 -- indenting
 map("v", ",", "<gv")
