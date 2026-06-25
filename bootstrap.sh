@@ -258,6 +258,20 @@ else
   cp -R ./home/.config/nvim/* $nvim_config/
 fi
 
+# ws workstream manager: install deps and put the `ws` command on PATH.
+ws_pkg="$HOME/.scripts/ws"
+if [[ -f "$ws_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
+  echo
+  echo "Setting up ws (workstream manager)..."
+  (cd "$ws_pkg" && npm install --no-audit --no-fund >/dev/null 2>&1) \
+    && echo "  installed ws dependencies" || echo "  warning: ws npm install failed"
+  ln -sfn "$ws_pkg/cli.js" "$HOME/.local/bin/ws" && echo "  linked ws -> $ws_pkg/cli.js"
+  if command -v claude >/dev/null 2>&1 && ! claude mcp get ws >/dev/null 2>&1; then
+    claude mcp add --scope user ws -- node --no-warnings "$ws_pkg/mcp.js" >/dev/null 2>&1 \
+      && echo "  registered ws MCP server (user scope)"
+  fi
+fi
+
 # Install eget (used to install GitHub release binaries)
 if ! command -v eget &> /dev/null && [[ ! -f $eget_bin ]]; then
   echo

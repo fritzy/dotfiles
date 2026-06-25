@@ -42,6 +42,13 @@ map("t", "<C-j>", "<cmd>ZellijNavigateDown<cr>", "Navigate down")
 map("t", "<C-k>", "<cmd>ZellijNavigateUp<cr>", "Navigate up")
 map("t", "<C-l>", "<cmd>ZellijNavigateRight<cr>", "Navigate right")
 
+-- toggle zellij pane fullscreen (works even while nvim pane is locked,
+-- since `zellij action` talks to the server directly, not via keybinds)
+local function zellij_toggle_fullscreen()
+	vim.system({ "zellij", "action", "toggle-fullscreen" })
+end
+nmap("<leader>z", zellij_toggle_fullscreen, "Toggle zellij pane fullscreen")
+
 -- indenting
 map("v", ",", "<gv")
 map("v", ".", ">gv")

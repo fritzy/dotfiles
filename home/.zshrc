@@ -26,6 +26,11 @@ export NVM_DIR="$HOME/.nvm"
 alias vi="nvim"
 alias vim="nvim"
 
+alias pg-up="docker compose -f $HOME/.config/postgres/docker-compose.yml up -d"
+alias pg-down="docker compose -f $HOME/.config/postgres/docker-compose.yml down"
+alias pg-logs="docker compose -f $HOME/.config/postgres/docker-compose.yml logs -f"
+alias pg-psql="docker compose -f $HOME/.config/postgres/docker-compose.yml exec postgres psql -U nathan.fritz"
+
 ghcd() {
   if [[ "$1" == "add" ]]; then
     command ghcd "$@"
@@ -137,3 +142,5 @@ if [ -f '/home/nathan.fritz/.local/opt/google-cloud-sdk/path.zsh.inc' ]; then . 
 
 # The next line enables shell command completion for gcloud.
 if [ -f '/home/nathan.fritz/.local/opt/google-cloud-sdk/completion.zsh.inc' ]; then . '/home/nathan.fritz/.local/opt/google-cloud-sdk/completion.zsh.inc'; fi
+
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi

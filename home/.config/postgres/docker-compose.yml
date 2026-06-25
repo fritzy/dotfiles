@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: cgr.dev/chainguard/postgres:latest
+    container_name: postgres-local
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nathan.fritz
+      POSTGRES_DB: nathan.fritz
+      POSTGRES_HOST_AUTH_METHOD: trust
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - type: bind
+        source: ${HOME}/.local/share/postgres-data
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nathan.fritz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
