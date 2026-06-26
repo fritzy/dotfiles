@@ -61,6 +61,21 @@ For fork PRs and `owner:branch`, `ws` adds the fork as a named remote and sets t
 local branch's upstream to it, so `git push` from the worktree goes back to the PR
 branch. (The bare clone's `origin` always stays the canonical `chainguard-dev` repo.)
 
+### Scratchpad
+
+```bash
+ws scratch [name]      # alias: sp
+```
+A **scratchpad** is a throwaway workstream that lives in a temp directory
+(`$TMPDIR/ws-scratch/<name>`) instead of a git worktree — no repo, no branch, just a
+fresh directory opened with the same three-pane tab (zsh, nvim, claude). Give it a name
+or omit it for a random one (e.g. `calm-otter`). Names are slugged for the dir/tab and
+suffixed if they collide. Its tab is `scratchpad:<name>`.
+
+Scratchpads are otherwise normal workstreams: they show in `ws list`, can be
+`pause`d / `resume`d / `join`ed (reconstituting just recreates the temp dir), and
+`ws close` removes the directory.
+
 ### Rejoin
 
 ```bash
@@ -152,12 +167,13 @@ without invoking this skill:
 | `ws_issue_list` | List issues linked to a workstream. Arg: `workstream`. |
 | `ws_issue_add` | Link issues. Args: `refs` (array), `workstream`. |
 | `ws_issue_remove` | Unlink an issue by link or id. Args: `ref`, `workstream`. |
+| `ws_scratch` | Create a scratchpad (temp-dir workstream). Arg: `name` (optional). Opens the three-pane tab when the server runs inside Zellij; otherwise just creates the dir and returns its path. |
 
 `workstream` accepts the usual selector (id / branch / `org/repo:branch`); when omitted
-the tool uses the worktree containing the session's working directory. Only the safe,
-non-interactive operations are exposed — creating/joining/closing worktrees and Zellij
-tabs stay in the CLI, since they're interactive and have nowhere to attach from a tool
-call.
+the tool uses the worktree containing the session's working directory. Creating/joining/
+closing **git** worktrees and their tabs stay in the CLI, since they're interactive and
+have nowhere to attach from a tool call — `ws_scratch` is the exception, since a
+scratchpad is just a temp dir and the tab can be opened in place from within Zellij.
 
 Manage the registration with `claude mcp get ws` / `claude mcp remove ws -s user`; the
 command it runs is `node --no-warnings ~/.scripts/ws/mcp.js`.

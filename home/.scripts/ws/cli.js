@@ -2,19 +2,20 @@
 // ws CLI — workstream manager (git worktrees + Zellij tabs + Claude Code).
 // Shared data/git logic lives in ./lib/core.js (also used by the MCP server).
 
-import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 
 import {
-  WS_SESSION, now, sanitize,
+  WS_SESSION, now, sanitize, isScratch,
   openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus,
   listWorkstreams, issuesByWorkstream, listIssues, addIssue, removeIssue,
-  hasClone, parseSelector, materializeWorktree, removeWorktree,
+  hasClone, parseSelector, materializeWorktree, removeWorktree, worktreeDirty,
+  createScratchpad,
 } from './lib/core.js';
+import { openTab, closeTab } from './lib/zellij.js';
 
 // ---------------------------------------------------------------- utilities
 
@@ -61,87 +62,6 @@ function printIssues(db, workstreamId) {
   for (const it of issues) console.log(`  ${String(it.id).padStart(3)}  [${it.kind}] ${it.ref}`);
 }
 
-// ---------------------------------------------------------------- zellij
-
-const inZellij = () => Boolean(process.env.ZELLIJ);
-
-function zellij(args, opts = {}) {
-  return spawnSync('zellij', args, { encoding: 'utf8', ...opts });
-}
-
-function tabNames() {
-  const r = zellij(['action', 'query-tab-names']);
-  if (r.status !== 0 || !r.stdout) return [];
-  return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-}
-
-// Names of sessions that are currently running (excludes EXITED/resurrectable ones).
-function runningSessions() {
-  const r = zellij(['list-sessions', '--no-formatting']);
-  if (r.status !== 0 || !r.stdout) return [];
-  return r.stdout.split('\n')
-    .filter((l) => l.trim() && !l.includes('EXITED'))
-    .map((l) => l.trim().split(/\s+/)[0]);
-}
-
-function writeLayout(row) {
-  const file = join(tmpdir(), `ws-layout-${process.pid}-${row.id}.kdl`);
-  // Include the tab-bar plugin pane explicitly: a layout passed to `new-tab`
-  // replaces that tab's whole template, so without it this tab would lose the
-  // top tab row that default tabs show. We deliberately omit the bottom
-  // status-bar (shortcut) pane to keep the tab clean.
-  const kdl = `layout {
-    tab name="${row.tab_name}" cwd="${row.path}" {
-        pane size=1 borderless=true {
-            plugin location="zellij:tab-bar"
-        }
-        pane split_direction="vertical" {
-            pane name="zsh"
-            pane name="nvim"   command="nvim"
-            // Resume this worktree's most recent Claude session; if there is
-            // none (a brand-new worktree), --continue exits non-zero and we
-            // fall back to a fresh session. --continue is scoped to cwd, so it
-            // picks up exactly this workstream's prior conversation.
-            pane name="claude" command="zsh" {
-                args "-c" "claude --continue || claude"
-            }
-        }
-    }
-}
-`;
-  writeFileSync(file, kdl);
-  return file;
-}
-
-function openTab(row) {
-  const file = writeLayout(row);
-
-  // Inside a session already: add (or focus) the tab in that session.
-  if (inZellij()) {
-    if (tabNames().includes(row.tab_name)) {
-      zellij(['action', 'go-to-tab-name', row.tab_name], { stdio: 'inherit' });
-      return;
-    }
-    const r = zellij(['action', 'new-tab', '--layout', file], { stdio: 'inherit' });
-    if (r.status !== 0) die('failed to create Zellij tab');
-    zellij(['action', 'go-to-tab-name', row.tab_name], { stdio: 'inherit' });
-    return;
-  }
-
-  // Outside any session: attach to (or create) the ws session. With --session,
-  // `--layout` adds the tab to an existing session or starts a new one named WS_SESSION.
-  const verb = runningSessions().includes(WS_SESSION) ? 'Attaching to' : 'Starting';
-  console.log(`${verb} Zellij session "${WS_SESSION}" for "${row.tab_name}"...`);
-  spawnSync('zellij', ['--session', WS_SESSION, '--layout', file], { stdio: 'inherit' });
-}
-
-function closeTab(row) {
-  if (inZellij() && tabNames().includes(row.tab_name)) {
-    zellij(['action', 'go-to-tab-name', row.tab_name]);
-    zellij(['action', 'close-tab']);
-  }
-}
-
 // Resolve which workstream a command acts on, in priority order:
 //   1. an explicit selector (positional arg or --ws),
 //   2. the workstream whose worktree contains the current directory,
@@ -181,8 +101,9 @@ function cmdList(args) {
     // "▸" marks the workstream containing the current directory; ●/○ = worktree present.
     const mark = (current && current.id === r.id ? '▸' : ' ') + (existsSync(r.path) ? '●' : '○');
     const last = r.last_joined_at ? r.last_joined_at.replace('T', ' ').slice(0, 16) : '—';
+    const repoLabel = isScratch(r) ? 'scratch' : `${r.org}/${r.repo}`;
     console.log([
-      fmt(r.id, 4), fmt(mark, 3), fmt(`${r.org}/${r.repo}`, 28),
+      fmt(r.id, 4), fmt(mark, 3), fmt(repoLabel, 28),
       fmt(r.branch, 24), fmt(r.status, 8), last,
     ].join(' '));
     for (const it of issues[r.id] || []) {
@@ -215,6 +136,73 @@ async function cmdNew(args) {
   console.log(`Workstream #${row.id}: ${org}/${repo} @ ${branch}`);
   console.log(`  worktree: ${path}`);
   openTab(row);
+}
+
+// Create a scratchpad: a throwaway temp-dir workstream with the same three-pane
+// tab. With no name, a random one is generated.
+async function cmdScratch(args) {
+  const name = positionals(args)[0];
+  const db = openDb();
+  const row = createScratchpad(db, name);
+  console.log(`Scratchpad #${row.id}: ${row.branch}`);
+  console.log(`  dir: ${row.path}`);
+  openTab(row);
+}
+
+// Open (or focus) the three-pane tab for ~/dotfiles. Not a workstream: no
+// worktree, no db row — just the same tab layout pointed at the dotfiles repo.
+function cmdDotfiles() {
+  openTab({ id: 'dotfiles', tab_name: 'dotfiles', path: join(homedir(), 'dotfiles') });
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const pad2 = (n) => String(n).padStart(2, '0');
+const ordinal = (n) => {
+  const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+};
+
+// The Monday that starts the week containing `d` (notes use Monday-based weeks).
+function weekMonday(d = new Date()) {
+  const date = new Date(d);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + (date.getDay() === 0 ? -6 : 1 - date.getDay()));
+  return date;
+}
+
+// Ensure the current week's work-notes file exists under <root>/work/<YYYY>/ and
+// return its path. Matches the notes skill's layout: <YYYY-MM-DD>-week.md keyed to
+// the week's Monday, scaffolded with a heading per weekday. Honors an existing file
+// (dashed or older compact name) rather than creating a duplicate.
+function ensureWeeklyNote(root) {
+  const monday = weekMonday();
+  const iso = `${monday.getFullYear()}-${pad2(monday.getMonth() + 1)}-${pad2(monday.getDate())}`;
+  const dir = join(root, 'work', String(monday.getFullYear()));
+  const file = join(dir, `${iso}-week.md`);
+  const compact = join(dir, `${monday.getFullYear()}${pad2(monday.getMonth() + 1)}${pad2(monday.getDate())}-week.md`);
+  if (existsSync(file)) return file;
+  if (existsSync(compact)) return compact;
+
+  const headings = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    headings.push(`## ${WEEKDAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${ordinal(d.getDate())}, ${d.getFullYear()}`);
+  }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, headings.join('\n\n') + '\n');
+  console.log(`Created weekly note ${file}`);
+  return file;
+}
+
+// Open (or focus) the three-pane tab for ~/notes, ensuring the current weekly
+// work-notes file exists and loading it in nvim. Not a workstream: no worktree, no db.
+function cmdNotes() {
+  const root = join(homedir(), 'notes');
+  const file = ensureWeeklyNote(root);
+  openTab({ id: 'notes', tab_name: 'notes', path: root }, { nvimFile: file });
 }
 
 // Open (or focus) a workstream's tab, reconstituting the worktree if it's gone.
@@ -250,8 +238,22 @@ async function cmdClose(args) {
 
   closeTab(row);
   if (!keep && existsSync(row.path)) {
-    if (await confirm(`Remove the worktree at ${row.path}?`)) {
+    const noun = isScratch(row) ? 'directory' : 'worktree';
+    const dirty = worktreeDirty(row.path);
+    if (dirty) {
+      const lines = dirty.split('\n');
+      console.log(`\n⚠  Worktree at ${row.path} has uncommitted changes:`);
+      for (const l of lines.slice(0, 10)) console.log(`    ${l}`);
+      if (lines.length > 10) console.log(`    … and ${lines.length - 10} more`);
+      console.log();
+    }
+    const question = dirty
+      ? `Discard these changes and remove the worktree at ${row.path}?`
+      : `Remove the ${noun} at ${row.path}?`;
+    if (await confirm(question)) {
       removeWorktree(row.org, row.repo, row.path);
+    } else {
+      console.log(`Kept ${noun} at ${row.path}.`);
     }
   }
   setStatus(db, row.id, 'closed');
@@ -314,6 +316,9 @@ function usage() {
 Usage:
   ws list [--all]                  List active workstreams (--all includes closed)
   ws new <org/repo> <ref>          Create/open a workstream (alias: create)
+  ws scratch [name]                Create a throwaway scratchpad in a temp dir (alias: sp)
+  ws dotfiles                      Open the three-pane tab for ~/dotfiles (no worktree, no db)
+  ws notes                         Open the three-pane tab for ~/notes; nvim loads this week's note
   ws join [id|branch]              Rejoin a workstream, reconstituting it if needed (alias: rejoin)
   ws pause [id|branch]             Close the tab but keep the worktree (status: paused)
   ws resume [id|branch]            Reopen a paused workstream's tab (reconstitutes if needed)
@@ -343,6 +348,9 @@ const run = async () => {
   switch (cmd) {
     case 'list': case 'ls': return cmdList(rest);
     case 'new': case 'create': return cmdNew(rest);
+    case 'scratch': case 'scratchpad': case 'sp': return cmdScratch(rest);
+    case 'dotfiles': return cmdDotfiles();
+    case 'notes': return cmdNotes();
     case 'join': case 'rejoin': return cmdJoin(rest);
     case 'resume': return cmdJoin(rest, 'resume');
     case 'pause': return cmdPause(rest);

@@ -1,8 +1,10 @@
 #!/usr/bin/env -S node --no-warnings
 // ws MCP server — exposes the safe, non-interactive workstream operations
-// (listing + issue management) to Claude sessions, so basic housekeeping doesn't
-// require loading the ws skill. Worktree/Zellij mutations stay CLI-only: they're
-// interactive and would have nowhere to attach from a tool call.
+// (listing + issue management + scratchpad creation) to Claude sessions, so basic
+// housekeeping doesn't require loading the ws skill. Git-worktree mutations stay
+// CLI-only: they're interactive and would have nowhere to attach from a tool call.
+// Scratchpad creation is the exception — it's just a temp dir, and when the server
+// runs inside Zellij (the Claude pane does) it can open the three-pane tab in place.
 //
 // Transport is stdio (JSON-RPC over stdin/stdout) — no sockets, which also keeps
 // it clear of the Falcon socket-exec issue noted in memory. core.js writes its
@@ -15,7 +17,9 @@ import { z } from 'zod';
 import {
   openDb, resolveRow, currentWorkstream,
   listWorkstreams, listIssues, addIssue, removeIssue, workstreamView,
+  createScratchpad,
 } from './lib/core.js';
+import { openTab, inZellij } from './lib/zellij.js';
 
 const json = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
 
@@ -51,6 +55,24 @@ server.registerTool('ws_list', {
     current: cur ? cur.id : null,
     workstreams: listWorkstreams(db, { all: !!all }).map((r) => workstreamView(db, r, cwd)),
   });
+});
+
+server.registerTool('ws_scratch', {
+  description: 'Create a scratchpad: a throwaway workstream in a temp directory (not a git '
+    + 'worktree), opened with the same three-pane Zellij tab (zsh, nvim, claude). '
+    + 'With no name a random one is generated. When the server runs inside Zellij the tab '
+    + 'is opened in place; otherwise the directory is created and its path is returned.',
+  inputSchema: {
+    name: z.string().optional().describe('Optional scratchpad name (sanitized; suffixed if it already exists). Random if omitted.'),
+  },
+}, async ({ name }) => {
+  const db = openDb();
+  const row = createScratchpad(db, name);
+  let tabOpened = false;
+  if (inZellij()) {
+    try { openTab(row); tabOpened = true; } catch { tabOpened = false; }
+  }
+  return json({ workstream: workstreamView(db, row, process.cwd()), tabOpened });
 });
 
 server.registerTool('ws_issue_list', {

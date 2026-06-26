@@ -12,12 +12,17 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const HOME = homedir();
 export const GITHUB_ROOT = join(HOME, 'github');
+// Scratchpads are throwaway worktree-shaped workstreams that live in a temp dir
+// instead of a git worktree. They're recorded with org=repo=SCRATCH_ORG and
+// source='scratch', so the same list/join/pause/close machinery applies to them.
+export const SCRATCH_ORG = 'scratch';
+export const SCRATCH_ROOT = join(tmpdir(), 'ws-scratch');
 export const DATA_DIR = join(process.env.XDG_DATA_HOME || join(HOME, '.local', 'share'), 'ws');
 export const DB_PATH = join(DATA_DIR, 'workstreams.db');
 // Zellij session used when ws is run from outside any session (override with $WS_SESSION).
@@ -177,6 +182,45 @@ export function removeIssue(db, workstreamId, target) {
   return { removed: info.changes > 0 };
 }
 
+// ---------------------------------------------------------------- scratchpads
+
+export const isScratch = (row) => row.source === 'scratch' || row.org === SCRATCH_ORG;
+
+export const scratchPath = (name) => join(SCRATCH_ROOT, name);
+
+// Slug a user-supplied scratchpad name into something safe for a dir/tab name:
+// whitespace and other odd characters collapse to single hyphens.
+const scratchSlug = (name) =>
+  name.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+
+// A short, readable random name like "calm-otter" for unnamed scratchpads.
+const ADJECTIVES = ['calm', 'brisk', 'lucky', 'amber', 'quiet', 'bold', 'spry', 'misty', 'keen', 'tidy'];
+const NOUNS = ['otter', 'finch', 'cedar', 'comet', 'maple', 'heron', 'pebble', 'willow', 'lynx', 'reef'];
+export function randomScratchName() {
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  return `${pick(ADJECTIVES)}-${pick(NOUNS)}`;
+}
+
+// Create (and register) a scratchpad: a temp directory opened with the same
+// three-pane tab as a workstream. An unnamed scratchpad gets a random name.
+// Names collide-avoid by appending a numeric suffix.
+export function createScratchpad(db, rawName) {
+  let name = (rawName ? scratchSlug(rawName) : '') || randomScratchName();
+  // Don't clobber an existing scratchpad of the same name: suffix until unique.
+  if (rawName) {
+    let n = name, i = 2;
+    while (db.prepare('SELECT 1 FROM workstreams WHERE org=? AND repo=? AND branch=?')
+      .get(SCRATCH_ORG, SCRATCH_ORG, n)) { n = `${name}-${i++}`; }
+    name = n;
+  }
+  const path = scratchPath(name);
+  mkdirSync(path, { recursive: true });
+  return upsertWorkstream(db, {
+    org: SCRATCH_ORG, repo: SCRATCH_ORG, branch: name, source: 'scratch',
+    path, tab_name: `scratchpad:${name}`, created_at: now(), last_joined_at: now(),
+  });
+}
+
 // ---------------------------------------------------------------- git / worktrees
 
 export function repoPaths(org, repo) {
@@ -288,6 +332,13 @@ function fetchBaseRef(bare, org, repo, branch, source) {
 
 // Create (or reconstitute) the worktree dir for a branch. Idempotent.
 export function materializeWorktree(org, repo, branch, source) {
+  // Scratchpads aren't git worktrees — reconstituting one just means recreating
+  // its temp directory.
+  if (source === 'scratch') {
+    const path = scratchPath(branch);
+    mkdirSync(path, { recursive: true });
+    return path;
+  }
   const { container, bare } = repoPaths(org, repo);
   ensureBareClone(org, repo);
   const path = join(container, sanitize(branch));
@@ -302,22 +353,41 @@ export function materializeWorktree(org, repo, branch, source) {
   return path;
 }
 
+// Returns the porcelain status lines for a worktree (uncommitted changes,
+// untracked files), or null if the path is gone / not a working tree.
+export function worktreeDirty(path) {
+  if (!existsSync(path)) return null;
+  const out = gitTry(['-C', path, 'status', '--porcelain']);
+  return out ? out : null;
+}
+
 export function removeWorktree(org, repo, path) {
+  // Scratchpads are plain temp directories, not git worktrees.
+  if (org === SCRATCH_ORG) {
+    rmSync(path, { recursive: true, force: true });
+    return;
+  }
   const { bare } = repoPaths(org, repo);
+  // Run from the bare repo, not the inherited cwd: if `ws close` is invoked from
+  // inside the worktree being removed, git can't operate on its own cwd and the
+  // remove fails (falling through to prune, which leaves the directory behind).
   try {
-    git(['--git-dir', bare, 'worktree', 'remove', '--force', path], { stdio: ['inherit', 'ignore', 'inherit'] });
+    git(['--git-dir', bare, 'worktree', 'remove', '--force', path], { cwd: bare, stdio: ['inherit', 'ignore', 'inherit'] });
   } catch {
-    gitTry(['--git-dir', bare, 'worktree', 'prune']);
+    gitTry(['--git-dir', bare, 'worktree', 'prune'], { cwd: bare });
+    rmSync(path, { recursive: true, force: true });
   }
 }
 
 // A plain serialisable view of a workstream row (+ derived fields), for MCP output.
 export function workstreamView(db, r, cwd) {
   const cur = cwd !== undefined ? currentWorkstream(db, cwd) : null;
+  const scratch = isScratch(r);
   return {
     id: r.id,
-    repo: `${r.org}/${r.repo}`,
+    repo: scratch ? 'scratch' : `${r.org}/${r.repo}`,
     branch: r.branch,
+    scratch,
     status: r.status,
     source: r.source,
     path: r.path,

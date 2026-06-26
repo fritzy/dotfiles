@@ -46,6 +46,7 @@ map("t", "<C-l>", "<cmd>ZellijNavigateRight<cr>", "Navigate right")
 -- since `zellij action` talks to the server directly, not via keybinds)
 local function zellij_toggle_fullscreen()
 	vim.system({ "zellij", "action", "toggle-fullscreen" })
+	vim.cmd("wincmd =")
 end
 nmap("<leader>z", zellij_toggle_fullscreen, "Toggle zellij pane fullscreen")
 
