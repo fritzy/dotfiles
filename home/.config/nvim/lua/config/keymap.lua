@@ -33,14 +33,14 @@ end
 -- end
 --
 -- buffer/pane navigation (zellij-aware)
-nmap("<C-h>", "<cmd>ZellijNavigateLeft<cr>", "Navigate left")
+nmap("<C-h>", "<cmd>ZellijNavigateLeftTab<cr>", "Navigate left")
 nmap("<C-j>", "<cmd>ZellijNavigateDown<cr>", "Navigate down")
 nmap("<C-k>", "<cmd>ZellijNavigateUp<cr>", "Navigate up")
-nmap("<C-l>", "<cmd>ZellijNavigateRight<cr>", "Navigate right")
-map("t", "<C-h>", "<cmd>ZellijNavigateLeft<cr>", "Navigate left")
+nmap("<C-l>", "<cmd>ZellijNavigateRightTab<cr>", "Navigate right")
+map("t", "<C-h>", "<cmd>ZellijNavigateLeftTab<cr>", "Navigate left")
 map("t", "<C-j>", "<cmd>ZellijNavigateDown<cr>", "Navigate down")
 map("t", "<C-k>", "<cmd>ZellijNavigateUp<cr>", "Navigate up")
-map("t", "<C-l>", "<cmd>ZellijNavigateRight<cr>", "Navigate right")
+map("t", "<C-l>", "<cmd>ZellijNavigateRightTab<cr>", "Navigate right")
 
 -- toggle zellij pane fullscreen (works even while nvim pane is locked,
 -- since `zellij action` talks to the server directly, not via keybinds)

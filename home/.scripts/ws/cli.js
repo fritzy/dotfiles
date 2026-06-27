@@ -10,10 +10,10 @@ import { stdin, stdout } from 'node:process';
 
 import {
   WS_SESSION, now, sanitize, isScratch,
-  openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus,
+  openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus, setPath,
   listWorkstreams, issuesByWorkstream, listIssues, addIssue, removeIssue,
   hasClone, parseSelector, materializeWorktree, removeWorktree, worktreeDirty,
-  createScratchpad,
+  createScratchpad, linkPr,
 } from './lib/core.js';
 import { openTab, closeTab } from './lib/zellij.js';
 
@@ -54,6 +54,13 @@ function positionals(args, valueFlags = ['--ws']) {
     out.push(args[i]);
   }
   return out;
+}
+
+// Print a note when a freshly linked PR was added (shared linkPr is best-effort,
+// idempotent, and silent when there's no PR or gh is unavailable).
+function linkPrForRow(db, row) {
+  const res = linkPr(db, row);
+  if (res && res.added) console.log(`  linked PR #${res.pr.number} (${res.pr.state.toLowerCase()}): ${res.pr.url}`);
 }
 
 function printIssues(db, workstreamId) {
@@ -135,11 +142,12 @@ async function cmdNew(args) {
   });
   console.log(`Workstream #${row.id}: ${org}/${repo} @ ${branch}`);
   console.log(`  worktree: ${path}`);
+  linkPrForRow(db, row);
   openTab(row);
 }
 
-// Create a scratchpad: a throwaway temp-dir workstream with the same three-pane
-// tab. With no name, a random one is generated.
+// Create a scratchpad: a throwaway workstream under ~/scratchpad with the same
+// three-pane tab. With no name, a random one is generated.
 async function cmdScratch(args) {
   const name = positionals(args)[0];
   const db = openDb();
@@ -213,10 +221,14 @@ async function cmdJoin(args, verb = 'join') {
   const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), verb);
 
   if (!existsSync(row.path)) {
+    const path = materializeWorktree(row.org, row.repo, row.branch, row.source);
+    // The canonical path can move (e.g. scratchpads relocated to ~/scratchpad);
+    // keep the stored path and the tab's cwd in sync with where it landed.
+    if (path && path !== row.path) { setPath(db, row.id, path); row.path = path; }
     console.log(`Worktree missing; reconstituting at ${row.path}`);
-    materializeWorktree(row.org, row.repo, row.branch, row.source);
   }
   setStatus(db, row.id, 'active', true);
+  linkPrForRow(db, row);
   openTab(row); // focuses the tab if it already exists, else creates it
 }
 
@@ -316,7 +328,7 @@ function usage() {
 Usage:
   ws list [--all]                  List active workstreams (--all includes closed)
   ws new <org/repo> <ref>          Create/open a workstream (alias: create)
-  ws scratch [name]                Create a throwaway scratchpad in a temp dir (alias: sp)
+  ws scratch [name]                Create a throwaway scratchpad under ~/scratchpad (alias: sp)
   ws dotfiles                      Open the three-pane tab for ~/dotfiles (no worktree, no db)
   ws notes                         Open the three-pane tab for ~/notes; nvim loads this week's note
   ws join [id|branch]              Rejoin a workstream, reconstituting it if needed (alias: rejoin)

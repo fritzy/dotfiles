@@ -75,23 +75,46 @@ function writeLayout(row, opts = {}) {
 export function openTab(row, opts = {}) {
   const file = writeLayout(row, opts);
 
-  // Inside a session already: add (or focus) the tab in that session.
+  // Inside a session already: add (or focus) the tab in that session. These
+  // `zellij action` calls capture their output (the default) rather than inheriting
+  // stdio: when openTab runs from the MCP server, stdout is the JSON-RPC stream and
+  // any child output on it would corrupt the protocol. They talk to the running
+  // session over its socket, so no TTY is needed.
   if (inZellij()) {
     if (tabNames().includes(row.tab_name)) {
-      zellij(['action', 'go-to-tab-name', row.tab_name], { stdio: 'inherit' });
+      zellij(['action', 'go-to-tab-name', row.tab_name]);
       return;
     }
-    const r = zellij(['action', 'new-tab', '--layout', file], { stdio: 'inherit' });
+    const r = zellij(['action', 'new-tab', '--layout', file]);
     if (r.status !== 0) throw new Error('failed to create Zellij tab');
-    zellij(['action', 'go-to-tab-name', row.tab_name], { stdio: 'inherit' });
+    zellij(['action', 'go-to-tab-name', row.tab_name]);
     return;
   }
 
-  // Outside any session: attach to (or create) the ws session. With --session,
-  // `--layout` adds the tab to an existing session or starts a new one named WS_SESSION.
-  const verb = runningSessions().includes(WS_SESSION) ? 'Attaching to' : 'Starting';
-  progress(`${verb} Zellij session "${WS_SESSION}" for "${row.tab_name}"...`);
-  spawnSync('zellij', ['--session', WS_SESSION, '--layout', file], { stdio: 'inherit' });
+  // Outside any session: land the user in the ws session with this tab open.
+  // `--layout` only *adds a tab* and errors ("There is no active session!") if the
+  // session doesn't exist yet, so when it's not running we create it with
+  // `--new-session-with-layout` (which creates the session and attaches in one go).
+  if (runningSessions().includes(WS_SESSION)) {
+    progress(`Attaching to Zellij session "${WS_SESSION}" for "${row.tab_name}"...`);
+    // Add the tab to the running session, then attach so the user lands in it.
+    zellij(['--session', WS_SESSION, 'action', 'new-tab', '--layout', file]);
+    spawnSync('zellij', ['attach', WS_SESSION], { stdio: 'inherit' });
+  } else {
+    progress(`Starting Zellij session "${WS_SESSION}" for "${row.tab_name}"...`);
+    // Create the session detached first so it inherits Zellij's built-in default
+    // layout — and with it a proper new-tab template (tab-bar + status-bar) for the
+    // tabs the user later opens with Ctrl-t n. Starting the session *from* our
+    // layout file (--new-session-with-layout) instead leaves those new tabs blank,
+    // since the file defines no default tab template. We then reshape the session's
+    // single placeholder tab into our (deliberately status-bar-less) ws tab with
+    // `override-layout`, which — unlike a tab born from the startup layout — is used
+    // as-is rather than wrapped by the default template.
+    zellij(['attach', '--create-background', WS_SESSION]);
+    const r = zellij(['--session', WS_SESSION, 'action', 'override-layout', file]);
+    if (r.status !== 0) throw new Error('failed to lay out Zellij tab');
+    spawnSync('zellij', ['attach', WS_SESSION], { stdio: 'inherit' });
+  }
 }
 
 export function closeTab(row) {

@@ -59,21 +59,43 @@ creates the worktree, records it, and opens the Zellij tab. `create` is an alias
 
 For fork PRs and `owner:branch`, `ws` adds the fork as a named remote and sets the
 local branch's upstream to it, so `git push` from the worktree goes back to the PR
-branch. (The bare clone's `origin` always stays the canonical `chainguard-dev` repo.)
+branch.
+
+#### Fork routing (when you can't push to the canonical repo)
+
+For a plain `branch`, before creating it `ws` asks GitHub's rulesets API
+(`/repos/<org>/<repo>/rules/branches/<branch>`) whether a `creation` rule blocks
+pushing new refs to the canonical repo. If it does — e.g. you're an outside
+contributor to `chainguard-dev/mono` — `ws` routes the repo through **your fork**:
+
+- `origin` is repointed to `git@github.com:<you>/<repo>.git` (your fork; push target)
+- `upstream` is the canonical repo, fetch-only (`pushurl` disabled), and new branches
+  are based off `upstream/<default-branch>`
+- the fork is created with `gh repo fork` if it doesn't exist yet
+
+This mirrors a hand-set-up fork checkout, so `git push` / `git pull` from the worktree
+go to your fork. A branch that already exists on your fork is checked out from there
+(`origin/<branch>`); otherwise an existing canonical branch (`upstream/<branch>`) is
+used; otherwise a new branch is started off the canonical default branch.
+
+The decision is detected with `gh` and remembered per clone in the bare repo's
+`ws.useFork` config (`git -C <bare> config --unset ws.useFork` to re-evaluate). Repos
+where you *can* push directly keep `origin` pointed at the canonical repo as before.
 
 ### Scratchpad
 
 ```bash
 ws scratch [name]      # alias: sp
 ```
-A **scratchpad** is a throwaway workstream that lives in a temp directory
-(`$TMPDIR/ws-scratch/<name>`) instead of a git worktree — no repo, no branch, just a
-fresh directory opened with the same three-pane tab (zsh, nvim, claude). Give it a name
-or omit it for a random one (e.g. `calm-otter`). Names are slugged for the dir/tab and
-suffixed if they collide. Its tab is `scratchpad:<name>`.
+A **scratchpad** is a throwaway workstream that lives under `~/scratchpad/<name>`
+instead of a git worktree — no repo, no branch, just a fresh directory opened with the
+same three-pane tab (zsh, nvim, claude). It lives in your home rather than a temp dir,
+so it survives reboots. Give it a name or omit it for a random one (e.g. `calm-otter`).
+Names are slugged for the dir/tab and suffixed if they collide. Its tab is
+`scratchpad:<name>`.
 
 Scratchpads are otherwise normal workstreams: they show in `ws list`, can be
-`pause`d / `resume`d / `join`ed (reconstituting just recreates the temp dir), and
+`pause`d / `resume`d / `join`ed (reconstituting just recreates the directory), and
 `ws close` removes the directory.
 
 ### Rejoin
@@ -120,6 +142,11 @@ ws issue list --ws fix-foo          # a different workstream, from anywhere
 Each reference is classified for display (`linear` / `github` / `link`) — Linear keys
 like `ENG-1234` and `linear.app` URLs show as `linear`, `github.com` URLs as `github`.
 Linked issues also appear indented under their workstream in `ws list`.
+
+On `ws new` and `ws join`/`resume`, `ws` also looks up (via `gh`) whether the branch
+has an open/closed PR on its repo — including fork PRs — and links it automatically
+(prefers an open PR). This is best-effort and idempotent: no `gh` or no PR links
+nothing, and an already-linked PR isn't duplicated.
 
 ## Status model
 
