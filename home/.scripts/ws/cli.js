@@ -2,20 +2,21 @@
 // ws CLI — workstream manager (git worktrees + Zellij tabs + Claude Code).
 // Shared data/git logic lives in ./lib/core.js (also used by the MCP server).
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 
 import {
-  WS_SESSION, now, sanitize, isScratch,
-  openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus, setPath,
-  listWorkstreams, issuesByWorkstream, listIssues, addIssue, removeIssue,
+  WS_SESSION, now, isScratch,
+  openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus, setPath, renameWorkstream,
+  listWorkstreams, issuesByWorkstream, listIssues, addIssue, removeIssue, addLog,
   hasClone, parseSelector, materializeWorktree, removeWorktree, worktreeDirty,
-  createScratchpad, linkPr,
+  createScratchpad, linkPr, listNotes, readNote,
+  NOTES_ROOT, ensureWeeklyNote, appendDayEntry, collectDayActivity, renderDigest,
 } from './lib/core.js';
-import { openTab, closeTab } from './lib/zellij.js';
+import { openTab, closeTab, renameTab } from './lib/zellij.js';
 
 // ---------------------------------------------------------------- utilities
 
@@ -103,20 +104,24 @@ function cmdList(args) {
   const issues = issuesByWorkstream(db);
   const current = currentWorkstream(db);
   const fmt = (s, w) => String(s ?? '').padEnd(w);
+  const useColor = process.stdout.isTTY;
+  const dim = (s) => (useColor ? `\x1b[2m${s}\x1b[0m` : s);
   console.log([fmt('ID', 4), fmt('', 3), fmt('REPO', 28), fmt('BRANCH', 24), fmt('STATUS', 8), 'LAST JOINED'].join(' '));
-  for (const r of rows) {
+  rows.forEach((r, i) => {
     // "▸" marks the workstream containing the current directory; ●/○ = worktree present.
     const mark = (current && current.id === r.id ? '▸' : ' ') + (existsSync(r.path) ? '●' : '○');
     const last = r.last_joined_at ? r.last_joined_at.replace('T', ' ').slice(0, 16) : '—';
     const repoLabel = isScratch(r) ? 'scratch' : `${r.org}/${r.repo}`;
-    console.log([
+    const line = [
       fmt(r.id, 4), fmt(mark, 3), fmt(repoLabel, 28),
       fmt(r.branch, 24), fmt(r.status, 8), last,
-    ].join(' '));
+    ].join(' ');
+    console.log(i % 2 === 1 ? dim(line) : line);
     for (const it of issues[r.id] || []) {
-      console.log(`         ↳ [${it.kind}] ${it.ref}`);
+      const issueLine = `         ↳ [${it.kind}] ${it.ref}`;
+      console.log(i % 2 === 1 ? dim(issueLine) : issueLine);
     }
-  }
+  });
 }
 
 async function cmdNew(args) {
@@ -136,7 +141,6 @@ async function cmdNew(args) {
   const db = openDb();
   const row = upsertWorkstream(db, {
     org, repo, branch, source, path,
-    tab_name: `${repo}:${sanitize(branch)}`,
     created_at: now(),
     last_joined_at: now(),
   });
@@ -163,54 +167,11 @@ function cmdDotfiles() {
   openTab({ id: 'dotfiles', tab_name: 'dotfiles', path: join(homedir(), 'dotfiles') });
 }
 
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'];
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const pad2 = (n) => String(n).padStart(2, '0');
-const ordinal = (n) => {
-  const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
-  return n + (s[(v - 20) % 10] || s[v] || s[0]);
-};
-
-// The Monday that starts the week containing `d` (notes use Monday-based weeks).
-function weekMonday(d = new Date()) {
-  const date = new Date(d);
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() + (date.getDay() === 0 ? -6 : 1 - date.getDay()));
-  return date;
-}
-
-// Ensure the current week's work-notes file exists under <root>/work/<YYYY>/ and
-// return its path. Matches the notes skill's layout: <YYYY-MM-DD>-week.md keyed to
-// the week's Monday, scaffolded with a heading per weekday. Honors an existing file
-// (dashed or older compact name) rather than creating a duplicate.
-function ensureWeeklyNote(root) {
-  const monday = weekMonday();
-  const iso = `${monday.getFullYear()}-${pad2(monday.getMonth() + 1)}-${pad2(monday.getDate())}`;
-  const dir = join(root, 'work', String(monday.getFullYear()));
-  const file = join(dir, `${iso}-week.md`);
-  const compact = join(dir, `${monday.getFullYear()}${pad2(monday.getMonth() + 1)}${pad2(monday.getDate())}-week.md`);
-  if (existsSync(file)) return file;
-  if (existsSync(compact)) return compact;
-
-  const headings = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    headings.push(`## ${WEEKDAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${ordinal(d.getDate())}, ${d.getFullYear()}`);
-  }
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(file, headings.join('\n\n') + '\n');
-  console.log(`Created weekly note ${file}`);
-  return file;
-}
-
 // Open (or focus) the three-pane tab for ~/notes, ensuring the current weekly
 // work-notes file exists and loading it in nvim. Not a workstream: no worktree, no db.
 function cmdNotes() {
-  const root = join(homedir(), 'notes');
-  const file = ensureWeeklyNote(root);
-  openTab({ id: 'notes', tab_name: 'notes', path: root }, { nvimFile: file });
+  const file = ensureWeeklyNote(NOTES_ROOT);
+  openTab({ id: 'notes', tab_name: 'notes', path: NOTES_ROOT }, { nvimFile: file });
 }
 
 // Open (or focus) a workstream's tab, reconstituting the worktree if it's gone.
@@ -242,15 +203,38 @@ async function cmdPause(args) {
   console.log(`Paused workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch}); worktree kept at ${row.path}`);
 }
 
+// Rename a workstream's display name (and its tab, if open). For a scratchpad
+// this renames its directory/branch field; for a git-backed workstream it only
+// sets a label used for the tab name — the git branch is untouched.
+async function cmdRename(args) {
+  const positional = positionals(args);
+  const db = openDb();
+  // Two positionals -> [selector, newName]; one -> newName against context/--ws.
+  const [selector, explicitName] = positional.length >= 2 ? positional : [flagValue(args, '--ws'), positional[0]];
+  const row = await resolveTarget(db, selector, 'rename');
+  const newName = explicitName || await prompt('New name: ');
+  if (!newName) die('a new name is required');
+  const oldTabName = row.tab_name;
+  const updated = renameWorkstream(db, row, newName);
+  renameTab(oldTabName, updated.tab_name);
+  console.log(`Renamed #${updated.id}: tab is now "${updated.tab_name}"`);
+}
+
 async function cmdClose(args) {
   const keep = args.includes('--keep');
+  const discard = args.includes('--delete') || args.includes('--discard');
   const positional = positionals(args);
   const db = openDb();
   const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), 'close');
+  const scratch = isScratch(row);
+  const noun = scratch ? 'directory' : 'worktree';
 
   closeTab(row);
-  if (!keep && existsSync(row.path)) {
-    const noun = isScratch(row) ? 'directory' : 'worktree';
+  // Git worktrees are removed by default (commits/branch survive in the bare clone);
+  // a scratchpad has no such backing, so its directory is kept by default and only
+  // removed when explicitly discarded — either way, still confirmed interactively.
+  const shouldRemove = scratch ? discard : !keep;
+  if (shouldRemove && existsSync(row.path)) {
     const dirty = worktreeDirty(row.path);
     if (dirty) {
       const lines = dirty.split('\n');
@@ -267,6 +251,8 @@ async function cmdClose(args) {
     } else {
       console.log(`Kept ${noun} at ${row.path}.`);
     }
+  } else if (scratch && !discard && existsSync(row.path)) {
+    console.log(`Kept scratchpad directory at ${row.path} (resume with: ws resume ${row.id}; --delete to remove).`);
   }
   setStatus(db, row.id, 'closed');
   console.log(`Closed workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
@@ -322,6 +308,70 @@ async function cmdIssueList(args) {
   printIssues(db, row.id);
 }
 
+// ws log [msg...] [--done] — jot a one-line work note against a workstream.
+// The workstream comes from --ws or the current worktree; positionals are the note.
+async function cmdLog(args) {
+  const db = openDb();
+  const done = args.includes('--done');
+  const row = await resolveTarget(db, flagValue(args, '--ws'), 'log work against');
+  let body = positionals(args).join(' ').trim();
+  if (!body) body = (await prompt('What did you do? ')).trim();
+  if (!body) die('nothing to log');
+  const entry = addLog(db, row.id, body, done);
+  console.log(`  logged${entry.done ? ' [done]' : ''}: ${entry.body}`);
+  console.log(`  on #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
+}
+
+// ws digest [YYYY-MM-DD] [--write] — assemble a day's activity (commits + work
+// logs, with linked issues) into notes-format bullets. Prints them; --write also
+// appends them under the day's heading in this week's ~/notes work file.
+async function cmdDigest(args) {
+  const db = openDb();
+  const write = args.includes('--write');
+  const date = positionals(args)[0]; // optional YYYY-MM-DD; defaults to today
+  const activity = collectDayActivity(db, { date });
+  const md = renderDigest(activity);
+  if (!md) {
+    console.log(`No workstream activity on ${activity.dateIso}.`);
+    return;
+  }
+  console.log(md);
+  if (write) {
+    const { file, heading } = appendDayEntry(md, activity.date, NOTES_ROOT);
+    console.log(`\nAppended under "${heading}" in ${file}`);
+  }
+}
+
+// ws note list|show — read the longer-form notes filed under a workstream's
+// ~/notes/work/<year>/workstream/<slug>/ directory. Written only via the MCP
+// server's ws_note tool (Claude sessions); this is the read-side for humans.
+async function cmdNote(args) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'list': case 'ls': case undefined: return cmdNoteList(rest);
+    case 'show': case 'cat': return cmdNoteShow(rest);
+    default: die(`unknown 'note' subcommand "${sub}" (try: list | show)`);
+  }
+}
+
+async function cmdNoteList(args) {
+  const db = openDb();
+  const row = await resolveTarget(db, flagValue(args, '--ws'), 'list notes for');
+  const notes = listNotes(row);
+  console.log(`Notes on #${row.id} (${row.org}/${row.repo} @ ${row.branch}):`);
+  if (notes.length === 0) { console.log('  (none)'); return; }
+  for (const n of notes) console.log(`  ${n.year}/${n.file}`);
+}
+
+async function cmdNoteShow(args) {
+  const positional = positionals(args);
+  const db = openDb();
+  const row = await resolveTarget(db, flagValue(args, '--ws'), 'show a note for');
+  const file = positional[0] || await prompt('Note filename (see: ws note list): ');
+  if (!file) die('no note filename given');
+  console.log(readNote(row, file));
+}
+
 function usage() {
   console.log(`ws — workstream manager (git worktrees + Zellij + Claude Code)
 
@@ -335,9 +385,16 @@ Usage:
   ws pause [id|branch]             Close the tab but keep the worktree (status: paused)
   ws resume [id|branch]            Reopen a paused workstream's tab (reconstitutes if needed)
   ws close [id|branch] [--keep]    Close the tab; remove worktree unless --keep
+                                   (scratchpads keep their dir by default; --delete removes it)
+  ws rename [id|branch] <name>     Rename the tab (scratchpad: renames its dir/name too)
   ws issue add <link...> [--ws X]       Link Linear/GitHub issues to a workstream
   ws issue remove <link> [--ws X]       Unlink an issue (by link or issue id)
   ws issue list [--ws X]                Show issues linked to a workstream
+  ws log <msg...> [--done] [--ws X]     Jot a work note (--done marks it completed)
+  ws note list [--ws X]                 List longer-form notes (written via the MCP ws_note tool)
+  ws note show <file> [--ws X]          Print a note's contents
+  ws digest [YYYY-MM-DD] [--write]      Draft a day's notes from commits + work logs
+                                        (--write appends to this week's ~/notes file)
 
 <ref> for "new" is one of:
   feature-x        a branch on origin (created off the default branch if new)
@@ -366,8 +423,12 @@ const run = async () => {
     case 'join': case 'rejoin': return cmdJoin(rest);
     case 'resume': return cmdJoin(rest, 'resume');
     case 'pause': return cmdPause(rest);
+    case 'rename': return cmdRename(rest);
     case 'close': case 'rm': return cmdClose(rest);
     case 'issue': case 'issues': return cmdIssue(rest);
+    case 'log': return cmdLog(rest);
+    case 'note': return cmdNote(rest);
+    case 'digest': return cmdDigest(rest);
     case undefined: case 'help': case '-h': case '--help': return usage();
     default: die(`unknown command "${cmd}" (try: ws help)`);
   }

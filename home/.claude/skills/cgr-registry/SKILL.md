@@ -38,6 +38,18 @@ curl -sf -H "Authorization: Bearer $LIBS_TOKEN" \
 
 For scoped packages, the `@scope/name` form works as-is in the URL path.
 
+## Classifying versions: built vs. upstream
+
+A packument covers a package as a whole, but **each version within it is classified
+independently** — a package can have some versions Chainguard-built and others
+upstream-only. Classify a specific version by its own `dist.tarball` URL in the
+packument (not by the packument's request URL or any other field):
+
+- `.../javascript/<name>/-/<name>-<version>.tgz` — that version is Chainguard-**built**
+  (rebuilt from source and signed).
+- `.../javascript-upstream/<name>/-/<name>-<version>.tgz` — that version is a
+  passthrough of the **upstream** npm registry, unmodified.
+
 ## Download a tarball
 
 Tarball URL pattern:

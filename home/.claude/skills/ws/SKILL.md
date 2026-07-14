@@ -25,8 +25,10 @@ Repos are cloned **bare** and worktrees nest as sibling directories:
 Branch names with `/` are sanitized to `-` for directory and tab names; the real
 branch name is stored in the database.
 
-Each active workstream is a Zellij tab named `<repo>:<branch>` with three equal
-vertical panes: **zsh | nvim | claude**.
+Each active workstream is a Zellij tab named `<id>:<repo>:<branch>` (scratchpads:
+`<id>:scratchpad:<name>`) with three equal vertical panes: **zsh | nvim | claude**.
+The id prefix keeps the tab identifiable even when two branches share a name, and
+survives a `ws rename` (see below), which only ever changes what comes after it.
 
 Workstream metadata lives in a SQLite db at
 `${XDG_DATA_HOME:-~/.local/share}/ws/workstreams.db`.
@@ -114,6 +116,18 @@ ws resume <id|branch>     # reopen the tab (focuses it if already open; reconsti
 Pausing is the "set this aside for now" state: the worktree stays on disk so resuming
 is instant. Paused workstreams still show in `ws list`.
 
+### Rename
+
+```bash
+ws rename <id|branch> <name>   # rename its tab (renamed in place if open)
+ws rename <name>                # rename the current workstream (context-resolved)
+```
+For a **scratchpad**, this renames its directory and its name field — a scratchpad's
+name is made up, so there's nothing else to preserve. For a **git-backed workstream**,
+it only sets a display **label** used in place of `repo:branch` in the tab name; the
+underlying git branch is left alone (renaming a real branch is a much bigger, riskier
+operation). Either way the id prefix stays put and an open tab is renamed live.
+
 ### Close
 
 ```bash
@@ -148,6 +162,55 @@ has an open/closed PR on its repo — including fork PRs — and links it automa
 (prefers an open PR). This is best-effort and idempotent: no `gh` or no PR links
 nothing, and an already-linked PR isn't duplicated.
 
+### Work log
+
+Jot a one-line note of what you did or figured out against a workstream, as you go.
+These are the feed for the daily notes digest — capture the intent/outcome that a
+commit subject would miss (a root cause tracked down, a decision made). The workstream
+is taken from the current directory (or `--ws <id|branch>`).
+
+```bash
+ws log <msg...>            # an in-progress note
+ws log <msg...> --done     # mark it a completed item
+```
+Examples (run from inside the worktree):
+```bash
+ws log "root-caused the SIGKILL to Falcon killing the socket listener"
+ws log "shipped the retry-backoff fix" --done
+```
+Entries are stored per workstream with a timestamp (`done` flags completed items) so a
+day can later be reconstructed for `~/notes` — see the **notes** skill.
+
+### Notes
+
+Longer-form notes — a design decision, a debugging writeup, a plan — that outgrow a
+one-line `ws log` entry. Each is its own file under
+`~/notes/work/<YYYY>/workstream/<id>-<repo>-<branch>/<timestamp>[-<title>].md`
+(scratchpads: `<id>-<name>/`). They're written **only** via the MCP `ws_note` tool
+(a Claude session filing a note for you) — there's no CLI write command — but you can
+list and read them from the terminal:
+
+```bash
+ws note list [--ws X]          # filenames, oldest first
+ws note show <file> [--ws X]   # print a note's contents
+```
+
+### Digest
+
+Draft a day's `~/notes` work entry from what actually happened, across all workstreams:
+the git commits you authored that day (deduped across branches) plus your `ws log`
+notes, with each workstream's linked issues/PRs nested for reference.
+
+```bash
+ws digest                    # today's activity as notes-format bullets (prints)
+ws digest 2026-06-25         # a specific day (YYYY-MM-DD, local)
+ws digest --write            # also append under today's heading in this week's note
+```
+`--write` locates (or creates) this week's `~/notes/work/<YYYY>/<Monday>-week.md`,
+finds the day's `## <Weekday>, …` heading, and appends the bullets after any existing
+entries — review and trim rather than treating it as final. Without `--write` it just
+prints, so you can pipe or edit before committing anything.
+
 ## Status model
 
 `active` (working on it) → `paused` (set aside, worktree kept) → `closed` (done; worktree
@@ -157,9 +220,10 @@ is like `pause` but final — the difference is purely the recorded status.
 ## Work notes
 
 Work done in a workstream is logged to weekly notes under `~/notes/work/` — see the
-**notes** skill for the layout and logging steps. When logging work for a workstream,
-reference its linked issues: `ws issue list` (from inside the worktree) gives the
-Linear/GitHub links to drop under the day's entry.
+**notes** skill for the layout. The fast path: `ws log` (above) captures notes as you
+go, and `ws digest [--write]` drafts a day's entry from your commits + those logs, with
+each workstream's linked issues nested in. When drafting by hand instead, reference a
+workstream's issues with `ws issue list` (from inside the worktree).
 
 ## Context
 
@@ -191,16 +255,32 @@ without invoking this skill:
 | Tool | Does |
 |------|------|
 | `ws_list` | List workstreams (+ status, worktree presence, linked issues, which one is current). Arg: `all`. |
+| `ws_new` | Create/open a workstream (clones if needed, fork-routes, links PR). Args: `repo`, `ref`. |
+| `ws_resume` | Rejoin a workstream, reconstituting the worktree if removed. Arg: `workstream`. |
+| `ws_pause` | Close the tab, keep the worktree (status: paused). Arg: `workstream`. |
+| `ws_rename` | Rename a workstream (and its open tab, if any). Scratchpad: renames its dir/name; git-backed: sets a display label only, branch untouched. Args: `name`, `workstream`. |
+| `ws_close` | Close a workstream in one call: mark closed, close the tab, and (for a git worktree) remove it. Args: `workstream`, `keep`, `force`. A git worktree is removed by default (commits survive in the bare clone) — refuses a dirty one (returns the dirty file list) unless `force:true`, `keep:true` leaves it on disk. A **scratchpad keeps its directory by default** (no git backing, so it stays resumable) and is only deleted with `force:true`. |
 | `ws_issue_list` | List issues linked to a workstream. Arg: `workstream`. |
 | `ws_issue_add` | Link issues. Args: `refs` (array), `workstream`. |
 | `ws_issue_remove` | Unlink an issue by link or id. Args: `ref`, `workstream`. |
-| `ws_scratch` | Create a scratchpad (temp-dir workstream). Arg: `name` (optional). Opens the three-pane tab when the server runs inside Zellij; otherwise just creates the dir and returns its path. |
+| `ws_log` | Record a one-line work-log note against a workstream (feeds the daily notes digest). Args: `body`, `done` (mark completed), `workstream`. |
+| `ws_note` | Write a longer-form note file for a workstream under `~/notes/work/<year>/workstream/<id-name>/` — the only way notes get written. Args: `body`, `title` (optional), `workstream`. |
+| `ws_note_list` | List note files written for a workstream via `ws_note`. Arg: `workstream`. |
+| `ws_digest` | Assemble a day's commits + work logs (with linked issues) across all workstreams into structured activity **and** notes-format markdown. Args: `date` (YYYY-MM-DD, default today), `write` (append under the day's heading in this week's `~/notes` file). |
+| `ws_scratch` | Create a scratchpad: a DB-tracked, resumable workstream under `~/scratchpad` (persists across reboots) that has no git repo or branch. Arg: `name` (optional). Opens the three-pane tab when the server runs inside Zellij; otherwise just creates the dir and returns its path. |
 
 `workstream` accepts the usual selector (id / branch / `org/repo:branch`); when omitted
-the tool uses the worktree containing the session's working directory. Creating/joining/
-closing **git** worktrees and their tabs stay in the CLI, since they're interactive and
-have nowhere to attach from a tool call — `ws_scratch` is the exception, since a
-scratchpad is just a temp dir and the tab can be opened in place from within Zellij.
+the tool uses the worktree containing the session's working directory.
+
+**Prefer `ws_close` / `ws_pause` over shelling out to `ws close` / `ws pause`** — the
+tools are non-interactive and need no skill load or manual `git status` poking: a close
+is a single call, and a dirty worktree comes back as a structured `needsForce` result
+(with the file list) for you to relay before retrying with `force:true`. The CLI's
+interactive prompts only matter when a human runs `ws` in a terminal. Tab handling
+mirrors the CLI: inside Zellij the tab is opened/closed in place; from outside, tab
+operations are skipped (attaching would be interactive) and the worktree path is still
+returned. Closing the workstream you're currently in also closes that tab, which ends
+the session — that's the confirmation.
 
 Manage the registration with `claude mcp get ws` / `claude mcp remove ws -s user`; the
 command it runs is `node --no-warnings ~/.scripts/ws/mcp.js`.

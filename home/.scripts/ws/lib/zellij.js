@@ -123,3 +123,12 @@ export function closeTab(row) {
     zellij(['action', 'close-tab']);
   }
 }
+
+// Rename an open tab in place (e.g. after `ws rename`). No-op outside Zellij or
+// if the old tab name isn't currently open. Returns whether it renamed anything.
+export function renameTab(oldTabName, newTabName) {
+  if (!inZellij() || oldTabName === newTabName || !tabNames().includes(oldTabName)) return false;
+  zellij(['action', 'go-to-tab-name', oldTabName]);
+  const r = zellij(['action', 'rename-tab', newTabName]);
+  return r.status === 0;
+}

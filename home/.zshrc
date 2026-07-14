@@ -120,6 +120,41 @@ for zsh_autosuggestions in \
   fi
 done
 
+# Suggest the current branch when pushing (e.g. `git push origin <TAB/→>`),
+# handy for long username-prefixed branch names.
+_zsh_autosuggest_strategy_git_branch() {
+  emulate -L zsh
+  local -a toks
+  toks=(${(z)BUFFER})
+  [[ ${toks[1]} == git && ${toks[2]} == push ]] || return
+
+  local branch
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null) || return
+  [[ -n $branch ]] || return
+
+  # Word currently being typed (empty if the buffer ends in a space).
+  local partial=""
+  [[ $BUFFER != *[[:space:]] ]] && partial=${toks[-1]}
+
+  # Positional (non-flag) args after "push", excluding the partial being typed.
+  local -a positional
+  local t
+  for t in ${toks[3,-1]}; do
+    [[ $t == -* ]] && continue
+    positional+=$t
+  done
+  if [[ -n $partial && ${positional[-1]} == $partial ]]; then
+    positional[-1]=()
+  fi
+
+  # Only when the remote is already present and we're on the branch argument.
+  (( ${#positional} == 1 )) || return
+
+  [[ $branch == ${partial}* && $branch != $partial ]] || return
+  typeset -g suggestion="${BUFFER}${branch#$partial}"
+}
+ZSH_AUTOSUGGEST_STRATEGY=(git_branch history completion)
+
 # fzf key bindings (ctrl-r history dropdown, etc.)
 for fzf_keybindings in \
   "$HOME/.nix-profile/share/fzf/key-bindings.zsh" \

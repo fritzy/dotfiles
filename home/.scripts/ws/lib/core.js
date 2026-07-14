@@ -12,7 +12,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, renameSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -61,13 +61,15 @@ export function openDb() {
       tab_name TEXT NOT NULL,
       source TEXT NOT NULL DEFAULT 'origin',  -- origin | pr:<N> | fork:<owner>
       status TEXT NOT NULL DEFAULT 'active',
+      label TEXT,               -- optional display name override (set via ws rename)
       created_at TEXT NOT NULL,
       last_joined_at TEXT,
       UNIQUE(org, repo, branch)
     );
   `);
-  // Migrate older databases that predate the `source` column.
+  // Migrate older databases that predate the `source`/`label` columns.
   try { db.exec("ALTER TABLE workstreams ADD COLUMN source TEXT NOT NULL DEFAULT 'origin'"); } catch { /* exists */ }
+  try { db.exec('ALTER TABLE workstreams ADD COLUMN label TEXT'); } catch { /* exists */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS issues (
       id INTEGER PRIMARY KEY,
@@ -78,22 +80,74 @@ export function openDb() {
       UNIQUE(workstream_id, ref)
     );
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS logs (
+      id INTEGER PRIMARY KEY,
+      workstream_id INTEGER NOT NULL REFERENCES workstreams(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,       -- a one-line note of what was done / figured out
+      done INTEGER NOT NULL DEFAULT 0,  -- 1 = a completed item (vs. progress note)
+      created_at TEXT NOT NULL
+    );
+  `);
   return db;
 }
 
+// The tab name for a workstream: always prefixed with its id (so the tab is
+// identifiable even if two branches share a name), followed by a `label`
+// override if `ws rename` has set one, else the repo:branch / scratchpad name.
+export function computeTabName(row) {
+  const base = row.label || (isScratch(row) ? `scratchpad:${row.branch}` : `${row.repo}:${sanitize(row.branch)}`);
+  return `${row.id}:${base}`;
+}
+
+// Insert or update a workstream. The tab name always embeds the row's id, so
+// it's computed here (not passed in) once the id is known — a fresh insert
+// gets a throwaway tab_name that's immediately corrected by a follow-up update.
 export function upsertWorkstream(db, ws) {
   db.prepare(`
     INSERT INTO workstreams (org, repo, branch, path, tab_name, source, status, created_at, last_joined_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+    VALUES (?, ?, ?, ?, '', ?, 'active', ?, ?)
     ON CONFLICT(org, repo, branch) DO UPDATE SET
       path = excluded.path,
-      tab_name = excluded.tab_name,
       source = excluded.source,
       status = 'active',
       last_joined_at = excluded.last_joined_at
-  `).run(ws.org, ws.repo, ws.branch, ws.path, ws.tab_name, ws.source, ws.created_at, ws.last_joined_at);
-  return db.prepare('SELECT * FROM workstreams WHERE org=? AND repo=? AND branch=?')
+  `).run(ws.org, ws.repo, ws.branch, ws.path, ws.source, ws.created_at, ws.last_joined_at);
+  const row = db.prepare('SELECT * FROM workstreams WHERE org=? AND repo=? AND branch=?')
     .get(ws.org, ws.repo, ws.branch);
+  const tab_name = computeTabName(row);
+  if (tab_name === row.tab_name) return row;
+  db.prepare('UPDATE workstreams SET tab_name=? WHERE id=?').run(tab_name, row.id);
+  return { ...row, tab_name };
+}
+
+// Rename a workstream's display name and update its tab_name accordingly.
+// For a scratchpad (a made-up name with no git identity) this renames the
+// branch field itself and moves its directory. For a git-backed workstream,
+// renaming only sets a `label` override — the underlying branch is untouched,
+// since renaming a real git branch is a much bigger operation.
+export function renameWorkstream(db, row, newName) {
+  if (isScratch(row)) {
+    const slug = scratchSlug(newName);
+    if (!slug) throw new Error('empty name');
+    let n = slug, i = 2;
+    while (n !== row.branch && db.prepare(
+      'SELECT 1 FROM workstreams WHERE org=? AND repo=? AND branch=? AND id!=?'
+    ).get(SCRATCH_ORG, SCRATCH_ORG, n, row.id)) { n = `${slug}-${i++}`; }
+    const newPath = scratchPath(n);
+    if (n !== row.branch) {
+      if (existsSync(row.path)) renameSync(row.path, newPath);
+      else mkdirSync(newPath, { recursive: true });
+    }
+    const tab_name = computeTabName({ ...row, branch: n });
+    db.prepare('UPDATE workstreams SET branch=?, path=?, tab_name=? WHERE id=?').run(n, newPath, tab_name, row.id);
+  } else {
+    const label = newName.trim();
+    if (!label) throw new Error('empty name');
+    const tab_name = computeTabName({ ...row, label });
+    db.prepare('UPDATE workstreams SET label=?, tab_name=? WHERE id=?').run(label, tab_name, row.id);
+  }
+  return db.prepare('SELECT * FROM workstreams WHERE id=?').get(row.id);
 }
 
 export const listWorkstreams = (db, { all = false } = {}) =>
@@ -189,6 +243,28 @@ export function removeIssue(db, workstreamId, target) {
   return { removed: info.changes > 0 };
 }
 
+// ---------------------------------------------------------------- work logs
+
+// Record a one-line work note against a workstream. `done` marks it a completed
+// item (vs. an in-progress note). These feed the daily notes digest.
+export function addLog(db, workstreamId, body, done = false) {
+  const info = db.prepare(
+    'INSERT INTO logs (workstream_id, body, done, created_at) VALUES (?, ?, ?, ?)'
+  ).run(workstreamId, body, done ? 1 : 0, now());
+  return { id: Number(info.lastInsertRowid), body, done: !!done };
+}
+
+// Work-log entries for a workstream, oldest first. Optional half-open time window
+// [since, until) filters on created_at (ISO strings compare lexically).
+export function listLogs(db, workstreamId, { since, until } = {}) {
+  let sql = 'SELECT * FROM logs WHERE workstream_id=?';
+  const params = [workstreamId];
+  if (since) { sql += ' AND created_at>=?'; params.push(since); }
+  if (until) { sql += ' AND created_at<?'; params.push(until); }
+  sql += ' ORDER BY id';
+  return db.prepare(sql).all(...params).map((r) => ({ ...r, done: !!r.done }));
+}
+
 // ---------------------------------------------------------------- scratchpads
 
 export const isScratch = (row) => row.source === 'scratch' || row.org === SCRATCH_ORG;
@@ -225,7 +301,7 @@ export function createScratchpad(db, rawName) {
   mkdirSync(path, { recursive: true });
   return upsertWorkstream(db, {
     org: SCRATCH_ORG, repo: SCRATCH_ORG, branch: name, source: 'scratch',
-    path, tab_name: `scratchpad:${name}`, created_at: now(), last_joined_at: now(),
+    path, created_at: now(), last_joined_at: now(),
   });
 }
 
@@ -546,6 +622,216 @@ export function removeWorktree(org, repo, path) {
     gitTry(['--git-dir', bare, 'worktree', 'prune'], { cwd: bare });
     rmSync(path, { recursive: true, force: true });
   }
+}
+
+// ---------------------------------------------------------------- notes files
+
+// Notes live in the git repo at ~/notes, split work/ and journal/, one file per
+// Monday-based week: <root>/work/<YYYY>/<YYYY-MM-DD>-week.md. See the notes skill.
+export const NOTES_ROOT = join(HOME, 'notes');
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const pad2 = (n) => String(n).padStart(2, '0');
+const ordinal = (n) => {
+  const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+};
+
+// The Monday that starts the week containing `d` (notes use Monday-based weeks).
+export function weekMonday(d = new Date()) {
+  const date = new Date(d);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + (date.getDay() === 0 ? -6 : 1 - date.getDay()));
+  return date;
+}
+
+// The per-weekday heading a day's entries live under, e.g.
+// "## Thursday, June 25th, 2026".
+export const dayHeading = (d) =>
+  `## ${WEEKDAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${ordinal(d.getDate())}, ${d.getFullYear()}`;
+
+// Ensure the work-notes file for the week containing `d` exists under
+// <root>/work/<YYYY>/ and return its path. Matches the notes skill's layout:
+// <YYYY-MM-DD>-week.md keyed to the week's Monday, scaffolded with a heading per
+// weekday. Honors an existing file (dashed or older compact name) rather than
+// creating a duplicate.
+export function ensureWeeklyNote(root = NOTES_ROOT, d = new Date()) {
+  const monday = weekMonday(d);
+  const iso = `${monday.getFullYear()}-${pad2(monday.getMonth() + 1)}-${pad2(monday.getDate())}`;
+  const dir = join(root, 'work', String(monday.getFullYear()));
+  const file = join(dir, `${iso}-week.md`);
+  const compact = join(dir, `${monday.getFullYear()}${pad2(monday.getMonth() + 1)}${pad2(monday.getDate())}-week.md`);
+  if (existsSync(file)) return file;
+  if (existsSync(compact)) return compact;
+
+  const headings = [];
+  for (let i = 0; i < 7; i++) {
+    const day = new Date(monday);
+    day.setDate(monday.getDate() + i);
+    headings.push(dayHeading(day));
+  }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, headings.join('\n\n') + '\n');
+  progress(`Created weekly note ${file}`);
+  return file;
+}
+
+// Append a markdown block under `d`'s weekday heading in the correct weekly file,
+// after any existing entries for that day (creating the heading if absent).
+// Returns { file, heading }.
+export function appendDayEntry(block, d = new Date(), root = NOTES_ROOT) {
+  const file = ensureWeeklyNote(root, d);
+  const heading = dayHeading(d);
+  const lines = readFileSync(file, 'utf8').split('\n');
+
+  let hIdx = lines.findIndex((l) => l.trim() === heading);
+  if (hIdx === -1) {
+    if (lines.length && lines[lines.length - 1].trim() !== '') lines.push('');
+    lines.push(heading);
+    hIdx = lines.length - 1;
+  }
+  // End of this day's section: the next "## " heading, or end of file.
+  let end = hIdx + 1;
+  while (end < lines.length && !lines[end].startsWith('## ')) end++;
+  // Insert after the last non-blank line of the section (so entries accrete).
+  let at = end;
+  while (at - 1 > hIdx && lines[at - 1].trim() === '') at--;
+
+  lines.splice(at, 0, '', ...block.split('\n'));
+  writeFileSync(file, lines.join('\n'));
+  return { file, heading };
+}
+
+// ---------------------------------------------------------------- per-workstream notes
+
+// Longer-form notes (as opposed to `ws log`'s one-liners) live as their own
+// files under <root>/work/<YYYY>/workstream/<slug>/, one per note, keyed to
+// the workstream by an id+name slug so it stays readable and never collides.
+const noteSlug = (s) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+
+export const workstreamSlug = (row) =>
+  isScratch(row) ? `${row.id}-${row.branch}` : `${row.id}-${row.repo}-${sanitize(row.branch)}`;
+
+export const noteDir = (row, d = new Date(), root = NOTES_ROOT) =>
+  join(root, 'work', String(d.getFullYear()), 'workstream', workstreamSlug(row));
+
+// Note filenames sort chronologically: <YYYY-MM-DD-HHMMSS>[-<title-slug>].md.
+export function addNote(row, body, { title, root = NOTES_ROOT } = {}) {
+  const d = new Date();
+  const dir = noteDir(row, d, root);
+  mkdirSync(dir, { recursive: true });
+  const stamp = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-`
+    + `${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  const slug = title ? noteSlug(title) : '';
+  const file = slug ? `${stamp}-${slug}.md` : `${stamp}.md`;
+  const content = title ? `# ${title}\n\n${body}\n` : `${body}\n`;
+  writeFileSync(join(dir, file), content);
+  return { file, path: join(dir, file) };
+}
+
+// Note filenames for a workstream, oldest first, across every year it has any.
+export function listNotes(row, root = NOTES_ROOT) {
+  const workDir = join(root, 'work');
+  if (!existsSync(workDir)) return [];
+  const slug = workstreamSlug(row);
+  const out = [];
+  for (const year of readdirSync(workDir).sort()) {
+    const dir = join(workDir, year, 'workstream', slug);
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir).filter((f) => f.endsWith('.md')).sort()) {
+      out.push({ year, file: f, path: join(dir, f) });
+    }
+  }
+  return out;
+}
+
+export function readNote(row, file, root = NOTES_ROOT) {
+  const match = listNotes(row, root).find((n) => n.file === file);
+  if (!match) throw new Error(`no note "${file}" for this workstream`);
+  return readFileSync(match.path, 'utf8');
+}
+
+// ---------------------------------------------------------------- digest
+
+// The half-open local-day window [start, end) containing `dateStr` (YYYY-MM-DD),
+// or today when omitted. Returned as a Date and matching UTC ISO bounds — git
+// (--since/--until) and the ISO-stringed logs table both compare correctly.
+export function dayWindow(dateStr) {
+  const start = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 1);
+  return { date: start, startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+// Commits authored by this repo's configured user within [startIso, endIso) on the
+// worktree's current branch. Returns [{sha, subject}] (empty on any failure).
+function commitsInWindow(path, startIso, endIso) {
+  // Silence stderr: a worktree dir can outlive its git metadata, and gitTry already
+  // treats the failure as "no commits" — we don't want the "fatal: …" noise.
+  const quiet = { stdio: ['ignore', 'pipe', 'ignore'] };
+  const email = gitTry(['-C', path, 'config', 'user.email'], quiet);
+  const args = ['-C', path, 'log', '--no-merges', `--since=${startIso}`, `--until=${endIso}`,
+    '--format=%h%x1f%s'];
+  if (email) args.push(`--author=${email}`);
+  const out = gitTry(args, quiet);
+  if (!out) return [];
+  return out.split('\n').filter(Boolean).map((line) => {
+    const [sha, subject] = line.split('\x1f');
+    return { sha, subject };
+  });
+}
+
+// Gather a day's activity across all workstreams: git commits you authored that day
+// plus work-log notes, with each workstream's linked issues for reference. Only
+// workstreams with commits or logs that day are returned. A commit is attributed to
+// the first workstream it appears in (branches can share history), so it isn't listed
+// under every worktree.
+export function collectDayActivity(db, { date } = {}) {
+  const { date: dateObj, startIso, endIso } = dayWindow(date);
+  const seen = new Set();
+  const out = [];
+  for (const r of listWorkstreams(db, { all: true })) {
+    const scratch = isScratch(r);
+    const commits = (!scratch && existsSync(r.path))
+      ? commitsInWindow(r.path, startIso, endIso).filter((c) => !seen.has(c.sha))
+      : [];
+    for (const c of commits) seen.add(c.sha);
+    const logs = listLogs(db, r.id, { since: startIso, until: endIso });
+    if (commits.length === 0 && logs.length === 0) continue;
+    out.push({
+      id: r.id,
+      repo: scratch ? 'scratch' : `${r.org}/${r.repo}`,
+      repoName: scratch ? 'scratch' : r.repo,
+      branch: r.branch,
+      scratch,
+      commits,
+      logs: logs.map((l) => ({ body: l.body, done: l.done })),
+      issues: listIssues(db, r.id).map((i) => ({ kind: i.kind, ref: i.ref })),
+    });
+  }
+  return { date: dateObj, dateIso: startIso.slice(0, 10), workstreams: out };
+}
+
+// Render a day's activity as notes-format markdown: one checked bullet per
+// workstream, with commits, log notes, and issue links nested beneath. Returns ''
+// when there was no activity.
+export function renderDigest(activity) {
+  const blocks = activity.workstreams.map((w) => {
+    const done = w.logs.find((l) => l.done);
+    const summary = done ? done.body : `${w.repoName}: ${w.branch}`;
+    const lines = [`- [x] ${done ? `${w.repoName}: ${summary}` : summary}`];
+    for (const c of w.commits) lines.push(`    - \`${c.sha}\` ${c.subject}`);
+    for (const l of w.logs) {
+      if (done && l === done) continue; // already the summary
+      lines.push(`    - ${l.done ? 'done' : 'note'}: ${l.body}`);
+    }
+    for (const i of w.issues) lines.push(`    - ${i.ref}`);
+    return lines.join('\n');
+  });
+  return blocks.join('\n');
 }
 
 // A plain serialisable view of a workstream row (+ derived fields), for MCP output.

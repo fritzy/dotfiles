@@ -20,12 +20,15 @@ import { z } from 'zod';
 import { existsSync } from 'node:fs';
 
 import {
-  openDb, resolveRow, currentWorkstream, now, sanitize,
-  listWorkstreams, listIssues, addIssue, removeIssue, workstreamView,
+  openDb, resolveRow, currentWorkstream, now,
+  listWorkstreams, listIssues, addIssue, removeIssue, addLog, workstreamView,
   createScratchpad, parseSelector, materializeWorktree, upsertWorkstream,
-  setStatus, setPath, linkPr,
+  setStatus, setPath, linkPr, renameWorkstream,
+  worktreeDirty, removeWorktree, isScratch,
+  collectDayActivity, renderDigest, appendDayEntry, NOTES_ROOT,
+  addNote, listNotes,
 } from './lib/core.js';
-import { openTab, inZellij } from './lib/zellij.js';
+import { openTab, closeTab, inZellij, renameTab } from './lib/zellij.js';
 
 const json = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
 
@@ -105,7 +108,6 @@ server.registerTool('ws_new', {
   const db = openDb();
   const row = upsertWorkstream(db, {
     org, repo: name, branch, source, path,
-    tab_name: `${name}:${sanitize(branch)}`,
     created_at: now(), last_joined_at: now(),
   });
   const linked = linkPr(db, row);
@@ -136,6 +138,91 @@ server.registerTool('ws_resume', {
     linkedPr: linked ? linked.pr : null,
     tabOpened: maybeOpenTab(row),
   });
+});
+
+server.registerTool('ws_pause', {
+  description: 'Pause a workstream: close its Zellij tab but keep the worktree on disk (status: paused, '
+    + 'resume is instant). Use this to set work aside without discarding anything. Defaults to the '
+    + 'worktree containing the current directory.',
+  inputSchema: { workstream: workstreamArg },
+}, async ({ workstream }) => {
+  const db = openDb();
+  const row = targetRow(db, workstream);
+  if (inZellij()) closeTab(row);
+  setStatus(db, row.id, 'paused');
+  return json({ workstream: workstreamView(db, row, process.cwd()), paused: true });
+});
+
+server.registerTool('ws_rename', {
+  description: 'Rename a workstream and (if open) its Zellij tab in place. For a SCRATCHPAD this renames '
+    + "its directory and name — scratchpads are just a made-up name, so this is a full rename. For a "
+    + "git-backed workstream this only sets a display label used for the tab name; the underlying git "
+    + 'branch is left untouched (renaming a real branch is a much bigger operation). Defaults to the '
+    + 'worktree containing the current directory.',
+  inputSchema: {
+    name: z.string().min(1).describe('The new name/label.'),
+    workstream: workstreamArg,
+  },
+}, async ({ name, workstream }) => {
+  const db = openDb();
+  const row = targetRow(db, workstream);
+  const oldTabName = row.tab_name;
+  const updated = renameWorkstream(db, row, name);
+  const tabRenamed = inZellij() ? renameTab(oldTabName, updated.tab_name) : false;
+  return json({ workstream: workstreamView(db, updated, process.cwd()), tabRenamed });
+});
+
+server.registerTool('ws_close', {
+  description: 'Close a workstream in one call — no skill, no manual git inspection needed. '
+    + 'Marks it closed and closes its Zellij tab. '
+    + 'Defaults to the worktree containing the current directory; closing the current one also closes '
+    + 'this tab (ending the session — that is the confirmation). '
+    + 'DISK: a git worktree is removed by default (its commits/branch survive in the bare clone, so '
+    + 'the workstream stays fully resumable); pass keep:true to leave the worktree on disk. A '
+    + 'SCRATCHPAD has no git backing, so its directory is KEPT by default — the scratchpad just goes '
+    + 'to status:closed and stays resumable — and is only deleted when you pass force:true (an '
+    + 'irreversible discard; confirm with the user first). '
+    + 'SAFETY: if a git worktree being removed has uncommitted changes this refuses and returns the '
+    + 'dirty file list without touching anything — relay it and only retry with force:true once the '
+    + 'user confirms discarding. This tool replaces shelling out to `ws close`.',
+  inputSchema: {
+    workstream: workstreamArg,
+    keep: z.boolean().optional().describe('Keep the worktree/directory on disk; just close the tab and mark closed. (Scratchpad dirs are kept by default regardless.)'),
+    force: z.boolean().optional().describe('For a git worktree: remove it even with uncommitted changes (discards them). For a scratchpad: delete its directory (otherwise it is kept). Irreversible either way.'),
+  },
+}, async ({ workstream, keep, force }) => {
+  const db = openDb();
+  const row = targetRow(db, workstream);
+  const scratch = isScratch(row);
+  // Git worktrees are safe to remove by default (work survives in the bare clone),
+  // so remove unless keep:true. Scratchpads have no such backing, so keep the dir
+  // by default and only discard it on an explicit force:true.
+  const removing = (scratch ? !!force : !keep) && existsSync(row.path);
+
+  // Refuse to discard uncommitted work in a git worktree unless explicitly forced.
+  // (Scratchpad removal is already force-gated above, and has no git status.)
+  if (removing && !scratch && !force) {
+    const dirty = worktreeDirty(row.path);
+    if (dirty) {
+      return json({
+        workstream: workstreamView(db, row, process.cwd()),
+        closed: false,
+        needsForce: true,
+        reason: 'worktree has uncommitted changes; confirm with the user, then retry with force:true',
+        dirty: dirty.split('\n'),
+      });
+    }
+  }
+
+  const noun = scratch ? 'directory' : 'worktree';
+  if (removing) removeWorktree(row.org, row.repo, row.path);
+  setStatus(db, row.id, 'closed');
+  const view = workstreamView(db, row, process.cwd());
+  const kept = !removing && existsSync(row.path);
+  // Close the tab last: if this is the current workstream, closing its tab ends
+  // the session, so the db/worktree state is already settled before that happens.
+  if (inZellij()) closeTab(row);
+  return json({ workstream: view, closed: true, worktreeRemoved: removing, keptWorktree: kept, noun });
 });
 
 server.registerTool('ws_issue_list', {
@@ -183,6 +270,75 @@ server.registerTool('ws_issue_remove', {
     ref,
     issues: listIssues(db, row.id).map((i) => ({ id: i.id, kind: i.kind, ref: i.ref })),
   });
+});
+
+server.registerTool('ws_log', {
+  description: 'Record a one-line work-log note against a workstream — what you did or figured out — '
+    + 'to be folded into the daily notes digest later. Use this to capture intent/outcome that a commit '
+    + 'subject would miss (e.g. a root cause you tracked down). Set done:true to mark it a completed item '
+    + 'rather than an in-progress note. Defaults to the worktree containing the current directory.',
+  inputSchema: {
+    body: z.string().min(1).describe('What was done / figured out — one line.'),
+    done: z.boolean().optional().describe('Mark this a completed item (default: false, an in-progress note).'),
+    workstream: workstreamArg,
+  },
+}, async ({ body, done, workstream }) => {
+  const db = openDb();
+  const row = targetRow(db, workstream);
+  const logged = addLog(db, row.id, body, !!done);
+  return json({ workstream: briefRow(row), logged });
+});
+
+server.registerTool('ws_note', {
+  description: 'Write a longer-form note file for a workstream, filed under '
+    + '~/notes/work/<year>/workstream/<id-name>/<timestamp>[-<title>].md — for writeups that outgrow a '
+    + "one-line ws_log entry (a design decision, a debugging writeup, a plan). This is the only way notes "
+    + 'get written for a workstream; use ws_log instead for short digest-feeding one-liners. Defaults to '
+    + 'the worktree containing the current directory.',
+  inputSchema: {
+    body: z.string().min(1).describe('The note content (markdown).'),
+    title: z.string().optional().describe('Optional short title; becomes an H1 and part of the filename.'),
+    workstream: workstreamArg,
+  },
+}, async ({ body, title, workstream }) => {
+  const db = openDb();
+  const row = targetRow(db, workstream);
+  const { file, path } = addNote(row, body, { title });
+  return json({ workstream: briefRow(row), file, path });
+});
+
+server.registerTool('ws_note_list', {
+  description: 'List the longer-form note files written for a workstream via ws_note.',
+  inputSchema: { workstream: workstreamArg },
+}, async ({ workstream }) => {
+  const db = openDb();
+  const row = targetRow(db, workstream);
+  return json({ workstream: briefRow(row), notes: listNotes(row) });
+});
+
+server.registerTool('ws_digest', {
+  description: "Assemble a day's work across all workstreams into a draft for Nathan's ~/notes: git "
+    + 'commits he authored that day (deduped across branches) plus any ws_log notes, with each '
+    + "workstream's linked issues/PRs for reference. Returns both structured activity and notes-format "
+    + 'markdown bullets. Use this to draft or update the daily work note — review/polish the markdown '
+    + '(or use the structured data to write a better summary) rather than pasting blindly. Set write:true '
+    + "to append the markdown under the day's heading in this week's ~/notes work file.",
+  inputSchema: {
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+      .describe('Day to digest as YYYY-MM-DD (local). Defaults to today.'),
+    write: z.boolean().optional()
+      .describe("Append the markdown under the day's heading in this week's ~/notes work file (default: false)."),
+  },
+}, async ({ date, write }) => {
+  const db = openDb();
+  const activity = collectDayActivity(db, { date });
+  const markdown = renderDigest(activity);
+  const result = { date: activity.dateIso, markdown, workstreams: activity.workstreams };
+  if (write && markdown) {
+    const { file, heading } = appendDayEntry(markdown, activity.date, NOTES_ROOT);
+    result.written = { file, heading };
+  }
+  return json(result);
 });
 
 await server.connect(new StdioServerTransport());
