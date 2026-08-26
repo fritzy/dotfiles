@@ -6,6 +6,7 @@
 
 machine_os=$(uname)
 machine_arch=$(uname -m)
+dotfiles_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 nvim_config=$HOME/.config/nvim
 nvim_bin=$HOME/.local/bin/nvim
 eget_bin=$HOME/.local/bin/eget
@@ -258,17 +259,22 @@ else
   cp -R ./home/.config/nvim/* $nvim_config/
 fi
 
-# ws workstream manager: install deps and put the `ws` command on PATH.
-ws_pkg="$HOME/.scripts/ws"
+# ai-workstream: install dependencies and put its commands on PATH.
+ws_pkg="$dotfiles_root/packages/ai-workstream"
 if [[ -f "$ws_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
   echo
   echo "Setting up ws (workstream manager)..."
   (cd "$ws_pkg" && npm install --no-audit --no-fund >/dev/null 2>&1) \
     && echo "  installed ws dependencies" || echo "  warning: ws npm install failed"
   ln -sfn "$ws_pkg/cli.js" "$HOME/.local/bin/ws" && echo "  linked ws -> $ws_pkg/cli.js"
+  ln -sfn "$ws_pkg/mcp.js" "$HOME/.local/bin/ws-mcp" && echo "  linked ws-mcp -> $ws_pkg/mcp.js"
   if command -v claude >/dev/null 2>&1 && ! claude mcp get ws >/dev/null 2>&1; then
     claude mcp add --scope user ws -- node --no-warnings "$ws_pkg/mcp.js" >/dev/null 2>&1 \
-      && echo "  registered ws MCP server (user scope)"
+      && echo "  registered ws MCP server with Claude Code (user scope)"
+  fi
+  if command -v codex >/dev/null 2>&1 && ! codex mcp get ws >/dev/null 2>&1; then
+    codex mcp add ws -- node --no-warnings "$ws_pkg/mcp.js" >/dev/null 2>&1 \
+      && echo "  registered ws MCP server with Codex"
   fi
 fi
 

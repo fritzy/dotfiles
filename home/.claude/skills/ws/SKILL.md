@@ -1,19 +1,21 @@
 # ws
 
-Manage **workstreams**: a git branch + worktree + a Zellij tab pre-wired with three
-panes (zsh, nvim, claude). One command to create, list, rejoin, and close them.
+Manage **workstreams**: a git branch + worktree + a Zellij tab with configurable
+shell, editor, and AI-agent panels. One command to create, list, rejoin, and close them.
 
-`ws` is a Node package at `~/.scripts/ws/` (data in `node:sqlite`); the `ws` command on
-PATH is a symlink to its `cli.js`. The same logic is also served as an **MCP server**
-(see [MCP](#mcp-server) below), so basic housekeeping is available to Claude sessions
-without loading this skill.
+`ws` is the `@fritzy/ai-workstream` Node package at
+`~/dotfiles/packages/ai-workstream/` (data in `node:sqlite`); the `ws` command on PATH
+is a symlink to its `cli.js`. The same logic is also served as an **MCP server** (see
+[MCP](#mcp-server) below), so basic housekeeping is available to Claude Code and Codex
+sessions without loading this skill.
 
 Package layout: `cli.js` (the command), `mcp.js` (the MCP server), `lib/core.js`
-(shared db/git/worktree logic). On a fresh machine run `npm install` in `~/.scripts/ws/`.
+(shared db/git/worktree logic), and `lib/config.js` (configuration). On a fresh machine
+run the dotfiles bootstrap or `npm install` in `~/dotfiles/packages/ai-workstream/`.
 
 ## How it's organized
 
-Repos are cloned **bare** and worktrees nest as sibling directories:
+By default, repos are cloned **bare** and worktrees nest as sibling directories:
 
 ```
 ~/github/<org>/<repo>/
@@ -26,12 +28,19 @@ Branch names with `/` are sanitized to `-` for directory and tab names; the real
 branch name is stored in the database.
 
 Each active workstream is a Zellij tab named `<id>:<repo>:<branch>` (scratchpads:
-`<id>:scratchpad:<name>`) with three equal vertical panes: **zsh | nvim | claude**.
+`<id>:scratchpad:<name>`) with the configured panel roles. Defaults are
+**shell (`zsh`) | editor (`nvim`) | agent (`claude`)**.
 The id prefix keeps the tab identifiable even when two branches share a name, and
 survives a `ws rename` (see below), which only ever changes what comes after it.
 
 Workstream metadata lives in a SQLite db at
 `${XDG_DATA_HOME:-~/.local/share}/ws/workstreams.db`.
+
+The package's default `config.ini` is overridden by
+`${XDG_CONFIG_HOME:-~/.config}/ai-workstream/config.ini`. Run `ws config` to inspect
+both config paths plus the resolved paths, panels, commands, agent, and models. Use
+`--agent claude|codex` (`--claude` / `--codex`), `--model`, `--panels`, and
+`--no-editor` as one-run overrides when opening a tab.
 
 ## Commands
 
@@ -63,6 +72,21 @@ For fork PRs and `owner:branch`, `ws` adds the fork as a named remote and sets t
 local branch's upstream to it, so `git push` from the worktree goes back to the PR
 branch.
 
+#### Seeding the agent panel
+
+```bash
+ws new <org/repo> <ref> --seed <file>     # also works on: ws scratch [name] --seed <file>
+```
+`--seed <file>` hands the new tab's selected agent a **seed document**: the file is
+copied to `${XDG_DATA_HOME:-~/.local/share}/ws/seeds/<id>.md` (never into the
+worktree, so git status stays clean) and the agent starts with an instruction to read
+that file instead of resuming. Use it to hand off context + a task to a fresh
+session (e.g. a findings writeup and plan composed elsewhere). Re-seeding a
+workstream overwrites its previous seed. The MCP `ws_new` / `ws_scratch` /
+`ws_resume` tools take the same thing as a `seed` parameter carrying the markdown
+content inline (the calling agent composes it directly rather than pointing at a
+file); on `ws_resume` the seed only takes effect if the tab isn't already open.
+
 #### Fork routing (when you can't push to the canonical repo)
 
 For a plain `branch`, before creating it `ws` asks GitHub's rulesets API
@@ -89,9 +113,9 @@ where you *can* push directly keep `origin` pointed at the canonical repo as bef
 ```bash
 ws scratch [name]      # alias: sp
 ```
-A **scratchpad** is a throwaway workstream that lives under `~/scratchpad/<name>`
+A **scratchpad** is a throwaway workstream that lives under the configured scratchpad root
 instead of a git worktree — no repo, no branch, just a fresh directory opened with the
-same three-pane tab (zsh, nvim, claude). It lives in your home rather than a temp dir,
+same configured tab. It lives in a persistent directory rather than a temp dir,
 so it survives reboots. Give it a name or omit it for a random one (e.g. `calm-otter`).
 Names are slugged for the dir/tab and suffixed if they collide. Its tab is
 `scratchpad:<name>`.
@@ -162,6 +186,95 @@ has an open/closed PR on its repo — including fork PRs — and links it automa
 (prefers an open PR). This is best-effort and idempotent: no `gh` or no PR links
 nothing, and an already-linked PR isn't duplicated.
 
+### Stacks (parent → child)
+
+A workstream can be **stacked on** another: "this branch builds on that one's unmerged
+work." Git doesn't record which branch a branch was cut from, so ws does.
+
+```bash
+ws new <org/repo> <branch> --parent <id|branch>   # create it branched off that workstream
+ws stack [--ws X]                                # show the chain (a tree, bottom first)
+ws stack on <id|branch> [--ws X]                 # record a parent for an existing workstream
+ws stack off [--ws X]                            # detach from its parent
+```
+`ws stack on` is **bookkeeping only** — it moves no commits, so it's safe to correct at
+any time. `--parent` on `ws new` is the one that affects git: the new branch is created
+off the parent's branch instead of the default branch.
+
+The relationship is deliberately loose: any workstream can parent any other, including
+across repos and scratchpads, so it also serves as "this work follows from that work."
+Cycles and self-parenting are rejected. A parent in a *different* repo is recorded but
+can't be branched off (it isn't a ref in this clone). `ws list` shows
+`↳ stacked on #N (branch)` under each stacked workstream.
+
+One branch may have several children — that's a valid tree, it just isn't a single
+linear stack, so the GitHub-stack commands below ask you to target one child.
+
+#### Stacked PRs on GitHub (`gh stack link`)
+
+When a chain is **two or more branches of the same repo on the canonical remote**, it
+can become a stack of PRs in GitHub's PR UI:
+
+```bash
+ws stack link [--ws X]           # push the branches, open/chain PRs, create the stack
+ws stack link --open [--ws X]    # and mark them ready for review (default: new PRs are drafts)
+```
+This shells out to `gh stack link <bottom> … <top>` with the chain in ws's order. It
+pushes each branch, opens a PR for any branch lacking one (basing each on the branch
+below), reuses existing PRs, and creates or updates the server-side stack object.
+It never rewrites history or touches a worktree.
+
+`ws stack` reports eligibility and, when a chain can't be a GitHub stack, why:
+
+| Not eligible when | Because |
+|---|---|
+| fewer than two workstreams | nothing to stack |
+| a scratchpad is in the chain | no branch, so no PR |
+| the chain mixes repos | a GitHub stack is one repo |
+| a member is `owner:branch` (someone's fork) | not our branch to stack |
+| the repo is fork-routed (`ws.useFork`) | our branches aren't on the repo the PRs target — stack those by hand in the PR descriptions |
+| one branch has two children | a GitHub stack is linear; target one child |
+
+#### Why only `gh stack link`, and not the rest of `gh stack`
+
+**`gh stack`'s local half is incompatible with the worktree layout, and ws replaces it.**
+`gh stack init`, `checkout`, `up`/`down`/`switch`/`top`/`bottom`/`trunk`, `rebase`, and
+`sync` all work by `git checkout`-ing each stack branch in **one** working tree. Under ws
+every branch is its own worktree, so checking out a stack branch fails — it's already
+checked out elsewhere. Use the ws equivalents:
+
+| Instead of | Use |
+|---|---|
+| `gh stack init` | `ws new … --parent X` / `ws stack on X` |
+| `gh stack checkout` / `up` / `down` / `switch` | `ws join <id\|branch>` (each branch is its own tab) |
+| `gh stack rebase` / `sync` (rebase half) | `ws stack rebase` |
+| `gh stack submit` / `sync` (link half) | `ws stack link` |
+| `gh stack view` | `ws stack` |
+
+`gh stack link` is the exception: it's documented for exactly this situation — people who
+manage branches with external tools (jj, Sapling, git-town, ws) and want GitHub's stacked
+PRs without adopting gh's local tracking. It addresses branches by name and checks nothing
+out. ws runs it from the bottom branch's worktree.
+
+Note that chained PR base branches alone don't make a stack in the UI; the stack is its
+own server-side object, which is what `link` creates.
+
+#### Cascading rebase
+
+```bash
+ws stack rebase [--ws X]            # rebase each branch onto its parent, bottom to top
+ws stack rebase --trunk [--ws X]    # first rebase the bottom branch onto origin/<default>
+```
+Each branch is rebased **in its own worktree** (`git -C <worktree> rebase <parent-branch>`),
+which is the whole reason this isn't `gh stack rebase`. It refuses a worktree with
+uncommitted changes, and stops at the first conflict, telling you which worktree to
+resolve it in — branches below that point are already rebased, so re-run it afterwards to
+finish the ones above.
+
+Two things it deliberately leaves to you: it does **not** push (the rewritten branches
+each need `--force-with-lease`), and it will trigger gitsign per rewritten commit, since
+rebasing re-signs them.
+
 ### Work log
 
 Jot a one-line note of what you did or figured out against a workstream, as you go.
@@ -187,7 +300,7 @@ Longer-form notes — a design decision, a debugging writeup, a plan — that ou
 one-line `ws log` entry. Each is its own file under
 `~/notes/work/<YYYY>/workstream/<id>-<repo>-<branch>/<timestamp>[-<title>].md`
 (scratchpads: `<id>-<name>/`). They're written **only** via the MCP `ws_note` tool
-(a Claude session filing a note for you) — there's no CLI write command — but you can
+(an agent session filing a note for you) — there's no CLI write command — but you can
 list and read them from the terminal:
 
 ```bash
@@ -249,25 +362,29 @@ the current worktree is used (see [Context](#context)).
 ## MCP server
 
 `mcp.js` is a stdio MCP server (built on `@modelcontextprotocol/sdk`) registered with
-Claude Code at user scope, so every session can do workstream housekeeping via tools
+Claude Code and Codex, so every session can do workstream housekeeping via tools
 without invoking this skill:
 
 | Tool | Does |
 |------|------|
 | `ws_list` | List workstreams (+ status, worktree presence, linked issues, which one is current). Arg: `all`. |
-| `ws_new` | Create/open a workstream (clones if needed, fork-routes, links PR). Args: `repo`, `ref`. |
-| `ws_resume` | Rejoin a workstream, reconstituting the worktree if removed. Arg: `workstream`. |
+| `ws_config` | Show the resolved paths, panels, commands, and agent defaults. |
+| `ws_new` | Create/open a workstream (clones if needed, fork-routes, links PR). Args: `repo`, `ref`, `parent` (stack it on another workstream — a new same-repo branch is cut from the parent's branch), `seed`, `agent`, `model`, `panels`, `noEditor`. |
+| `ws_resume` | Rejoin a workstream, reconstituting the worktree if removed. Args: `workstream`, `seed`, `agent`, `model`, `panels`, `noEditor` (layout options only apply if the tab isn't already open). |
 | `ws_pause` | Close the tab, keep the worktree (status: paused). Arg: `workstream`. |
 | `ws_rename` | Rename a workstream (and its open tab, if any). Scratchpad: renames its dir/name; git-backed: sets a display label only, branch untouched. Args: `name`, `workstream`. |
 | `ws_close` | Close a workstream in one call: mark closed, close the tab, and (for a git worktree) remove it. Args: `workstream`, `keep`, `force`. A git worktree is removed by default (commits survive in the bare clone) — refuses a dirty one (returns the dirty file list) unless `force:true`, `keep:true` leaves it on disk. A **scratchpad keeps its directory by default** (no git backing, so it stays resumable) and is only deleted with `force:true`. |
+| `ws_stack` | Show the chain a workstream sits in (tree, bottom first) plus whether it can become a GitHub PR stack and why not. Arg: `workstream`. |
+| `ws_stack_set` | Record that a workstream is stacked on another, or `clear:true` to detach. Bookkeeping only — moves no commits. Args: `workstream`, `parent`, `clear`. |
+| `ws_stack_link` | Push the chain's branches and create/update its stack of PRs on GitHub (`gh stack link`). Args: `workstream`, `open`. **Pushes branches and may open PRs — confirm first.** |
 | `ws_issue_list` | List issues linked to a workstream. Arg: `workstream`. |
 | `ws_issue_add` | Link issues. Args: `refs` (array), `workstream`. |
 | `ws_issue_remove` | Unlink an issue by link or id. Args: `ref`, `workstream`. |
 | `ws_log` | Record a one-line work-log note against a workstream (feeds the daily notes digest). Args: `body`, `done` (mark completed), `workstream`. |
-| `ws_note` | Write a longer-form note file for a workstream under `~/notes/work/<year>/workstream/<id-name>/` — the only way notes get written. Args: `body`, `title` (optional), `workstream`. |
+| `ws_note` | Write a longer-form note file under the configured notes root — the only way notes get written. Args: `body`, `title` (optional), `workstream`. |
 | `ws_note_list` | List note files written for a workstream via `ws_note`. Arg: `workstream`. |
-| `ws_digest` | Assemble a day's commits + work logs (with linked issues) across all workstreams into structured activity **and** notes-format markdown. Args: `date` (YYYY-MM-DD, default today), `write` (append under the day's heading in this week's `~/notes` file). |
-| `ws_scratch` | Create a scratchpad: a DB-tracked, resumable workstream under `~/scratchpad` (persists across reboots) that has no git repo or branch. Arg: `name` (optional). Opens the three-pane tab when the server runs inside Zellij; otherwise just creates the dir and returns its path. |
+| `ws_digest` | Assemble a day's commits + work logs (with linked issues) across all workstreams into structured activity **and** notes-format markdown. Args: `date` (YYYY-MM-DD, default today), `write` (append under the day's heading in the configured weekly notes file). |
+| `ws_scratch` | Create a DB-tracked, resumable scratchpad with no git repo or branch. Args: `name`, `seed`, `agent`, `model`, `panels`, `noEditor`. Opens the configured tab when the server runs inside Zellij; otherwise just creates the dir and returns its path. |
 
 `workstream` accepts the usual selector (id / branch / `org/repo:branch`); when omitted
 the tool uses the worktree containing the session's working directory.
@@ -282,8 +399,15 @@ operations are skipped (attaching would be interactive) and the worktree path is
 returned. Closing the workstream you're currently in also closes that tab, which ends
 the session — that's the confirmation.
 
-Manage the registration with `claude mcp get ws` / `claude mcp remove ws -s user`; the
-command it runs is `node --no-warnings ~/.scripts/ws/mcp.js`.
+**There is deliberately no `ws_stack_rebase` tool.** A cascading rebase rewrites history
+and re-signs commits through gitsign (interactive), so `ws stack rebase` is CLI-only —
+Nathan runs it. Suggest it as `! ws stack rebase --ws <id>` so its output lands in the
+session. `ws_stack_link` *is* exposed because it only pushes and opens PRs (no history
+rewriting, nothing lost), but confirm before calling it: it's outward-facing.
+
+Manage registration with `claude mcp get ws` / `claude mcp remove ws -s user` and
+`codex mcp get ws` / `codex mcp remove ws`. Both run
+`node --no-warnings ~/dotfiles/packages/ai-workstream/mcp.js`.
 
 ## Notes
 
