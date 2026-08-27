@@ -11,7 +11,7 @@
     "mcp": "node --no-warnings ./mcp.js",
     "serve": "node --no-warnings ./server.js",
     "test": "node --test",
-    "check": "node --check cli.js && node --check mcp.js && node --check server.js && node --check lib/config.js && node --check lib/core.js && node --check lib/zellij.js && node --check lib/api.js && node --check lib/daemon.js && node --check lib/hooks.js && node --check lib/terminal.js && node --check web/webclient.js && node --test",
+    "check": "node --check cli.js && node --check mcp.js && node --check server.js && node --check lib/config.js && node --check lib/core.js && node --check lib/zellij.js && node --check lib/api.js && node --check lib/daemon.js && node --check lib/hooks.js && node --check lib/terminal.js && node --check lib/suggestions.js && node --check web/webclient.js && zsh -n shell/ai-workstream.zsh && node --test",
     "prepack": "npm run check",
     "prepublishOnly": "npm run check"
   },
@@ -28,6 +28,7 @@
     "server.js",
     "config.ini",
     "lib/",
+    "shell/",
     "web/"
   ],
   "repository": {

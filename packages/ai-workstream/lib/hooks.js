@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { CONFIG } from './config.js';
 import {
@@ -9,9 +10,14 @@ import {
   resolveRow,
   setAgentStatus,
   setConfiguredLocationAgentStatus,
+  setConfiguredLocationShellStatus,
+  setShellStatus,
 } from './core.js';
 
 export const AGENT_HOOK_COMMAND = 'ws hook agent-status';
+export const SHELL_HOOK_COMMAND = 'ws hook shell-status';
+const SHELL_HOOK_SOURCE = fileURLToPath(new URL('../shell/ai-workstream.zsh', import.meta.url));
+const SHELL_HOOK_MARKER = '# ai-workstream shell status hook';
 
 const COMMON_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PostToolUse', 'Stop'];
 const READY_EVENTS = new Set(['SessionStart', 'PermissionRequest', 'Notification', 'Stop']);
@@ -54,6 +60,15 @@ function writeJsonAtomic(path, value) {
   renameSync(temporary, path);
 }
 
+function writeTextAtomic(path, value, mode = 0o600) {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, value, { mode });
+  renameSync(temporary, path);
+}
+
+const shellQuote = (value) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+
 function installFile(path, provider, command) {
   const settings = readJson(path);
   let added = 0;
@@ -84,6 +99,40 @@ export function agentHookStatus({ home = homedir(), command = AGENT_HOOK_COMMAND
     const installedEvents = events.filter((event) => hasHandler(settings.hooks?.[event], command));
     return { provider, path, installed: installedEvents.length === events.length, events: installedEvents };
   });
+}
+
+export function installShellHooks({
+  home = homedir(),
+  configHome = process.env.XDG_CONFIG_HOME || join(home, '.config'),
+  source = SHELL_HOOK_SOURCE,
+} = {}) {
+  const path = join(configHome, 'ai-workstream', 'shell.zsh');
+  const rcPath = join(home, '.zshrc');
+  const script = readFileSync(source, 'utf8');
+  const installedScript = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  const scriptUpdated = installedScript !== script;
+  if (scriptUpdated) writeTextAtomic(path, script, 0o644);
+
+  const sourceLine = `source ${shellQuote(path)}`;
+  const rc = existsSync(rcPath) ? readFileSync(rcPath, 'utf8') : '';
+  const added = !rc.split(/\r?\n/).includes(sourceLine);
+  if (added) {
+    const separator = rc && !rc.endsWith('\n') ? '\n' : '';
+    const writableRcPath = existsSync(rcPath) ? realpathSync(rcPath) : rcPath;
+    const mode = existsSync(writableRcPath) ? statSync(writableRcPath).mode & 0o777 : 0o644;
+    writeTextAtomic(writableRcPath, `${rc}${separator}\n${SHELL_HOOK_MARKER}\n${sourceLine}\n`, mode);
+  }
+  return { provider: 'zsh', path, rcPath, added: Number(added), updated: scriptUpdated, installed: true };
+}
+
+export function shellHookStatus({
+  home = homedir(), configHome = process.env.XDG_CONFIG_HOME || join(home, '.config'),
+} = {}) {
+  const path = join(configHome, 'ai-workstream', 'shell.zsh');
+  const rcPath = join(home, '.zshrc');
+  const sourceLine = `source ${shellQuote(path)}`;
+  const sourced = existsSync(rcPath) && readFileSync(rcPath, 'utf8').split(/\r?\n/).includes(sourceLine);
+  return { provider: 'zsh', path, rcPath, installed: existsSync(path) && sourced };
 }
 
 export function recordAgentHook(payload, {
@@ -119,6 +168,45 @@ export function recordAgentHook(payload, {
       });
       if (configured) {
         setConfiguredLocationAgentStatus(db, configured.id, status);
+        return { updated: true, id: configured.id, status };
+      }
+    }
+    return { updated: false, reason: 'workstream not found' };
+  } finally {
+    if (!suppliedDb) db.close();
+  }
+}
+
+export function recordShellHook(status, {
+  db: suppliedDb,
+  env = process.env,
+  config = CONFIG,
+  cwd = env.PWD || process.cwd(),
+} = {}) {
+  if (status !== 'working' && status !== 'ready') {
+    return { updated: false, reason: 'unsupported status' };
+  }
+  const db = suppliedDb || openDb();
+  try {
+    const explicitId = env.AI_WORKSTREAM_ID;
+    if (explicitId && config.locations?.[explicitId]) {
+      setConfiguredLocationShellStatus(db, explicitId, status);
+      return { updated: true, id: explicitId, status };
+    }
+    const row = explicitId ? resolveRow(db, String(explicitId)) : null;
+    const selected = row || (typeof cwd === 'string' ? currentWorkstream(db, cwd) : null);
+    if (selected) {
+      setShellStatus(db, selected.id, status);
+      return { updated: true, id: selected.id, status };
+    }
+    if (typeof cwd === 'string') {
+      const resolvedCwd = resolve(cwd);
+      const configured = Object.values(config.locations || {}).find((location) => {
+        const path = resolve(location.path);
+        return resolvedCwd === path || resolvedCwd.startsWith(`${path}/`);
+      });
+      if (configured) {
+        setConfiguredLocationShellStatus(db, configured.id, status);
         return { updated: true, id: configured.id, status };
       }
     }

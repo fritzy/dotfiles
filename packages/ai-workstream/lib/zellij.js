@@ -197,8 +197,12 @@ function selectedPanels(opts, config = CONFIG) {
   return panels;
 }
 
+function trackedShellCommand(row, config = CONFIG) {
+  return ['env', `AI_WORKSTREAM_ID=${row.id}`, ...config.commands.shell];
+}
+
 function renderPane(role, row, opts, config = CONFIG) {
-  if (role === 'shell') return commandPane('shell', config.commands.shell);
+  if (role === 'shell') return commandPane('shell', trackedShellCommand(row, config));
   if (role === 'editor') {
     return commandPane('editor', [
       ...config.commands.editor,
@@ -209,7 +213,7 @@ function renderPane(role, row, opts, config = CONFIG) {
 }
 
 function panelCommand(row, kind, opts = {}, config = CONFIG) {
-  if (kind === 'shell') return { name: 'shell', command: config.commands.shell };
+  if (kind === 'shell') return { name: 'shell', command: trackedShellCommand(row, config) };
   if (kind === 'editor') {
     return {
       name: 'editor',
@@ -426,17 +430,19 @@ export function panelStatesInSession(row, { run = detachedZellij, session } = {}
   };
 }
 
-export function focusAgentInSession(
+export function focusPanelInSession(
   row,
+  kind,
   { run = detachedZellij, preferredSession = WS_SESSION } = {},
 ) {
+  if (!PANEL_ROLES.includes(kind)) throw new Error(`unknown panel "${kind}"`);
   const tabName = computeTabName(row);
   const sessions = sessionCandidates(run, undefined, true, preferredSession);
   let tabFound = false;
   for (const session of sessions) {
     const paneList = panesInSession(session, run);
     if (paneList.some((pane) => pane.tab_name === tabName)) tabFound = true;
-    const pane = paneFor(paneList, tabName, 'agent');
+    const pane = paneFor(paneList, tabName, kind);
     if (!pane) continue;
     requireZellij(
       run(['--session', session, 'action', 'go-to-tab-name', tabName]),
@@ -445,12 +451,20 @@ export function focusAgentInSession(
     const paneId = `terminal_${pane.id}`;
     const focused = run(['--session', session, 'action', 'focus-pane-id', paneId]);
     if (!/pane\s+\S+\s+is already focused/i.test(stripVTControlCharacters(zellijOutput(focused)))) {
-      requireZellij(focused, `failed to focus agent pane in "${tabName}"`);
+      requireZellij(focused, `failed to focus ${kind} pane in "${tabName}"`);
     }
     return { session, tabName, paneId };
   }
-  if (tabFound) throw new Error(`tab "${tabName}" has no agent panel`);
+  if (tabFound) throw new Error(`tab "${tabName}" has no ${kind} panel`);
   throw new Error(`tab "${tabName}" is not open`);
+}
+
+export function focusAgentInSession(row, opts = {}) {
+  return focusPanelInSession(row, 'agent', opts);
+}
+
+export function focusShellInSession(row, opts = {}) {
+  return focusPanelInSession(row, 'shell', opts);
 }
 
 export function togglePanelInSession(
@@ -594,6 +608,32 @@ export function renameTab(oldTabName, newTabName) {
   zellij(['action', 'go-to-tab-name', oldTabName]);
   const r = zellij(['action', 'rename-tab', newTabName]);
   return r.status === 0;
+}
+
+// Rename an open tab from the daemon without depending on whichever tab a
+// client currently has focused. A paused/closed workstream has no matching tab,
+// in which case its next open simply uses the new computed name.
+export function renameTabInSession(
+  oldTabName,
+  newTabName,
+  { run = detachedZellij, session } = {},
+) {
+  if (oldTabName === newTabName) return false;
+  const sessions = session ? [session] : activeSessions(run);
+  let renamed = false;
+  for (const candidate of sessions) {
+    const tabPane = panesInSession(candidate, run).find((pane) => pane.tab_name === oldTabName);
+    if (!tabPane) continue;
+    requireZellij(
+      run([
+        '--session', candidate, 'action', 'rename-tab', '--tab-id',
+        String(tabPane.tab_id), newTabName,
+      ]),
+      `failed to rename Zellij tab "${oldTabName}"`,
+    );
+    renamed = true;
+  }
+  return renamed;
 }
 
 // Add the named panel role (shell | editor | agent) to a workstream's tab if it isn't

@@ -6,9 +6,11 @@ import {
   closePane,
   closeTabInSession,
   focusAgentInSession,
+  focusShellInSession,
   openTabInSession,
   openTabNames,
   panelStatesInSession,
+  renameTabInSession,
   replaceAgentInSession,
   renderLayout,
   togglePanelInSession,
@@ -77,7 +79,8 @@ test('startup layout contains only the first panel outside a nested pane contain
 
 test('noEditor removes the editor from the configured panel list', () => {
   const layout = renderLayout(row, { noEditor: true }, baseConfig);
-  assert.match(layout, /name="shell"/);
+  assert.match(layout, /name="shell" command="env"/);
+  assert.match(layout, /args "AI_WORKSTREAM_ID=7" "fish" "--login"/);
   assert.doesNotMatch(layout, /name="editor"/);
   assert.doesNotMatch(layout, /name="claude"/);
 });
@@ -262,6 +265,35 @@ test('focusAgentInSession treats an already-focused agent pane as success', () =
   });
 });
 
+test('focusShellInSession targets the named shell pane', () => {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (args[0] === 'list-sessions') return { status: 0, stdout: 'ws\n', stderr: '' };
+    if (args.includes('list-clients')) {
+      return { status: 0, stdout: 'CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND\n', stderr: '' };
+    }
+    if (args.includes('list-panes')) {
+      return {
+        status: 0,
+        stdout: JSON.stringify([
+          { id: 8, title: 'shell', tab_name: '7:project:feature-test', is_plugin: false },
+          { id: 9, title: 'agent', tab_name: '7:project:feature-test', is_plugin: false },
+        ]),
+        stderr: '',
+      };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  assert.deepEqual(focusShellInSession(row, { run }), {
+    session: 'ws', tabName: '7:project:feature-test', paneId: 'terminal_8',
+  });
+  assert.deepEqual(calls.at(-1), [
+    '--session', 'ws', 'action', 'focus-pane-id', 'terminal_8',
+  ]);
+});
+
 test('closeTabInSession closes the named tab without attaching', () => {
   const calls = [];
   const run = (args) => {
@@ -285,6 +317,32 @@ test('closeTabInSession closes the named tab without attaching', () => {
   ]);
   assert.equal(calls.some((args) => args.includes('go-to-tab-name')), false);
   assert.equal(calls.some((args) => args[0] === 'attach'), false);
+});
+
+test('renameTabInSession renames the matching tab by id without changing focus', () => {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (args.includes('list-panes')) {
+      return {
+        status: 0,
+        stdout: JSON.stringify([
+          { id: 9, tab_id: 3, title: 'shell', tab_name: 'dotfiles', is_plugin: false },
+          { id: 10, tab_id: 7, title: 'shell', tab_name: '7:scratchpad:ideas', is_plugin: false },
+        ]),
+        stderr: '',
+      };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  assert.equal(renameTabInSession('7:scratchpad:ideas', '7:Project ideas', {
+    run, session: 'ws',
+  }), true);
+  assert.deepEqual(calls.at(-1), [
+    '--session', 'ws', 'action', 'rename-tab', '--tab-id', '7', '7:Project ideas',
+  ]);
+  assert.equal(calls.some((args) => args.includes('go-to-tab-name')), false);
 });
 
 test('detached panel state and toggles target the workstream tab', () => {

@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   unlinkSync,
 } from 'node:fs';
@@ -13,6 +15,29 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG } from './config.js';
 
 export const SERVER_ENTRY = fileURLToPath(new URL('../server.js', import.meta.url));
+
+export function daemonRevision() {
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const sources = [
+    'server.js',
+    'package.json',
+    'config.ini',
+    ...readdirSync(join(root, 'lib'))
+      .filter((name) => name.endsWith('.js'))
+      .sort()
+      .map((name) => join('lib', name)),
+  ];
+  const hash = createHash('sha256');
+  for (const source of sources) {
+    hash.update(source);
+    hash.update('\0');
+    hash.update(readFileSync(join(root, source)));
+    hash.update('\0');
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+export const DAEMON_REVISION = daemonRevision();
 
 export function daemonFiles(config = CONFIG) {
   return {
@@ -78,6 +103,7 @@ export async function daemonStatus(config = CONFIG) {
     return {
       running: true,
       stale: false,
+      outdated: health.revision !== DAEMON_REVISION,
       info,
       health,
       url: endpoint(info.host, info.port),
@@ -91,7 +117,12 @@ const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 
 export async function startDaemon({ config = CONFIG, host = config.server.host, port = config.server.port } = {}) {
   const existing = await daemonStatus(config);
-  if (existing.running) return { ...existing, alreadyRunning: true };
+  if (existing.running && !existing.outdated) return { ...existing, alreadyRunning: true };
+  let restarted = false;
+  if (existing.running && existing.outdated) {
+    const stopped = await stopDaemon(config);
+    restarted = stopped.stopped;
+  }
   if (existing.processExists) {
     throw new Error(`pid ${existing.info.pid} exists but does not answer as ai-workstream; refusing to replace it`);
   }
@@ -119,6 +150,7 @@ export async function startDaemon({ config = CONFIG, host = config.server.host, 
       return {
         running: true,
         alreadyRunning: false,
+        restarted,
         info: readDaemonInfo(config) || expected,
         health,
         url: endpoint(host, port),

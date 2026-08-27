@@ -10,42 +10,57 @@ import {
   addLog,
   configuredLocationAgentStatus,
   configuredLocationGitClean,
+  configuredLocationShellStatus,
+  computeTabName,
   createScratchpad,
   ensureWeeklyNote,
   existingNoteDir,
   expandIssueReference,
   isScratch,
   latestWorkstreamEventSequence,
+  linkedSessionSeed,
   listWorkstreams,
   materializeWorktree,
   now,
   openDb,
   parseSelector,
+  recentRepositories,
   removeIssue,
   removeWorktree,
-  renameWorkstream,
   resolveRow,
   selectedAgent,
   setPath,
   setSelectedAgent,
   setCachedGitClean,
+  setConfiguredLocationShellStatus,
+  setShellStatus,
+  setWorkstreamLabel,
   setStatus,
   upsertWorkstream,
   worktreeDirty,
   worktreeCleanAsync,
   workstreamEventsAfter,
   workstreamView,
+  writeSeed,
 } from './core.js';
 import {
   closeTabInSession,
   focusAgentInSession,
+  focusShellInSession,
   openTabNames,
   openTabInSession,
   panelStatesInSession,
   replaceAgentInSession,
+  renameTabInSession,
   togglePanelInSession,
 } from './zellij.js';
 import { focusTerminalForZellij } from './terminal.js';
+import {
+  githubWorkSuggestions,
+  linearSearchSuggestions as searchLinearSuggestions,
+  linearWorkSuggestions,
+} from './suggestions.js';
+import { DAEMON_REVISION } from './daemon.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
@@ -56,7 +71,7 @@ const TYPES = ['repo', 'scratchpad', 'misc'];
 const STATUSES = ['active', 'paused', 'closed', 'all', 'active_paused'];
 export const API_COMMANDS = [
   'pause', 'resume', 'close', 'rename', 'log', 'issue-add', 'issue-remove', 'panel-toggle', 'open-path',
-  'open-notes', 'focus-agent', 'agent-set',
+  'open-notes', 'focus-agent', 'focus-shell', 'agent-set',
 ];
 
 export class ApiError extends Error {
@@ -87,6 +102,7 @@ function miscWorkstreams(db, config, tabNames = []) {
     scratch: false,
     status: openTabs.has(item.id) ? 'active' : 'paused',
     agentStatus: configuredLocationAgentStatus(db, item.id),
+    shellStatus: configuredLocationShellStatus(db, item.id),
     agent: selectedAgent(db, item.id, config.agent || CONFIG.agent),
     source: 'configured',
     worktreePresent: existsSync(item.path),
@@ -254,11 +270,24 @@ export function createRepoWorkstream(db, body = {}, context = {}) {
     last_joined_at: timestamp,
   });
   setSelectedAgent(db, row.id, agent);
+  if (!panels.includes('shell')) setShellStatus(db, row.id, null);
   for (const ref of expandedLinks) addIssue(db, row.id, ref);
+
+  let seed;
+  if (expandedLinks.length) {
+    try {
+      seed = (context.writeSeed || writeSeed)(row, linkedSessionSeed('repo', expandedLinks));
+    } catch (error) {
+      setStatus(db, row.id, 'paused');
+      throw new ApiError(502, `workstream #${row.id} was created, but its agent seed could not be written: ${error.message}`, {
+        id: row.id,
+      });
+    }
+  }
 
   let tab;
   try {
-    tab = (context.openTab || openTabInSession)(row, { agent, panels });
+    tab = (context.openTab || openTabInSession)(row, { agent, panels, ...(seed ? { seed } : {}) });
   } catch (error) {
     setStatus(db, row.id, 'paused');
     throw new ApiError(502, `workstream #${row.id} was created, but its Zellij tab could not be opened: ${error.message}`, {
@@ -310,11 +339,24 @@ export function createScratchpadWorkstream(db, body = {}, context = {}) {
     throw new ApiError(502, `could not create scratchpad: ${error.message}`);
   }
   setSelectedAgent(db, row.id, agent);
+  if (!panels.includes('shell')) setShellStatus(db, row.id, null);
   for (const ref of expandedLinks) addIssue(db, row.id, ref);
+
+  let seed;
+  if (expandedLinks.length) {
+    try {
+      seed = (context.writeSeed || writeSeed)(row, linkedSessionSeed('scratchpad', expandedLinks));
+    } catch (error) {
+      setStatus(db, row.id, 'paused');
+      throw new ApiError(502, `scratchpad #${row.id} was created, but its agent seed could not be written: ${error.message}`, {
+        id: row.id,
+      });
+    }
+  }
 
   let tab;
   try {
-    tab = (context.openTab || openTabInSession)(row, { agent, panels });
+    tab = (context.openTab || openTabInSession)(row, { agent, panels, ...(seed ? { seed } : {}) });
   } catch (error) {
     setStatus(db, row.id, 'paused');
     throw new ApiError(502, `scratchpad #${row.id} was created, but its Zellij tab could not be opened: ${error.message}`, {
@@ -388,21 +430,29 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
     if (command === 'close') {
       throw new ApiError(400, `configured location "${id}" cannot be closed; pause its tab instead`);
     }
-    if (!['pause', 'resume', 'focus-agent', 'panel-toggle', 'agent-set'].includes(command)) {
-      throw new ApiError(400, `configured location "${id}" only supports pause, resume, open-path, focus-agent, panel-toggle, and agent-set`);
+    if (!['pause', 'resume', 'focus-agent', 'focus-shell', 'panel-toggle', 'agent-set'].includes(command)) {
+      throw new ApiError(400, `configured location "${id}" only supports pause, resume, open-path, focus-agent, focus-shell, panel-toggle, and agent-set`);
     }
     let result = {};
     try {
       if (command === 'pause') {
         (context.closeTab || closeTabInSession)(configuredRow);
       } else if (command === 'resume') {
+        const panels = requestedPanels(body.panels, config.panels);
         const opts = {
           agent: selectedAgent(db, id, defaultAgent),
-          ...(configuredRow.weeklyNotes ? { editorFile: ensureWeeklyNote(configuredRow.path) } : {}),
+          panels,
+          ...(configuredRow.weeklyNotes && panels.includes('editor')
+            ? { editorFile: ensureWeeklyNote(configuredRow.path) }
+            : {}),
         };
         (context.openTab || openTabInSession)(configuredRow, opts);
-      } else if (command === 'focus-agent') {
-        result = (context.focusAgent || focusAgentInSession)(configuredRow);
+        if (!panels.includes('shell')) setConfiguredLocationShellStatus(db, id, null);
+      } else if (command === 'focus-agent' || command === 'focus-shell') {
+        const focus = command === 'focus-shell'
+          ? (context.focusShell || focusShellInSession)
+          : (context.focusAgent || focusAgentInSession);
+        result = focus(configuredRow);
         result = {
           ...result,
           terminalFocus: (context.focusTerminal || focusTerminalForZellij)(result.session),
@@ -419,6 +469,9 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
             : {}),
         };
         result = (context.togglePanel || togglePanelInSession)(configuredRow, panel, opts);
+        if (panel === 'shell' && result.open === false) {
+          setConfiguredLocationShellStatus(db, id, null);
+        }
       } else {
         const agent = requiredAgent(body.agent);
         const previous = selectedAgent(db, id, defaultAgent);
@@ -436,8 +489,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
         ? 'close Zellij tab'
         : command === 'resume'
           ? 'open Zellij tab'
-          : command === 'focus-agent'
-            ? 'focus agent panel'
+          : command === 'focus-agent' || command === 'focus-shell'
+            ? `focus ${command === 'focus-shell' ? 'shell' : 'agent'} panel`
             : command === 'panel-toggle'
               ? 'toggle Zellij panel'
               : 'change agent';
@@ -468,13 +521,16 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
           row.path = path;
         }
       }
+      const panels = requestedPanels(body.panels, config.panels);
       try {
         (context.openTab || openTabInSession)(row, {
           agent: selectedAgent(db, row.id, defaultAgent),
+          panels,
         });
       } catch (error) {
         throw new ApiError(502, `could not open Zellij tab: ${error.message}`);
       }
+      if (!panels.includes('shell')) setShellStatus(db, row.id, null);
       setStatus(db, row.id, 'active', true);
       break;
     }
@@ -500,9 +556,22 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
       result = { removed: remove };
       break;
     }
-    case 'rename':
-      row = renameWorkstream(db, row, requiredString(body.name, 'name'));
+    case 'rename': {
+      const name = requiredString(body.name, 'name');
+      const oldTabName = computeTabName(row);
+      const newTabName = computeTabName({ ...row, label: name });
+      try {
+        result = {
+          tabRenamed: context.renameTab
+            ? context.renameTab(oldTabName, newTabName)
+            : false,
+        };
+      } catch (error) {
+        throw new ApiError(502, `could not rename Zellij tab: ${error.message}`);
+      }
+      row = setWorkstreamLabel(db, row, name);
       break;
+    }
     case 'log':
       result = addLog(db, row.id, requiredString(body.body, 'body'), body.done === true);
       break;
@@ -538,17 +607,22 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
       } catch (error) {
         throw new ApiError(502, `could not toggle Zellij panel: ${error.message}`);
       }
+      if (panel === 'shell' && result.open === false) setShellStatus(db, row.id, null);
       break;
     }
     case 'focus-agent':
+    case 'focus-shell':
       try {
-        result = (context.focusAgent || focusAgentInSession)(row);
+        const focus = command === 'focus-shell'
+          ? (context.focusShell || focusShellInSession)
+          : (context.focusAgent || focusAgentInSession);
+        result = focus(row);
         result = {
           ...result,
           terminalFocus: (context.focusTerminal || focusTerminalForZellij)(result.session),
         };
       } catch (error) {
-        throw new ApiError(502, `could not focus agent panel: ${error.message}`);
+        throw new ApiError(502, `could not focus ${command === 'focus-shell' ? 'shell' : 'agent'} panel: ${error.message}`);
       }
       break;
     case 'agent-set': {
@@ -687,7 +761,9 @@ export function createApiService({
   panelState = panelStatesInSession,
   togglePanel = togglePanelInSession,
   replaceAgent = replaceAgentInSession,
+  renameTab = renameTabInSession,
   focusAgent = focusAgentInSession,
+  focusShell = focusShellInSession,
   focusTerminal = focusTerminalForZellij,
   openPath = openPathWithXdg,
   checkGit = worktreeCleanAsync,
@@ -695,17 +771,44 @@ export function createApiService({
   materialize = materializeWorktree,
   parseRepoSelector = parseSelector,
   expandIssue = expandIssueReference,
+  writeSeed: writeSessionSeed = writeSeed,
   clock = now,
   createScratchpadEntry = createScratchpad,
+  linearSuggestions = linearWorkSuggestions,
+  linearSearch = searchLinearSuggestions,
+  githubSuggestions = githubWorkSuggestions,
+  suggestionCacheMs = 60_000,
 } = {}) {
   const db = suppliedDb || openDb();
   const ownsDb = !suppliedDb;
   const clients = new Set();
   const pendingGitRefreshes = new Map();
+  const suggestionCaches = new Map();
   let closing = false;
   let lastEventSequence = latestWorkstreamEventSequence(db);
   let lastTabNames = [];
   let lastMiscStatuses = null;
+
+  const linkSuggestions = async (provider, query = '') => {
+    const key = `${provider}:${query.toLowerCase()}`;
+    const cached = suggestionCaches.get(key);
+    if (cached?.items && Date.now() - cached.loadedAt < suggestionCacheMs) return cached.items;
+    if (cached?.pending) return cached.pending;
+    const load = provider === 'linear' && query
+      ? () => linearSearch(query)
+      : provider === 'linear'
+        ? () => linearSuggestions({ reference: clock() })
+      : () => githubSuggestions();
+    const pending = Promise.resolve().then(load).then((items) => {
+      suggestionCaches.set(key, { items, loadedAt: Date.now() });
+      return items;
+    }).catch((cause) => {
+      suggestionCaches.delete(key);
+      throw new ApiError(502, cause.message);
+    });
+    suggestionCaches.set(key, { pending });
+    return pending;
+  };
 
   const readOpenTabs = () => {
     try {
@@ -837,6 +940,7 @@ export function createApiService({
           version: PACKAGE.version,
           pid: process.pid,
           uptime: process.uptime(),
+          revision: DAEMON_REVISION,
           websocket: '/ws/events',
         });
       }
@@ -845,10 +949,24 @@ export function createApiService({
       }
 
       const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
+      if (req.method === 'GET' && parts[0] === 'ws' && parts[1] === 'link-suggestions' && parts.length === 3) {
+        const provider = parts[2];
+        if (provider !== 'linear' && provider !== 'github') {
+          throw new ApiError(400, 'link suggestion provider must be linear or github');
+        }
+        const query = (url.searchParams.get('q') || '').trim();
+        const suggestions = await linkSuggestions(provider, query);
+        const items = query && provider !== 'linear'
+          ? suggestions.filter((item) => [item.id, item.title, item.repository, item.group]
+            .some((value) => String(value || '').toLowerCase().includes(query.toLowerCase())))
+          : suggestions;
+        return json(res, 200, { provider, items: items.slice(0, 100) });
+      }
       if (req.method === 'GET' && parts[0] === 'ws' && parts[1] === 'new' && parts.length === 2) {
         return json(res, 200, {
           repositoryRoot: config.paths.repositories,
           scratchpadRoot: config.paths.scratchpads,
+          recentRepositories: recentRepositories(db, { reference: clock() }),
           agent: config.agent,
           panels: config.panels,
         });
@@ -880,7 +998,8 @@ export function createApiService({
       if (req.method === 'POST' && parts[0] === 'ws' && parts.length === 1) {
         const body = await jsonBody(req);
         const result = createRepoWorkstream(db, body, {
-          cwd, config, openTab, materialize, parseSelector: parseRepoSelector, expandIssue, now: clock,
+          cwd, config, openTab, materialize, parseSelector: parseRepoSelector, expandIssue,
+          writeSeed: writeSessionSeed, now: clock,
         });
         result.workstream = await refreshGitBeforeResponse(result.workstream);
         broadcastChanges();
@@ -891,6 +1010,7 @@ export function createApiService({
         const body = await jsonBody(req);
         const result = createScratchpadWorkstream(db, body, {
           cwd, config, openTab, createScratchpad: createScratchpadEntry, expandIssue,
+          writeSeed: writeSessionSeed,
         });
         result.workstream = await refreshGitBeforeResponse(result.workstream);
         broadcastChanges();
@@ -901,7 +1021,7 @@ export function createApiService({
         const body = await jsonBody(req);
         const result = executeWorkstreamCommand(db, parts[1], parts[2], body, {
           cwd, config, tabNames: readOpenTabs(),
-          openTab, closeTab, togglePanel, replaceAgent, focusAgent, focusTerminal, openPath,
+          openTab, closeTab, togglePanel, replaceAgent, renameTab, focusAgent, focusShell, focusTerminal, openPath,
         });
         broadcastChanges();
         if (result.workstream.type === 'misc') broadcastMiscChanges();

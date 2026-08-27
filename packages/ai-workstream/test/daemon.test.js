@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { openWebPage } from '../lib/daemon.js';
+import { DAEMON_REVISION, daemonRevision, openWebPage } from '../lib/daemon.js';
+
+test('daemon revision fingerprints server-side package sources', () => {
+  assert.match(DAEMON_REVISION, /^[a-f0-9]{16}$/);
+  assert.equal(daemonRevision(), DAEMON_REVISION);
+});
 
 test('web opener uses the platform command with the daemon URL', () => {
   const calls = [];

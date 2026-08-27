@@ -179,3 +179,6 @@ if [ -f '/home/nathan.fritz/.local/opt/google-cloud-sdk/path.zsh.inc' ]; then . 
 if [ -f '/home/nathan.fritz/.local/opt/google-cloud-sdk/completion.zsh.inc' ]; then . '/home/nathan.fritz/.local/opt/google-cloud-sdk/completion.zsh.inc'; fi
 
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
+
+# ai-workstream shell status hook
+source '/home/nathan.fritz/.config/ai-workstream/shell.zsh'

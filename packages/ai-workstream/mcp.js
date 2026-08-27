@@ -24,7 +24,7 @@ import {
   openDb, resolveRow, currentWorkstream, now,
   listWorkstreams, listIssues, addIssue, removeIssue, addLog, workstreamView,
   createScratchpad, parseSelector, materializeWorktree, upsertWorkstream,
-  setStatus, setPath, linkPr, renameWorkstream, writeSeed,
+  setStatus, setPath, linkPr, linkedSessionSeed, renameWorkstream, writeSeed,
   worktreeDirty, removeWorktree, isScratch, computeTabName,
   collectDayActivity, renderDigest, appendDayEntry, NOTES_ROOT,
   addNote, listNotes,
@@ -70,6 +70,12 @@ function tabOpts(row, { seed, noVim, noEditor, agent, model, panels } = {}) {
     ...(model ? { model } : {}),
     ...(panels ? { panels } : {}),
   };
+}
+
+function linkedSeed(db, row, kind, seed) {
+  const linked = linkedSessionSeed(kind, listIssues(db, row.id).map((issue) => issue.ref));
+  if (!linked) return seed;
+  return seed ? `${seed.trimEnd()}\n\n${linked}` : linked;
 }
 const noVimArg = z.boolean().optional()
   .describe('Deprecated alias for noEditor.');
@@ -129,7 +135,9 @@ server.registerTool('ws_scratch', {
   const row = createScratchpad(db, name);
   return json({
     workstream: workstreamView(db, row, process.cwd()),
-    tabOpened: maybeOpenTab(row, tabOpts(row, { seed, agent, model, panels, noEditor })),
+    tabOpened: maybeOpenTab(row, tabOpts(row, {
+      seed: linkedSeed(db, row, 'scratchpad', seed), agent, model, panels, noEditor,
+    })),
   });
 });
 
@@ -179,7 +187,9 @@ server.registerTool('ws_new', {
     workstream: workstreamView(db, row, process.cwd()),
     linkedPr: linked ? linked.pr : null,
     branchedOffParent: !!sameRepo,
-    tabOpened: maybeOpenTab(row, tabOpts(row, { seed, noVim, noEditor, agent, model, panels })),
+    tabOpened: maybeOpenTab(row, tabOpts(row, {
+      seed: linkedSeed(db, row, 'repo', seed), noVim, noEditor, agent, model, panels,
+    })),
   });
 });
 

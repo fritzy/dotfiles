@@ -11,21 +11,26 @@ import {
   computeTabName,
   configuredLocationAgentStatus,
   configuredLocationGitClean,
+  configuredLocationShellStatus,
   expandIssueReference,
   issueKind,
   listIssues,
+  linkedSessionSeed,
   listLogs,
   latestWorkstreamEventSequence,
   openDb,
   parentOf,
+  recentRepositories,
   refreshWorkstreamStatuses,
   removeIssue,
   resolveRow,
   setParent,
   setAgentStatus,
   setConfiguredLocationAgentStatus,
+  setConfiguredLocationShellStatus,
   setCachedGitClean,
   setSelectedAgent,
+  setShellStatus,
   setStatus,
   stackLine,
   selectedAgent,
@@ -34,6 +39,27 @@ import {
   worktreeClean,
   worktreeCleanAsync,
 } from '../lib/core.js';
+
+test('recent repositories are unique, ordered by use, and limited to three months', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-recent-repos-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const db = openDb(join(dir, 'workstreams.db'));
+  t.after(() => db.close());
+  const add = (org, repo, branch, lastJoined) => upsertWorkstream(db, {
+    org, repo, branch, source: org === 'scratch' ? 'scratch' : 'origin',
+    path: join(dir, `${org}-${repo}-${branch}`),
+    created_at: lastJoined,
+    last_joined_at: lastJoined,
+  });
+  add('example', 'older-recent', 'main', '2026-06-01T12:00:00.000Z');
+  add('example', 'project', 'one', '2026-08-20T12:00:00.000Z');
+  add('example', 'project', 'two', '2026-08-25T12:00:00.000Z');
+  add('example', 'stale', 'main', '2026-05-26T11:59:59.000Z');
+  add('scratch', 'scratch', 'notes', '2026-08-26T12:00:00.000Z');
+  assert.deepEqual(recentRepositories(db, {
+    reference: '2026-08-26T12:00:00.000Z',
+  }), ['example/project', 'example/older-recent']);
+});
 
 test('worktree cleanliness distinguishes clean, dirty, and unavailable paths', async () => {
   const present = { exists: () => true };
@@ -71,6 +97,33 @@ test('cached Git cleanliness emits update-session events only when it changes', 
     [
       { id: row.id, type: 'update_session' },
       { id: 'savefiles', type: 'update_session' },
+    ],
+  );
+});
+
+test('shell status emits typed events for workstreams and configured locations', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-shell-status-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const db = openDb(join(dir, 'workstreams.db'));
+  t.after(() => db.close());
+  const row = upsertWorkstream(db, {
+    org: 'example', repo: 'project', branch: 'shell-status', source: 'origin',
+    path: join(dir, 'project'), created_at: '2026-08-26T12:00:00.000Z',
+    last_joined_at: '2026-08-26T12:00:00.000Z',
+  });
+  const cursor = latestWorkstreamEventSequence(db);
+  setShellStatus(db, row.id, 'working');
+  setShellStatus(db, row.id, 'ready');
+  setShellStatus(db, row.id, null);
+  setConfiguredLocationShellStatus(db, 'notes', 'ready');
+  assert.equal(configuredLocationShellStatus(db, 'notes'), 'ready');
+  assert.deepEqual(
+    workstreamEventsAfter(db, cursor).map(({ sequence, ...event }) => event),
+    [
+      { id: row.id, type: 'shell_status', status: 'working' },
+      { id: row.id, type: 'shell_status', status: 'ready' },
+      { id: row.id, type: 'update_session' },
+      { id: 'notes', type: 'shell_status', status: 'ready' },
     ],
   );
 });
@@ -132,6 +185,38 @@ test('legacy event journals migrate to typed WebSocket events', (t) => {
       { id: 7, type: 'update_session' },
     ],
   );
+});
+
+test('typed event journals migrate to support shell-status events', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-shell-event-migration-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'workstreams.db');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE workstream_events (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      workstream_id INTEGER NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('new_session', 'update_session', 'agent_status')),
+      agent_status TEXT CHECK(agent_status IN ('working', 'ready')),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK(type = 'agent_status' OR agent_status IS NULL),
+      CHECK(type != 'agent_status' OR agent_status IS NOT NULL)
+    );
+    INSERT INTO workstream_events (workstream_id, type, agent_status)
+    VALUES (9, 'agent_status', 'ready');
+  `);
+  legacy.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.deepEqual(
+    workstreamEventsAfter(db, 0).map(({ sequence, ...event }) => event),
+    [{ id: 9, type: 'agent_status', status: 'ready' }],
+  );
+  const schema = db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type='table' AND name='workstream_events'
+  `).get().sql;
+  assert.match(schema, /shell_status/);
 });
 
 test('event journal preserves each creation, status, and link mutation', (t) => {
@@ -241,6 +326,20 @@ test('issue shorthands expand to canonical GitHub and Linear URLs', () => {
     }),
     /could not resolve Linear issue ECO-99999/,
   );
+});
+
+test('linked session seeds identify the workstream kind and list canonical links', () => {
+  assert.equal(linkedSessionSeed('repo', []), '');
+  assert.equal(linkedSessionSeed('scratchpad', [
+    'https://linear.app/chainguard/issue/ECO-3380/example',
+    'https://github.com/chainguard-dev/mono/issues/23945',
+  ]), [
+    'This is a new ws session to work on a scratchpad. The following links are associated with this session. Use the linear skill with the cli and/or the gh cli to retrieve authed information.',
+    '* https://linear.app/chainguard/issue/ECO-3380/example',
+    '* https://github.com/chainguard-dev/mono/issues/23945',
+    'These links are for context. No action is to be taken based on these links nor their contents alone.',
+    '',
+  ].join('\n'));
 });
 
 test('database operations preserve workstream, stack, issue, and log state', (t) => {

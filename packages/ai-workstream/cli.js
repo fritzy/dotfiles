@@ -19,6 +19,7 @@ import {
   NOTES_ROOT, ensureWeeklyNote, appendDayEntry, collectDayActivity, renderDigest,
   selectedAgent,
   expandIssueReference,
+  linkedSessionSeed,
 } from './lib/core.js';
 import {
   openTab, closeTab, renameTab, inZellij, openPane, closePane, openTabNames,
@@ -26,7 +27,14 @@ import {
 import {
   daemonFiles, daemonStatus, openWebPage, runForeground, startDaemon, stopDaemon,
 } from './lib/daemon.js';
-import { agentHookStatus, installAgentHooks, recordAgentHook } from './lib/hooks.js';
+import {
+  agentHookStatus,
+  installAgentHooks,
+  installShellHooks,
+  recordAgentHook,
+  recordShellHook,
+  shellHookStatus,
+} from './lib/hooks.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 export const VERSION = PACKAGE.version;
@@ -109,6 +117,15 @@ function tabOpts(args, row, extra = {}) {
 function linkPrForRow(db, row) {
   const res = linkPr(db, row);
   if (res && res.added) console.log(`  linked PR #${res.pr.number} (${res.pr.state.toLowerCase()}): ${res.pr.url}`);
+}
+
+function linkedSessionTabOpts(db, row, args, kind) {
+  const opts = tabOpts(args, row);
+  const linked = linkedSessionSeed(kind, listIssues(db, row.id).map((issue) => issue.ref));
+  if (!linked) return opts;
+  const explicit = opts.seed ? readFileSync(opts.seed, 'utf8').trimEnd() : '';
+  const seed = explicit ? `${explicit}\n\n${linked}` : linked;
+  return { ...opts, seed: writeSeed(row, seed) };
 }
 
 function printIssues(db, workstreamId) {
@@ -218,7 +235,7 @@ async function cmdNew(args) {
       + (sameRepo ? '' : ' — different repo, so recorded only (not branched off it)'));
   }
   linkPrForRow(db, row);
-  openTab(row, tabOpts(args, row));
+  openTab(row, linkedSessionTabOpts(db, row, args, 'repo'));
 }
 
 // Create a scratchpad under the configured root with the configured tab layout.
@@ -229,7 +246,7 @@ async function cmdScratch(args) {
   const row = createScratchpad(db, name);
   console.log(`Scratchpad #${row.id}: ${row.branch}`);
   console.log(`  dir: ${row.path}`);
-  openTab(row, tabOpts(args, row));
+  openTab(row, linkedSessionTabOpts(db, row, args, 'scratchpad'));
 }
 
 // Open (or focus) any configured location. These are never closed as state and
@@ -353,7 +370,9 @@ async function cmdDaemon(args) {
       const status = await startDaemon(options);
       console.log(status.alreadyRunning
         ? `API daemon already running (pid ${status.info.pid}) at ${status.url}`
-        : `Started API daemon (pid ${status.info.pid}) at ${status.url}`);
+        : status.restarted
+          ? `Restarted outdated API daemon (pid ${status.info.pid}) at ${status.url}`
+          : `Started API daemon (pid ${status.info.pid}) at ${status.url}`);
       console.log(`  log: ${status.log}`);
       return;
     }
@@ -374,6 +393,7 @@ async function cmdDaemon(args) {
       if (status.running) {
         console.log(`API daemon running (pid ${status.info.pid}) at ${status.url}`);
         console.log(`  uptime: ${Math.floor(status.health.uptime)}s`);
+        console.log(`  source: ${status.outdated ? 'outdated; ws web start will restart it' : 'current'}`);
         console.log(`  log: ${status.log}`);
       } else if (status.stale) {
         console.log(`API daemon not responding (stale pid ${status.info.pid})`);
@@ -399,18 +419,30 @@ function cmdHooks(args) {
     for (const result of installAgentHooks()) {
       console.log(`${result.provider}: ${result.added ? `installed ${result.added} hooks` : 'already installed'} (${result.path})`);
     }
+    const shell = installShellHooks();
+    console.log(`${shell.provider}: ${shell.added || shell.updated ? 'installed shell hooks' : 'already installed'} (${shell.path})`);
     return;
   }
   if (action === 'status') {
     for (const result of agentHookStatus()) {
       console.log(`${result.provider}: ${result.installed ? 'installed' : 'not installed'} (${result.path})`);
     }
+    const shell = shellHookStatus();
+    console.log(`${shell.provider}: ${shell.installed ? 'installed' : 'not installed'} (${shell.path})`);
     return;
   }
   die(`unknown hooks action "${action}" (try: install | status)`);
 }
 
 function cmdAgentHook(args) {
+  if (args[0] === 'shell-status') {
+    try {
+      recordShellHook(args[1]);
+    } catch (error) {
+      console.error(`ws hook shell-status: ${error.message}`);
+    }
+    return;
+  }
   if (args[0] !== 'agent-status') die('unknown internal hook');
   try {
     const payload = JSON.parse(readFileSync(0, 'utf8'));
@@ -429,7 +461,9 @@ async function cmdWeb(args) {
   const status = await startDaemon(daemonOptions(args));
   console.log(status.alreadyRunning
     ? `API daemon already running (pid ${status.info.pid}) at ${status.url}`
-    : `Started API daemon (pid ${status.info.pid}) at ${status.url}`);
+    : status.restarted
+      ? `Restarted outdated API daemon (pid ${status.info.pid}) at ${status.url}`
+      : `Started API daemon (pid ${status.info.pid}) at ${status.url}`);
   const opened = openWebPage(status.url);
   console.log(`Opened ${opened.url} with ${opened.opener}`);
 }

@@ -18,9 +18,11 @@ import {
   openDb,
   setAgentStatus,
   setConfiguredLocationAgentStatus,
+  setConfiguredLocationShellStatus,
   selectedAgent,
   setCachedGitClean,
   setStatus,
+  setShellStatus,
   upsertWorkstream,
   workstreamSlug,
 } from '../lib/core.js';
@@ -75,10 +77,12 @@ function fixture(t) {
 test('REST query model filters types and statuses and paginates consistently', (t) => {
   const { db, repo, config } = fixture(t);
   setCachedGitClean(db, repo.id, true);
+  setShellStatus(db, repo.id, 'ready');
   const notesPath = join(config.paths.notes, 'work', '2026', 'workstream', workstreamSlug(repo));
   mkdirSync(notesPath, { recursive: true });
   addIssue(db, repo.id, 'https://github.com/example/project/issues/42');
   setConfiguredLocationAgentStatus(db, 'dotfiles', 'ready');
+  setConfiguredLocationShellStatus(db, 'dotfiles', 'working');
   const activeRepos = queryWorkstreams(db, {
     id: 'all', type: 'repo', status: 'active_paused', page: '0', perpage: '25',
   }, {
@@ -91,6 +95,7 @@ test('REST query model filters types and statuses and paginates consistently', (
   assert.equal(activeRepos.items[0].type, 'repo');
   assert.equal(activeRepos.items[0].repoUrl, 'https://github.com/example/project');
   assert.equal(activeRepos.items[0].gitClean, true);
+  assert.equal(activeRepos.items[0].shellStatus, 'ready');
   assert.equal(activeRepos.items[0].notesPath, notesPath);
   assert.equal(activeRepos.items[0].createdAt, '2026-08-26T12:00:00.000Z');
   assert.equal(activeRepos.items[0].issues[0].createdAt.length > 0, true);
@@ -103,6 +108,7 @@ test('REST query model filters types and statuses and paginates consistently', (
   assert.deepEqual(misc.items.map((item) => item.id), ['notes', 'dotfiles', 'savefiles']);
   assert.deepEqual(misc.items.map((item) => item.status), ['paused', 'active', 'paused']);
   assert.deepEqual(misc.items.map((item) => item.agentStatus), [null, 'ready', null]);
+  assert.deepEqual(misc.items.map((item) => item.shellStatus), [null, 'working', null]);
   assert.deepEqual(misc.items.map((item) => item.repo), ['fritzy/notes', 'fritzy/dotfiles', 'fritzy/savefiles']);
   assert.deepEqual(misc.items.map((item) => item.repoUrl), [
     'https://github.com/fritzy/notes', 'https://github.com/fritzy/dotfiles', 'https://github.com/fritzy/savefiles',
@@ -136,6 +142,21 @@ test('POST command model mutates only supported workstream state', (t) => {
   assert.deepEqual(closedTabs, [repo.id]);
   response = executeWorkstreamCommand(db, String(repo.id), 'rename', { name: 'API work' });
   assert.equal(response.workstream.id, repo.id);
+  const scratchPath = scratch.path;
+  const renamedTabs = [];
+  response = executeWorkstreamCommand(db, String(scratch.id), 'rename', { name: 'Project ideas' }, {
+    renameTab: (oldName, newName) => {
+      renamedTabs.push([oldName, newName]);
+      return true;
+    },
+  });
+  assert.equal(response.workstream.name, 'Project ideas');
+  assert.equal(response.workstream.branch, 'ideas');
+  assert.equal(response.workstream.path, scratchPath);
+  assert.equal(response.result.tabRenamed, true);
+  assert.deepEqual(renamedTabs, [[
+    `${scratch.id}:scratchpad:ideas`, `${scratch.id}:Project ideas`,
+  ]]);
   response = executeWorkstreamCommand(db, String(repo.id), 'log', { body: 'served over REST', done: true });
   assert.deepEqual(response.result, { id: 1, body: 'served over REST', done: true });
   response = executeWorkstreamCommand(db, String(repo.id), 'issue-add', { refs: ['#42'] });
@@ -181,22 +202,25 @@ test('POST command model mutates only supported workstream state', (t) => {
     closeTab: (row) => { configuredTabs.push(['pause', row.id, row.tab_name, row.path]); },
   });
   assert.equal(response.workstream.status, 'paused');
-  response = executeWorkstreamCommand(db, 'savefiles', 'resume', {}, {
+  response = executeWorkstreamCommand(db, 'savefiles', 'resume', { panels: ['shell', 'agent'] }, {
     config,
-    openTab: (row) => { configuredTabs.push(['resume', row.id, row.tab_name]); },
+    openTab: (row, opts) => { configuredTabs.push(['resume', row.id, row.tab_name, opts.panels]); },
   });
   assert.equal(response.workstream.status, 'active');
-  response = executeWorkstreamCommand(db, 'notes', 'resume', {}, {
+  response = executeWorkstreamCommand(db, 'notes', 'resume', { panels: ['shell', 'editor', 'agent'] }, {
     config,
-    openTab: (row, opts) => { configuredTabs.push(['resume', row.id, row.tab_name, opts.editorFile]); },
+    openTab: (row, opts) => {
+      configuredTabs.push(['resume', row.id, row.tab_name, opts.panels, opts.editorFile]);
+    },
   });
   assert.equal(response.workstream.status, 'active');
   assert.deepEqual(configuredTabs[0], ['pause', 'dotfiles', 'dotfiles', config.paths.dotfiles]);
-  assert.deepEqual(configuredTabs[1], ['resume', 'savefiles', 'savefiles']);
+  assert.deepEqual(configuredTabs[1], ['resume', 'savefiles', 'savefiles', ['shell', 'agent']]);
   assert.equal(configuredTabs[2][0], 'resume');
   assert.equal(configuredTabs[2][1], 'notes');
   assert.equal(configuredTabs[2][2], 'notes');
-  assert.match(configuredTabs[2][3], new RegExp(`^${config.paths.notes}/work/.*-week\\.md$`));
+  assert.deepEqual(configuredTabs[2][3], ['shell', 'editor', 'agent']);
+  assert.match(configuredTabs[2][4], new RegExp(`^${config.paths.notes}/work/.*-week\\.md$`));
   let configuredPanel;
   response = executeWorkstreamCommand(db, 'notes', 'panel-toggle', { panel: 'editor' }, {
     config,
@@ -243,11 +267,12 @@ test('POST command model mutates only supported workstream state', (t) => {
   assert.deepEqual(response.result, { removed: false });
   executeWorkstreamCommand(db, String(scratch.id), 'pause', {}, { closeTab: () => false });
   let opened;
-  response = executeWorkstreamCommand(db, String(scratch.id), 'resume', {}, {
-    openTab: (row) => { opened = row.id; },
+  response = executeWorkstreamCommand(db, String(scratch.id), 'resume', { panels: ['shell', 'agent'] }, {
+    openTab: (row, opts) => { opened = { id: row.id, opts }; },
   });
   assert.equal(response.workstream.status, 'active');
-  assert.equal(opened, scratch.id);
+  assert.equal(opened.id, scratch.id);
+  assert.deepEqual(opened.opts.panels, ['shell', 'agent']);
   response = executeWorkstreamCommand(db, String(scratch.id), 'panel-toggle', { panel: 'editor' }, {
     togglePanel: (row, panel) => ({ id: row.id, panel, open: true }),
   });
@@ -284,10 +309,16 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const closedTabs = [];
   const toggledPanels = [];
   const focusedAgents = [];
+  const focusedShells = [];
   const replacedAgents = [];
+  const renamedSessionTabs = [];
   const openTabSet = new Set(['dotfiles']);
   let checkedRepoClean = false;
   let createdRepoGitChecks = 0;
+  let linearSuggestionLoads = 0;
+  let linearSearchLoads = 0;
+  let githubSuggestionLoads = 0;
+  const seededSessions = [];
   const service = createApiService({
     db,
     config,
@@ -306,6 +337,11 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
       openedTabs.push(row.id);
       openedTabOptions.push(options);
       openTabSet.add(String(row.id));
+    },
+    writeSeed: (row, content) => {
+      const path = join(dir, 'seeds', `${row.id}.md`);
+      seededSessions.push({ id: row.id, content, path });
+      return path;
     },
     materialize: (org, repository, branch) => {
       const path = join(dir, 'created', org, repository, branch.replaceAll('/', '-'));
@@ -333,11 +369,49 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
       replacedAgents.push({ id: row.id, agent });
       return { agent, tabOpen: true, panelOpen: true, replaced: true };
     },
+    renameTab: (oldName, newName) => {
+      renamedSessionTabs.push([oldName, newName]);
+      return true;
+    },
     focusAgent: (row) => {
       focusedAgents.push(row.id);
       return { session: 'ws', tabName: `tab-${row.id}`, paneId: 'terminal_7' };
     },
+    focusShell: (row) => {
+      focusedShells.push(row.id);
+      return { session: 'ws', tabName: `tab-${row.id}`, paneId: 'terminal_8' };
+    },
     focusTerminal: (session) => ({ focused: true, terminal: 'test', session }),
+    linearSuggestions: async () => {
+      linearSuggestionLoads += 1;
+      return [{
+        provider: 'linear', id: 'ECO-42', title: 'Cycle issue', url: 'https://linear.app/acme/issue/ECO-42',
+        group: 'Current ECO cycle', meta: 'Todo · unassigned',
+      }];
+    },
+    linearSearch: async (query) => {
+      linearSearchLoads += 1;
+      return [{
+        provider: 'linear', id: 'ECO-3380', title: `${query} result`,
+        url: 'https://linear.app/chainguard/issue/ECO-3380/example',
+        group: 'Linear search', meta: 'Triage · Nathan Fritz',
+      }];
+    },
+    githubSuggestions: async () => {
+      githubSuggestionLoads += 1;
+      return [
+        {
+          provider: 'github', id: 'customer-issues#7', title: 'Escalation',
+          url: 'https://github.com/chainguard-dev/customer-issues/issues/7',
+          repository: 'chainguard-dev/customer-issues', group: 'Customer escalations',
+        },
+        {
+          provider: 'github', id: 'mono#8', title: 'Review this',
+          url: 'https://github.com/chainguard-dev/mono/pull/8',
+          repository: 'chainguard-dev/mono', group: 'mono PRs',
+        },
+      ];
+    },
   });
   try {
     await new Promise((resolve, reject) => {
@@ -355,6 +429,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const { port } = service.server.address();
   const base = `http://127.0.0.1:${port}`;
 
+  const health = await (await fetch(`${base}/health`)).json();
+  assert.match(health.revision, /^[a-f0-9]{16}$/);
   const index = await fetch(`${base}/`);
   assert.equal(index.status, 200);
   const indexHtml = await index.text();
@@ -389,26 +465,59 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.doesNotMatch(indexHtml, /<dt>Worktree<\/dt>/);
   assert.match(indexHtml, /id="modal-path-presence"/);
   assert.match(indexHtml, /id="modal-path" class="path-action"/);
+  assert.match(indexHtml, /<dt>Repository \/ Branch<\/dt>/);
+  assert.match(indexHtml, /class="modal-repo-branch"/);
+  assert.doesNotMatch(indexHtml, /id="modal-source"/);
   assert.match(indexHtml, /id="modal-agent-select"/);
-  assert.match(indexHtml, /<option value="claude">Claude<\/option>/);
-  assert.match(indexHtml, /<option value="codex">Codex<\/option>/);
-  assert.match(indexHtml, /id="modal-links-input"/);
+  assert.match(indexHtml, /id="modal-scratchpad-name-row" hidden/);
+  assert.match(indexHtml, /id="modal-scratchpad-name" type="text"/);
+  assert.doesNotMatch(indexHtml, /<option value="claude">Claude<\/option>/);
+  assert.doesNotMatch(indexHtml, /<option value="codex">Codex<\/option>/);
+  assert.match(indexHtml, /class="agent-type-toggle"/);
+  assert.match(indexHtml, /class="agent-type-selection"/);
+  assert.match(indexHtml, /class="agent-type-option agent-type-option-claude"/);
+  assert.match(indexHtml, /class="agent-type-option agent-type-option-codex"/);
+  assert.match(indexHtml, /agent-type-toggle\[data-agent="codex"\] \.agent-type-selection/);
+  assert.match(indexHtml, /id="modal-link"[^>]+data-link-kind="link"/);
+  assert.match(indexHtml, /id="modal-linear-link"[^>]+data-provider="linear"/);
+  assert.match(indexHtml, /id="modal-github-link"[^>]+data-provider="github"/);
+  assert.match(indexHtml, /id="modal-link-values" class="link-entry-values issue-pills"/);
+  assert.ok(indexHtml.indexOf('id="modal-links-title"') < indexHtml.indexOf('id="modal-path"'));
   assert.match(indexHtml, /id="theme-select"/);
   assert.match(indexHtml, /id="theme-select" aria-label="Theme"/);
   assert.ok(indexHtml.indexOf('id="theme-credit"') > indexHtml.indexOf('id="theme-select"'));
+  assert.match(indexHtml, /id="panel-mode-toggle"/);
+  assert.match(indexHtml, /class="panel-mode-selection"/);
+  assert.match(indexHtml, /class="panel-mode-option panel-mode-option-three"/);
+  assert.match(indexHtml, /class="panel-mode-option panel-mode-option-two"/);
+  assert.match(indexHtml, /panel-mode-toggle\[data-mode="two"\] \.panel-mode-selection/);
   assert.match(indexHtml, /id="new-repo-button"/);
   assert.match(indexHtml, /id="new-repo-modal"/);
   assert.match(indexHtml, /id="new-repo-repository"/);
+  assert.match(indexHtml, /id="new-repo-combobox" class="repo-combobox"/);
+  assert.match(indexHtml, /id="new-repo-repository-toggle" class="repo-combobox-toggle"/);
+  assert.match(indexHtml, /id="new-repo-repositories" class="repo-combobox-list" role="listbox"/);
+  assert.doesNotMatch(indexHtml, /<datalist/);
   assert.match(indexHtml, /id="new-repo-selector"/);
   assert.match(indexHtml, /id="new-repo-source"/);
   assert.match(indexHtml, /id="new-repo-agent"/);
   assert.match(indexHtml, /id="new-repo-path"/);
   assert.match(indexHtml, /id="new-repo-links"/);
-  assert.match(indexHtml, /class="new-panel-toggle" data-panel="agent"/);
+  assert.match(indexHtml, /id="new-repo-linear-link"[^>]+data-provider="linear"/);
+  assert.match(indexHtml, /id="new-repo-github-link"[^>]+data-provider="github"/);
+  assert.match(indexHtml, /id="new-repo-linear-suggestions"[^>]+role="listbox"/);
+  assert.match(indexHtml, /id="new-repo-github-suggestions"[^>]+role="listbox"/);
+  assert.match(indexHtml, /class="link-add-button"[^>]+data-input="new-repo-linear-link"/);
+  assert.match(indexHtml, /id="new-repo-link-values" class="link-entry-values issue-pills"/);
+  assert.match(indexHtml, /class="new-panel-toggle panel-icon-toggle" data-panel="agent"/);
   assert.match(indexHtml, /id="new-repo-submit"/);
   assert.match(indexHtml, /id="new-repo-submitting" class="new-session-submit-overlay"/);
   const newRepoModalHtml = indexHtml.slice(indexHtml.indexOf('<dialog id="new-repo-modal"'));
-  assert.doesNotMatch(newRepoModalHtml, /modal-status-bar/);
+  assert.match(newRepoModalHtml, /class="modal-status-bar modal-config-bar"/);
+  assert.ok(newRepoModalHtml.indexOf('id="new-repo-agent"') < newRepoModalHtml.indexOf('<dl class="detail-grid'));
+  assert.ok(newRepoModalHtml.indexOf('id="new-repo-link-values"') > newRepoModalHtml.indexOf('id="new-repo-github-link"'));
+  assert.ok(newRepoModalHtml.indexOf('id="new-repo-links-title"') < newRepoModalHtml.indexOf('id="new-repo-source"'));
+  assert.ok(newRepoModalHtml.indexOf('id="new-repo-links-title"') < newRepoModalHtml.indexOf('id="new-repo-path"'));
   assert.doesNotMatch(newRepoModalHtml, />Created</);
   assert.doesNotMatch(newRepoModalHtml, />Last joined</);
   assert.doesNotMatch(newRepoModalHtml, />Stack</);
@@ -421,11 +530,19 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(indexHtml, /id="new-scratchpad-agent"/);
   assert.match(indexHtml, /id="new-scratchpad-path"/);
   assert.match(indexHtml, /id="new-scratchpad-links"/);
-  assert.match(indexHtml, /class="new-scratchpad-panel-toggle" data-panel="agent"/);
+  assert.match(indexHtml, /id="new-scratchpad-linear-link"[^>]+data-provider="linear"/);
+  assert.match(indexHtml, /id="new-scratchpad-github-link"[^>]+data-provider="github"/);
+  assert.match(indexHtml, /class="link-add-button"[^>]+data-input="new-scratchpad-github-link"/);
+  assert.match(indexHtml, /id="new-scratchpad-link-values" class="link-entry-values issue-pills"/);
+  assert.match(indexHtml, /class="new-scratchpad-panel-toggle panel-icon-toggle" data-panel="agent"/);
   assert.match(indexHtml, /id="new-scratchpad-submit"/);
   assert.match(indexHtml, /id="new-scratchpad-submitting" class="new-session-submit-overlay"/);
   const newScratchpadModalHtml = indexHtml.slice(indexHtml.indexOf('<dialog id="new-scratchpad-modal"'));
-  assert.doesNotMatch(newScratchpadModalHtml, /modal-status-bar/);
+  assert.match(newScratchpadModalHtml, /class="modal-status-bar modal-config-bar"/);
+  assert.ok(newScratchpadModalHtml.indexOf('id="new-scratchpad-agent"') < newScratchpadModalHtml.indexOf('<dl class="detail-grid'));
+  assert.ok(newScratchpadModalHtml.indexOf('id="new-scratchpad-link-values"') > newScratchpadModalHtml.indexOf('id="new-scratchpad-github-link"'));
+  assert.ok(newScratchpadModalHtml.indexOf('id="new-scratchpad-links-title"') < newScratchpadModalHtml.indexOf('id="new-scratchpad-path"'));
+  assert.equal((indexHtml.match(/class="link-add-button"/g) || []).length, 6);
   assert.doesNotMatch(newScratchpadModalHtml, />Created</);
   assert.doesNotMatch(newScratchpadModalHtml, />Last joined</);
   assert.doesNotMatch(newScratchpadModalHtml, />Stack</);
@@ -453,7 +570,9 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     const response = await fetch(`${base}/icons/${icon}`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'image/svg+xml');
-    assert.match(await response.text(), /<svg/);
+    const svg = await response.text();
+    assert.match(svg, /<svg/);
+    if (icon === 'claude.svg') assert.match(svg, /fill="#000000"/);
   }
   assert.match(webClient, /message\.type/);
   assert.match(webClient, /agent_status/);
@@ -461,12 +580,39 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(webClient, /className = 'issue-pill-icon'/);
   assert.match(webClient, /icon: 'github'/);
   assert.match(webClient, /icon: 'linear'/);
+  assert.match(webClient, /label: url\.hostname/);
+  assert.match(webClient, /favicon: `\$\{url\.origin\}\/favicon\.ico`/);
+  assert.match(webClient, /function issuePillIcon\(issue\)/);
+  assert.match(webClient, /issue-pill-link-icon/);
+  assert.match(webClient, /slot\.classList\.add\('favicon-loaded'\)/);
+  assert.match(webClient, /favicon\.addEventListener\('error', \(\) => favicon\.remove\(\)\)/);
+  assert.doesNotMatch(webClient, /favicon\.loading = 'lazy'/);
+  assert.match(webClient, /issue\.provider === 'custom' \? issue\.href/);
+  assert.match(indexHtml, /\.issue-pill-favicon/);
   assert.match(webClient, /function updateThemeContrast/);
   assert.match(webClient, /function contrastRatio/);
+  assert.match(webClient, /const PANEL_MODE_KEY = 'ai-workstream-panel-mode'/);
+  assert.match(webClient, /function selectedLayoutPanels/);
+  assert.match(webClient, /function commandRequestBody/);
+  assert.match(webClient, /command === 'resume' \? \{ panels: selectedLayoutPanels\(\) \} : \{\}/);
   assert.match(webClient, /function branchCell/);
+  assert.match(webClient, /function githubBranchUrl\(item\)/);
+  assert.match(webClient, /`\$\{repositoryPath\}\/tree\/\$\{branchPath\}`/);
+  assert.match(webClient, /document\.createElement\(branchUrl \? 'a' : 'span'\)/);
+  assert.match(webClient, /branch\.addEventListener\('click', \(event\) => event\.stopPropagation\(\)\)/);
   assert.match(webClient, /function repoCell/);
+  assert.match(webClient, /function renameScratchpad/);
+  assert.match(webClient, /postWorkstreamCommand\(id, 'rename', \{ name \}\)/);
+  const renameScratchpadClient = webClient.slice(
+    webClient.indexOf('async function renameScratchpad'),
+    webClient.indexOf('function visiblePages'),
+  );
+  assert.doesNotMatch(renameScratchpadClient, /openSession\(/);
+  assert.match(renameScratchpadClient, /if \(modal\.open && selectedSession/);
+  assert.match(webClient, /item\.type === 'scratchpad' \? item\.name : item\.branch/);
   assert.doesNotMatch(webClient, /const branch = document\.createElement\('code'\)/);
-  assert.doesNotMatch(indexHtml, /<code id="modal-branch"/);
+  assert.match(indexHtml, /<a id="modal-branch" target="_blank" rel="noreferrer"><\/a>/);
+  assert.doesNotMatch(webClient, /detail\.source/);
   assert.doesNotMatch(webClient, /cell\(row, item\.id\)/);
   assert.match(webClient, /newRepoSubmitting\.hidden = !busy/);
   assert.match(webClient, /newScratchpadSubmitting\.hidden = !busy/);
@@ -479,24 +625,69 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(webClient, /linear\.app/);
   assert.match(webClient, /openSession\(message\.id\)/);
   assert.match(webClient, /panel-toggle/);
+  assert.match(indexHtml, /class="panel-toggle panel-icon-toggle" data-panel="shell"/);
+  assert.match(indexHtml, /class="panel-toggle panel-icon-toggle" data-panel="editor"/);
+  assert.match(indexHtml, /class="panel-toggle panel-icon-toggle" data-panel="agent"/);
+  assert.doesNotMatch(indexHtml, />Shell: off<\/button>/);
+  assert.doesNotMatch(indexHtml, />Editor: off<\/button>/);
+  assert.match(webClient, /function updatePanelIconButton\(button, enabled\)/);
+  assert.doesNotMatch(webClient, /button\.textContent = `\$\{panel\[0\]\.toUpperCase\(\)\}/);
   assert.match(webClient, /status-action/);
   assert.match(webClient, /const actionable = item\.status === 'active' \|\| item\.status === 'paused'/);
   assert.match(webClient, /runStatusAction/);
   assert.match(webClient, /lastUsedCell\(row, item\.lastJoined\)/);
-  assert.match(webClient, /agentCell\(row, item\)/);
+  assert.match(webClient, /function calendarIcon\(\)/);
+  assert.match(webClient, /Math\.floor\(Math\.max\(0, Date\.now\(\) - date\.valueOf\(\)\) \/ 86_400_000\)/);
+  assert.match(webClient, /count\.textContent = `\$\{days\}d`/);
+  assert.match(webClient, /actions\.append\(shellAction\(item\)\)/);
+  assert.doesNotMatch(webClient, /shellCell\(row, item\)/);
+  assert.match(webClient, /item\.shellStatus === 'working'/);
+  assert.match(webClient, /function shellPromptIcon/);
+  assert.match(webClient, /focusShell\(item, indicator\)/);
+  assert.match(webClient, /focus-\$\{panel\}/);
+  assert.match(webClient, /'shell_status'/);
+  assert.match(webClient, /actions\.append\(agentAction\(item\)\)/);
+  assert.doesNotMatch(webClient, /agentCell\(row, item\)/);
   assert.match(webClient, /item\.agentStatus === 'working'/);
   assert.match(webClient, /item\.agentStatus === 'ready'/);
   assert.doesNotMatch(webClient, /item\.type !== 'misc' && item\.status === 'active' && item\.agentStatus/);
-  assert.match(webClient, /className = 'agent-pill'/);
-  assert.match(webClient, /if \(item\.status !== 'active'\)/);
+  assert.match(webClient, /className = 'panel-action agent-action'/);
+  assert.match(webClient, /indicator\.disabled = item\.status !== 'active'/);
   assert.match(webClient, /const indicator = document\.createElement\('button'\)/);
   assert.doesNotMatch(webClient, /createElement\(focusable \? 'button' : 'span'\)/);
+  assert.doesNotMatch(webClient, /label\.textContent = (?:provider|'shell')/);
   assert.match(webClient, /\/icons\/openai\.svg/);
   assert.match(webClient, /\/icons\/claude\.svg/);
-  assert.match(webClient, /agent-icon-codex/);
+  assert.match(webClient, /agent-icon-\$\{provider\}/);
+  assert.match(indexHtml, /\.agent-icon-claude \{ transform: scale\(1\.25\); \}/);
+  assert.match(indexHtml, /\.agent-icon-codex \{ transform: scale\(2\); \}/);
   assert.match(webClient, /focusAgent\(item, indicator\)/);
   assert.match(webClient, /focus-agent/);
-  assert.match(webClient, /'agent-set', \{ agent \}/);
+  assert.match(webClient, /'agent-set', \{ agent: selected \}/);
+  assert.match(webClient, /function agentToggleValue\(toggle\)/);
+  assert.match(webClient, /function updateAgentToggle\(toggle, agent, busy = false\)/);
+  assert.match(webClient, /agent: agentToggleValue\(newRepoAgent\)/);
+  assert.match(webClient, /agent: agentToggleValue\(newScratchpadAgent\)/);
+  assert.match(webClient, /function renderRecentRepositories\(repositories = recentRepositoryValues\)/);
+  assert.match(webClient, /renderRecentRepositories\(body\.recentRepositories\)/);
+  assert.match(webClient, /function setRecentRepositoryMenu\(open\)/);
+  assert.match(webClient, /function selectRecentRepository\(repository\)/);
+  assert.match(webClient, /newRepoRepositoryToggle\.addEventListener\('click'/);
+  assert.match(webClient, /No repositories used in the last three months/);
+  assert.match(webClient, /\/ws\/link-suggestions\/\$\{encodeURIComponent\(provider\)\}/);
+  assert.match(webClient, /function creationLinkRefs\(inputs, addedLinks\)/);
+  assert.match(webClient, /function stageCreationLink\(input\)/);
+  assert.match(webClient, /function submitCreationLink\(input\)/);
+  assert.match(webClient, /function stagePendingCreationLinks\(inputs\)/);
+  assert.match(webClient, /links: creationLinkRefs\(newRepoLinkInputs, newRepoAddedLinks\)/);
+  assert.match(webClient, /links: creationLinkRefs\(newScratchpadLinkInputs, newScratchpadAddedLinks\)/);
+  assert.match(webClient, /function renderLinkSuggestions\(input, suggestions\)/);
+  assert.match(webClient, /pill\.className = 'issue-pill link-entry-value'/);
+  assert.match(webClient, /issue-pill-icon issue-pill-icon-\$\{iconName\}/);
+  assert.match(webClient, /function scheduleLinkSuggestionSearch\(input\)/);
+  assert.match(webClient, /`\?q=\$\{encodeURIComponent\(query\)\}`/);
+  assert.match(webClient, /setTimeout\(\(\) => openLinkSuggestionMenu\(input\), 200\)/);
+  assert.match(webClient, /the API daemon is out of date; run ws web start to restart it/);
   assert.match(webClient, /date\.toLocaleDateString\(\)/);
   assert.match(webClient, /filters\.addEventListener\('change', \(\) =>/);
   assert.match(webClient, /location\.search/);
@@ -510,12 +701,13 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(webClient, /function goToPage/);
   assert.match(webClient, /query\.set\('page', String\(currentPage\)\)/);
   assert.match(webClient, /query\.set\('perpage', perpageSelect\.value\)/);
-  assert.match(webClient, /function saveAssociatedLinks/);
+  assert.match(webClient, /function submitDetailLink\(input\)/);
+  assert.match(webClient, /function removeDetailLink\(ref\)/);
   assert.match(webClient, /function openSelectedPath/);
   assert.match(webClient, /postWorkstreamCommand\(id, 'open-path', \{\}\)/);
-  assert.match(webClient, /'issue-add', \{ refs: additions \}/);
+  assert.match(webClient, /'issue-add', \{ refs: \[ref\] \}/);
   assert.match(webClient, /'issue-remove', \{ ref \}/);
-  assert.match(webClient, /linkInput\.addEventListener\('blur', saveAssociatedLinks\)/);
+  assert.match(webClient, /submitLinkInput\(document\.querySelector/);
   assert.match(webClient, /row-action/);
   assert.match(webClient, /item\.notesPath/);
   assert.match(webClient, /item\.worktreePresent/);
@@ -556,9 +748,24 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.deepEqual(newDefaults, {
     repositoryRoot: config.paths.repositories,
     scratchpadRoot: config.paths.scratchpads,
+    recentRepositories: ['example/project'],
     agent: 'claude',
     panels: config.panels,
   });
+  const linearLinks = await (await fetch(`${base}/ws/link-suggestions/linear`)).json();
+  assert.deepEqual(linearLinks.items.map((item) => item.id), ['ECO-42']);
+  const searchedLinearLinks = await (await fetch(`${base}/ws/link-suggestions/linear?q=axlotl`)).json();
+  assert.deepEqual(searchedLinearLinks.items.map((item) => item.id), ['ECO-3380']);
+  const monoLinks = await (await fetch(`${base}/ws/link-suggestions/github?q=mono`)).json();
+  assert.deepEqual(monoLinks.items.map((item) => item.id), ['mono#8']);
+  await fetch(`${base}/ws/link-suggestions/linear`);
+  await fetch(`${base}/ws/link-suggestions/linear?q=axlotl`);
+  await fetch(`${base}/ws/link-suggestions/github`);
+  assert.equal(linearSuggestionLoads, 1);
+  assert.equal(linearSearchLoads, 1);
+  assert.equal(githubSuggestionLoads, 1);
+  const invalidLinks = await fetch(`${base}/ws/link-suggestions/gitlab`);
+  assert.equal(invalidLinks.status, 400);
   const detail = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(detail.items[0].gitClean, false);
   assert.deepEqual(detail.items[0].panels, {
@@ -584,6 +791,18 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     terminalFocus: { focused: true, terminal: 'test', session: 'ws' },
   });
   assert.deepEqual(focusedAgents, [repo.id]);
+
+  const shellFocused = await fetch(`${base}/ws/${repo.id}/focus-shell`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(shellFocused.status, 200);
+  assert.deepEqual((await shellFocused.json()).result, {
+    session: 'ws', tabName: `tab-${repo.id}`, paneId: 'terminal_8',
+    terminalFocus: { focused: true, terminal: 'test', session: 'ws' },
+  });
+  assert.deepEqual(focusedShells, [repo.id]);
 
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/events`);
   t.after(() => socket.close());
@@ -628,7 +847,16 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(createdRepoGitChecks > 0, true);
   assert.equal(createdFromWeb.workstream.issues[0].ref, 'https://github.com/example/project/issues/321');
   assert.deepEqual(openedTabs, [createdFromWeb.workstream.id]);
-  assert.deepEqual(openedTabOptions, [{ agent: 'codex', panels: ['editor', 'agent'] }]);
+  assert.deepEqual(openedTabOptions, [{
+    agent: 'codex', panels: ['editor', 'agent'], seed: seededSessions[0].path,
+  }]);
+  assert.equal(seededSessions[0].id, createdFromWeb.workstream.id);
+  assert.equal(seededSessions[0].content, [
+    'This is a new ws session to work on a repo. The following links are associated with this session. Use the linear skill with the cli and/or the gh cli to retrieve authed information.',
+    '* https://github.com/example/project/issues/321',
+    'These links are for context. No action is to be taken based on these links nor their contents alone.',
+    '',
+  ].join('\n'));
   assert.deepEqual(await createdPromise, { id: createdFromWeb.workstream.id, type: 'new_session' });
 
   const scratchCreatedPromise = nextMessage();
@@ -648,8 +876,37 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(scratchCreated.workstream.branch, 'web-notes');
   assert.equal(scratchCreated.workstream.issues[0].ref, 'https://github.com/example/project/issues/654');
   assert.deepEqual(openedTabs, [createdFromWeb.workstream.id, scratchCreated.workstream.id]);
-  assert.deepEqual(openedTabOptions.at(-1), { agent: 'claude', panels: ['shell', 'agent'] });
+  assert.deepEqual(openedTabOptions.at(-1), {
+    agent: 'claude', panels: ['shell', 'agent'], seed: seededSessions[1].path,
+  });
+  assert.equal(seededSessions[1].id, scratchCreated.workstream.id);
+  assert.equal(seededSessions[1].content, [
+    'This is a new ws session to work on a scratchpad. The following links are associated with this session. Use the linear skill with the cli and/or the gh cli to retrieve authed information.',
+    '* https://github.com/example/project/issues/654',
+    'These links are for context. No action is to be taken based on these links nor their contents alone.',
+    '',
+  ].join('\n'));
   assert.deepEqual(await scratchCreatedPromise, { id: scratchCreated.workstream.id, type: 'new_session' });
+
+  const scratchRenamedPromise = nextMessage();
+  const originalScratchPath = scratchCreated.workstream.path;
+  const scratchRenamedResponse = await fetch(`${base}/ws/${scratchCreated.workstream.id}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Web research notes' }),
+  });
+  assert.equal(scratchRenamedResponse.status, 200);
+  const scratchRenamed = await scratchRenamedResponse.json();
+  assert.equal(scratchRenamed.workstream.name, 'Web research notes');
+  assert.equal(scratchRenamed.workstream.branch, 'web-notes');
+  assert.equal(scratchRenamed.workstream.path, originalScratchPath);
+  assert.deepEqual(renamedSessionTabs, [[
+    `${scratchCreated.workstream.id}:scratchpad:web-notes`,
+    `${scratchCreated.workstream.id}:Web research notes`,
+  ]]);
+  assert.deepEqual(await scratchRenamedPromise, {
+    id: scratchCreated.workstream.id, type: 'update_session',
+  });
 
   const addedPromise = nextMessage();
   const added = upsertWorkstream(db, {
@@ -675,11 +932,12 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const resumed = await fetch(`${base}/ws/${repo.id}/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({ panels: ['shell', 'agent'] }),
   });
   assert.equal(resumed.status, 200);
   assert.equal((await resumed.json()).workstream.status, 'active');
   assert.deepEqual(openedTabs, [createdFromWeb.workstream.id, scratchCreated.workstream.id, repo.id]);
+  assert.deepEqual(openedTabOptions.at(-1).panels, ['shell', 'agent']);
   assert.deepEqual(await resumePromise, { id: repo.id, type: 'update_session' });
 
   const panelPromise = nextMessage();
@@ -722,6 +980,16 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const statusDetail = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(statusDetail.items[0].agentStatus, 'working');
 
+  const shellStatusPromise = nextMessage();
+  setShellStatus(db, repo.id, 'ready');
+  assert.deepEqual(await shellStatusPromise, {
+    id: repo.id,
+    type: 'shell_status',
+    status: 'ready',
+  });
+  const shellStatusDetail = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
+  assert.equal(shellStatusDetail.items[0].shellStatus, 'ready');
+
   const configuredAgentPromise = nextMessage();
   setConfiguredLocationAgentStatus(db, 'dotfiles', 'ready');
   assert.deepEqual(await configuredAgentPromise, {
@@ -744,6 +1012,15 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(dotfilesFocused.status, 200);
   assert.equal((await dotfilesFocused.json()).result.paneId, 'terminal_7');
   assert.deepEqual(focusedAgents, [repo.id, 'dotfiles']);
+
+  const dotfilesShellFocused = await fetch(`${base}/ws/dotfiles/focus-shell`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(dotfilesShellFocused.status, 200);
+  assert.equal((await dotfilesShellFocused.json()).result.paneId, 'terminal_8');
+  assert.deepEqual(focusedShells, [repo.id, 'dotfiles']);
 
   const dotfilesPanelPromise = nextMessage();
   const dotfilesPanel = await fetch(`${base}/ws/dotfiles/panel-toggle`, {
@@ -784,10 +1061,11 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const notesResumed = await fetch(`${base}/ws/notes/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({ panels: ['shell', 'agent'] }),
   });
   assert.equal(notesResumed.status, 200);
   assert.equal((await notesResumed.json()).workstream.status, 'active');
+  assert.deepEqual(openedTabOptions.at(-1).panels, ['shell', 'agent']);
   assert.deepEqual(await notesResumePromise, { id: 'notes', type: 'update_session' });
   const notesDetail = await (await fetch(`${base}/ws/notes/?status=all`)).json();
   assert.equal(notesDetail.items[0].status, 'active');
