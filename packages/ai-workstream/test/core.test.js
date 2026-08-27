@@ -364,16 +364,16 @@ test('database operations preserve workstream, stack, issue, and log state', (t)
   assert.deepEqual(stackLine(db, child).map((row) => row.branch), ['base', 'feature']);
   assert.equal(computeTabName(child), `${child.id}:project:feature`);
 
-  const refreshed = refreshWorkstreamStatuses(db, [computeTabName(parent)]);
+  const refreshed = refreshWorkstreamStatuses(db, [String(parent.id)]);
   assert.equal(refreshed.checked, 2);
   assert.deepEqual(refreshed.paused.map((row) => row.id), [child.id]);
   assert.equal(resolveRow(db, String(parent.id)).status, 'active');
   assert.equal(resolveRow(db, String(child.id)).status, 'paused');
   setStatus(db, child.id, 'closed');
-  const secondRefresh = refreshWorkstreamStatuses(db, [computeTabName(parent), computeTabName(child)]);
+  const secondRefresh = refreshWorkstreamStatuses(db, [String(parent.id), String(child.id)]);
   assert.equal(secondRefresh.paused.length, 0);
-  assert.deepEqual(secondRefresh.activated.map((row) => row.id), [child.id]);
-  assert.equal(resolveRow(db, String(child.id)).status, 'active');
+  assert.deepEqual(secondRefresh.activated.map((row) => row.id), []);
+  assert.equal(resolveRow(db, String(child.id)).status, 'closed');
 
   assert.deepEqual(addIssue(db, child.id, 'https://github.com/example/project/issues/1'), {
     ref: 'https://github.com/example/project/issues/1', kind: 'github', added: true,

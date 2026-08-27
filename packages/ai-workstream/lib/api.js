@@ -27,6 +27,7 @@ import {
   recentRepositories,
   removeIssue,
   removeWorktree,
+  refreshWorkstreamStatuses,
   resolveRow,
   selectedAgent,
   setPath,
@@ -36,6 +37,7 @@ import {
   setShellStatus,
   setWorkstreamLabel,
   setStatus,
+  touchLastJoined,
   upsertWorkstream,
   worktreeDirty,
   worktreeCleanAsync,
@@ -44,11 +46,9 @@ import {
   writeSeed,
 } from './core.js';
 import {
-  closeTabInSession,
+  agentCommand,
   focusAgentInSession,
   focusShellInSession,
-  openTabNames,
-  openTabInSession,
   panelStatesInSession,
   replaceAgentInSession,
   renameTabInSession,
@@ -61,14 +61,25 @@ import {
   linearWorkSuggestions,
 } from './suggestions.js';
 import { DAEMON_REVISION } from './daemon.js';
+import { spawnZshTerminal } from './pty.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 const WEB_ICONS = new Set([
   'claude.svg', 'folder.svg', 'git-branch.svg', 'git-pull-request.svg', 'github.svg', 'linear.svg', 'notes.svg', 'openai.svg',
 ]);
+const V2_ASSET_TYPES = new Map([
+  ['css', 'text/css; charset=utf-8'],
+  ['js', 'text/javascript; charset=utf-8'],
+  ['map', 'application/json; charset=utf-8'],
+]);
+const V2_FONT_TYPES = new Map([
+  ['woff2', 'font/woff2'],
+  ['txt', 'text/plain; charset=utf-8'],
+]);
 const TYPES = ['repo', 'scratchpad', 'misc'];
 const STATUSES = ['active', 'paused', 'closed', 'all', 'active_paused'];
+const MAX_WEBSOCKET_PAYLOAD = 1024 * 1024;
 export const API_COMMANDS = [
   'pause', 'resume', 'close', 'rename', 'log', 'issue-add', 'issue-remove', 'panel-toggle', 'open-path',
   'open-notes', 'focus-agent', 'focus-shell', 'agent-set',
@@ -82,6 +93,17 @@ export class ApiError extends Error {
   }
 }
 
+function browserTerminalLaunch(role, workstream, config) {
+  if (role === 'agent') {
+    return {
+      command: 'sh',
+      args: ['-c', agentCommand(workstream, { agent: workstream.agent }, config)],
+    };
+  }
+  const configured = role === 'editor' ? config.commands.editor : config.commands.shell;
+  return { command: configured[0], args: configured.slice(1) };
+}
+
 function integerQuery(value, name, fallback, { min, max }) {
   if (value === undefined || value === null || value === '') return fallback;
   if (!/^\d+$/.test(String(value))) throw new ApiError(400, `${name} must be an integer`);
@@ -92,15 +114,15 @@ function integerQuery(value, name, fallback, { min, max }) {
   return number;
 }
 
-function miscWorkstreams(db, config, tabNames = []) {
-  const openTabs = new Set(tabNames);
+function miscWorkstreams(db, config, terminalSessionIds = []) {
+  const activeSessions = new Set([...terminalSessionIds].map(String));
   return Object.values(config.locations || {}).map((item) => ({
     ...item,
     repoUrl: `https://github.com/${item.repo}`,
     type: 'misc',
     closeable: false,
     scratch: false,
-    status: openTabs.has(item.id) ? 'active' : 'paused',
+    status: activeSessions.has(String(item.id)) ? 'active' : 'paused',
     agentStatus: configuredLocationAgentStatus(db, item.id),
     shellStatus: configuredLocationShellStatus(db, item.id),
     agent: selectedAgent(db, item.id, config.agent || CONFIG.agent),
@@ -124,14 +146,14 @@ function apiWorkstreamView(db, row, { cwd, config = CONFIG } = {}) {
   };
 }
 
-export function stateItems(db, { cwd = process.cwd(), config = CONFIG, tabNames = [] } = {}) {
+export function stateItems(db, { cwd = process.cwd(), config = CONFIG, terminalSessionIds = [] } = {}) {
   const workstreams = listWorkstreams(db, { all: true })
     .sort((left, right) => right.id - left.id)
     .map((row) => ({
       type: isScratch(row) ? 'scratchpad' : 'repo',
       ...apiWorkstreamView(db, row, { cwd, config }),
     }));
-  return [...miscWorkstreams(db, config, tabNames), ...workstreams];
+  return [...miscWorkstreams(db, config, terminalSessionIds), ...workstreams];
 }
 
 export function queryWorkstreams(db, query = {}, context = {}) {
@@ -266,6 +288,7 @@ export function createRepoWorkstream(db, body = {}, context = {}) {
   const timestamp = (context.now || now)();
   let row = upsertWorkstream(db, {
     org, repo, branch, source, path,
+    status: 'paused',
     created_at: timestamp,
     last_joined_at: timestamp,
   });
@@ -273,10 +296,9 @@ export function createRepoWorkstream(db, body = {}, context = {}) {
   if (!panels.includes('shell')) setShellStatus(db, row.id, null);
   for (const ref of expandedLinks) addIssue(db, row.id, ref);
 
-  let seed;
   if (expandedLinks.length) {
     try {
-      seed = (context.writeSeed || writeSeed)(row, linkedSessionSeed('repo', expandedLinks));
+      (context.writeSeed || writeSeed)(row, linkedSessionSeed('repo', expandedLinks));
     } catch (error) {
       setStatus(db, row.id, 'paused');
       throw new ApiError(502, `workstream #${row.id} was created, but its agent seed could not be written: ${error.message}`, {
@@ -285,20 +307,11 @@ export function createRepoWorkstream(db, body = {}, context = {}) {
     }
   }
 
-  let tab;
-  try {
-    tab = (context.openTab || openTabInSession)(row, { agent, panels, ...(seed ? { seed } : {}) });
-  } catch (error) {
-    setStatus(db, row.id, 'paused');
-    throw new ApiError(502, `workstream #${row.id} was created, but its Zellij tab could not be opened: ${error.message}`, {
-      id: row.id,
-    });
-  }
   row = resolveRow(db, String(row.id));
   return {
     ok: true,
     created: !existing,
-    tab,
+    tab: null,
     workstream: {
       type: 'repo',
       ...apiWorkstreamView(db, row, { cwd: context.cwd, config }),
@@ -338,14 +351,17 @@ export function createScratchpadWorkstream(db, body = {}, context = {}) {
   } catch (error) {
     throw new ApiError(502, `could not create scratchpad: ${error.message}`);
   }
+  if (row.status !== 'paused') {
+    setStatus(db, row.id, 'paused');
+    row = resolveRow(db, String(row.id));
+  }
   setSelectedAgent(db, row.id, agent);
   if (!panels.includes('shell')) setShellStatus(db, row.id, null);
   for (const ref of expandedLinks) addIssue(db, row.id, ref);
 
-  let seed;
   if (expandedLinks.length) {
     try {
-      seed = (context.writeSeed || writeSeed)(row, linkedSessionSeed('scratchpad', expandedLinks));
+      (context.writeSeed || writeSeed)(row, linkedSessionSeed('scratchpad', expandedLinks));
     } catch (error) {
       setStatus(db, row.id, 'paused');
       throw new ApiError(502, `scratchpad #${row.id} was created, but its agent seed could not be written: ${error.message}`, {
@@ -354,20 +370,11 @@ export function createScratchpadWorkstream(db, body = {}, context = {}) {
     }
   }
 
-  let tab;
-  try {
-    tab = (context.openTab || openTabInSession)(row, { agent, panels, ...(seed ? { seed } : {}) });
-  } catch (error) {
-    setStatus(db, row.id, 'paused');
-    throw new ApiError(502, `scratchpad #${row.id} was created, but its Zellij tab could not be opened: ${error.message}`, {
-      id: row.id,
-    });
-  }
   row = resolveRow(db, String(row.id));
   return {
     ok: true,
     created: true,
-    tab,
+    tab: null,
     workstream: {
       type: 'scratchpad',
       ...apiWorkstreamView(db, row, { cwd: context.cwd, config }),
@@ -436,17 +443,10 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
     let result = {};
     try {
       if (command === 'pause') {
-        (context.closeTab || closeTabInSession)(configuredRow);
+        result = { browserTerminals: 'pause_requested' };
       } else if (command === 'resume') {
         const panels = requestedPanels(body.panels, config.panels);
-        const opts = {
-          agent: selectedAgent(db, id, defaultAgent),
-          panels,
-          ...(configuredRow.weeklyNotes && panels.includes('editor')
-            ? { editorFile: ensureWeeklyNote(configuredRow.path) }
-            : {}),
-        };
-        (context.openTab || openTabInSession)(configuredRow, opts);
+        result = { browserTerminals: 'resume_requested', panels };
         if (!panels.includes('shell')) setConfiguredLocationShellStatus(db, id, null);
       } else if (command === 'focus-agent' || command === 'focus-shell') {
         const focus = command === 'focus-shell'
@@ -486,9 +486,9 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
     } catch (error) {
       if (error instanceof ApiError) throw error;
       const action = command === 'pause'
-        ? 'close Zellij tab'
+        ? 'pause browser terminals'
         : command === 'resume'
-          ? 'open Zellij tab'
+          ? 'resume browser terminals'
           : command === 'focus-agent' || command === 'focus-shell'
             ? `focus ${command === 'focus-shell' ? 'shell' : 'agent'} panel`
             : command === 'panel-toggle'
@@ -496,8 +496,10 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
               : 'change agent';
       throw new ApiError(502, `could not ${action}: ${error.message}`);
     }
-    const tabNames = command === 'resume' ? [id] : command === 'pause' ? [] : context.tabNames;
-    const workstream = miscWorkstreams(db, config, tabNames)
+    const terminalSessionIds = command === 'pause'
+      ? [...(context.terminalSessionIds || [])].filter((sessionId) => String(sessionId) !== id)
+      : context.terminalSessionIds;
+    const workstream = miscWorkstreams(db, config, terminalSessionIds)
       .find((item) => item.id === id);
     return { ok: true, command, result, workstream };
   }
@@ -506,12 +508,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
 
   switch (command) {
     case 'pause':
-      try {
-        (context.closeTab || closeTabInSession)(row);
-      } catch (error) {
-        throw new ApiError(502, `could not close Zellij tab: ${error.message}`);
-      }
       setStatus(db, row.id, 'paused');
+      result = { browserTerminals: 'pause_requested' };
       break;
     case 'resume': {
       if (!existsSync(row.path)) {
@@ -522,16 +520,10 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
         }
       }
       const panels = requestedPanels(body.panels, config.panels);
-      try {
-        (context.openTab || openTabInSession)(row, {
-          agent: selectedAgent(db, row.id, defaultAgent),
-          panels,
-        });
-      } catch (error) {
-        throw new ApiError(502, `could not open Zellij tab: ${error.message}`);
-      }
       if (!panels.includes('shell')) setShellStatus(db, row.id, null);
-      setStatus(db, row.id, 'active', true);
+      if (row.status === 'closed') setStatus(db, row.id, 'paused', true);
+      else touchLastJoined(db, row.id);
+      result = { browserTerminals: 'resume_requested', panels };
       break;
     }
     case 'close': {
@@ -543,11 +535,6 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
             dirty: dirty.split('\n'),
           });
         }
-      }
-      try {
-        (context.closeTab || closeTabInSession)(row);
-      } catch (error) {
-        throw new ApiError(502, `could not close Zellij tab: ${error.message}`);
       }
       if (remove && existsSync(row.path)) {
         removeWorktree(row.org, row.repo, row.path);
@@ -713,7 +700,7 @@ export function encodeWebSocketFrame(value, opcode = 0x1) {
   return Buffer.concat([header, payload]);
 }
 
-function consumeWebSocketFrames(socket, initial = Buffer.alloc(0)) {
+function consumeWebSocketFrames(socket, initial = Buffer.alloc(0), onMessage = null) {
   let buffered = initial;
   const consume = (chunk) => {
     buffered = Buffer.concat([buffered, chunk]);
@@ -732,6 +719,7 @@ function consumeWebSocketFrames(socket, initial = Buffer.alloc(0)) {
         length = Number(wide);
         offset = 10;
       }
+      if (length > MAX_WEBSOCKET_PAYLOAD) return socket.destroy();
       if (!masked) return socket.destroy();
       if (buffered.length < offset + 4 + length) return;
       const mask = buffered.subarray(offset, offset + 4);
@@ -744,6 +732,7 @@ function consumeWebSocketFrames(socket, initial = Buffer.alloc(0)) {
         return socket.end();
       }
       if (opcode === 0x9) socket.write(encodeWebSocketFrame(payload, 0xA));
+      if ((opcode === 0x1 || opcode === 0x2) && onMessage) onMessage(payload, opcode);
     }
   };
   socket.on('data', consume);
@@ -756,8 +745,6 @@ export function createApiService({
   webRoot = WEB_ROOT,
   cwd = process.cwd(),
   pollInterval = config.server.pollInterval,
-  openTab = openTabInSession,
-  closeTab = closeTabInSession,
   panelState = panelStatesInSession,
   togglePanel = togglePanelInSession,
   replaceAgent = replaceAgentInSession,
@@ -767,7 +754,6 @@ export function createApiService({
   focusTerminal = focusTerminalForZellij,
   openPath = openPathWithXdg,
   checkGit = worktreeCleanAsync,
-  listOpenTabs = openTabNames,
   materialize = materializeWorktree,
   parseRepoSelector = parseSelector,
   expandIssue = expandIssueReference,
@@ -778,16 +764,19 @@ export function createApiService({
   linearSearch = searchLinearSuggestions,
   githubSuggestions = githubWorkSuggestions,
   suggestionCacheMs = 60_000,
+  spawnTerminal = spawnZshTerminal,
 } = {}) {
   const db = suppliedDb || openDb();
   const ownsDb = !suppliedDb;
   const clients = new Set();
+  const terminalClients = new Map();
+  const browserTerminalCounts = new Map();
   const pendingGitRefreshes = new Map();
   const suggestionCaches = new Map();
   let closing = false;
+  refreshWorkstreamStatuses(db, []);
   let lastEventSequence = latestWorkstreamEventSequence(db);
-  let lastTabNames = [];
-  let lastMiscStatuses = null;
+  let lastMiscStatuses = new Map(Object.keys(config.locations || {}).map((id) => [id, 'paused']));
 
   const linkSuggestions = async (provider, query = '') => {
     const key = `${provider}:${query.toLowerCase()}`;
@@ -810,26 +799,13 @@ export function createApiService({
     return pending;
   };
 
-  const readOpenTabs = () => {
-    try {
-      lastTabNames = listOpenTabs();
-    } catch (error) {
-      // Preserve the last complete snapshot when Zellij is temporarily
-      // unqueryable instead of making configured locations flicker to paused.
-      process.stderr.write(`ai-workstream API Zellij poll: ${error.message}\n`);
-    }
-    return lastTabNames;
-  };
+  const terminalSessionIds = () => browserTerminalCounts.keys();
 
-  const miscStatuses = (tabNames) => {
-    const openTabs = new Set(tabNames);
+  const miscStatuses = () => {
     return new Map(Object.keys(config.locations || {}).map((id) => [
-      id, openTabs.has(id) ? 'active' : 'paused',
+      id, browserTerminalCounts.has(id) ? 'active' : 'paused',
     ]));
   };
-
-  const initialTabNames = readOpenTabs();
-  lastMiscStatuses = miscStatuses(initialTabNames);
 
   const send = (socket, message) => {
     if (!socket.destroyed && socket.writable) socket.write(encodeWebSocketFrame(JSON.stringify(message)));
@@ -845,7 +821,7 @@ export function createApiService({
     return changes;
   };
   const broadcastMiscChanges = () => {
-    const current = miscStatuses(readOpenTabs());
+    const current = miscStatuses();
     const changes = [];
     for (const [id, status] of current) {
       if (lastMiscStatuses.get(id) !== status) {
@@ -856,6 +832,67 @@ export function createApiService({
     }
     lastMiscStatuses = current;
     return changes;
+  };
+
+  const registerBrowserTerminal = (sessionId) => {
+    if (!sessionId) return;
+    const id = String(sessionId);
+    const count = browserTerminalCounts.get(id) || 0;
+    browserTerminalCounts.set(id, count + 1);
+    if (count > 0) return;
+    if (config.locations?.[id]) {
+      broadcastMiscChanges();
+      return;
+    }
+    const row = resolveRow(db, id);
+    if (!row || row.status === 'closed') return;
+    setStatus(db, row.id, 'active', true);
+    broadcastChanges();
+  };
+
+  const unregisterBrowserTerminal = (sessionId) => {
+    if (!sessionId) return;
+    const id = String(sessionId);
+    const count = browserTerminalCounts.get(id) || 0;
+    if (count > 1) {
+      browserTerminalCounts.set(id, count - 1);
+      return;
+    }
+    browserTerminalCounts.delete(id);
+    if (config.locations?.[id]) {
+      broadcastMiscChanges();
+      return;
+    }
+    const row = resolveRow(db, id);
+    if (!row || row.status !== 'active') return;
+    setStatus(db, row.id, 'paused');
+    broadcastChanges();
+  };
+
+  const disposeTerminalClient = (socket, { kill = true } = {}) => {
+    const current = terminalClients.get(socket);
+    if (!current) return;
+    terminalClients.delete(socket);
+    unregisterBrowserTerminal(current.sessionId);
+    if (kill) {
+      try { current.terminal.kill(); } catch { /* already exited */ }
+    }
+  };
+
+  const browserTerminalConnected = (sessionId, role = null) => {
+    const id = String(sessionId);
+    return [...terminalClients.values()].some((current) => (
+      current.sessionId === id && (role === null || current.role === role)
+    ));
+  };
+
+  const closeBrowserTerminals = (sessionId, role = null) => {
+    const id = String(sessionId);
+    for (const [socket, current] of [...terminalClients]) {
+      if (current.sessionId !== id || (role !== null && current.role !== role)) continue;
+      disposeTerminalClient(socket);
+      if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
+    }
   };
 
   const gitRefreshTarget = (id) => {
@@ -930,6 +967,17 @@ export function createApiService({
       if ((req.method === 'GET' || headOnly) && url.pathname === '/webclient.js') {
         return staticFile(res, `${webRoot}/webclient.js`, 'text/javascript; charset=utf-8', headOnly);
       }
+      if ((req.method === 'GET' || headOnly) && (url.pathname === '/v2' || url.pathname === '/v2/')) {
+        return staticFile(res, `${webRoot}/v2/index.html`, 'text/html; charset=utf-8', headOnly);
+      }
+      const v2Asset = url.pathname.match(/^\/v2\/assets\/([A-Za-z0-9_.-]+\.(css|js|map))$/);
+      if ((req.method === 'GET' || headOnly) && v2Asset) {
+        return staticFile(res, `${webRoot}/v2/assets/${v2Asset[1]}`, V2_ASSET_TYPES.get(v2Asset[2]), headOnly);
+      }
+      const v2Font = url.pathname.match(/^\/v2\/fonts\/([A-Za-z0-9_.-]+\.(woff2|txt))$/);
+      if ((req.method === 'GET' || headOnly) && v2Font) {
+        return staticFile(res, `${webRoot}/v2/fonts/${v2Font[1]}`, V2_FONT_TYPES.get(v2Font[2]), headOnly);
+      }
       const iconName = url.pathname.match(/^\/icons\/([^/]+)$/)?.[1];
       if ((req.method === 'GET' || headOnly) && WEB_ICONS.has(iconName)) {
         return staticFile(res, `${webRoot}/icons/${iconName}`, 'image/svg+xml', headOnly);
@@ -946,6 +994,17 @@ export function createApiService({
       }
       if (req.method === 'GET' && url.pathname === '/ws/events') {
         return json(res, 426, { error: 'upgrade_required', websocket: '/ws/events' }, { Upgrade: 'websocket' });
+      }
+      if (req.method === 'GET' && url.pathname === '/ws/terminal') {
+        return json(res, 426, { error: 'upgrade_required', websocket: '/ws/terminal' }, { Upgrade: 'websocket' });
+      }
+      if (req.method === 'GET' && url.pathname === '/ws/terminal-sessions') {
+        return json(res, 200, {
+          sessions: [...browserTerminalCounts].map(([id, count]) => ({
+            id: /^\d+$/.test(id) ? Number(id) : id,
+            count,
+          })),
+        });
       }
 
       const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
@@ -978,7 +1037,7 @@ export function createApiService({
           page: url.searchParams.get('page') || undefined,
           perpage: url.searchParams.get('perpage') || undefined,
           status: url.searchParams.get('status') || undefined,
-        }, { cwd, config, tabNames: readOpenTabs() });
+        }, { cwd, config, terminalSessionIds: terminalSessionIds() });
         if (parts[1] && parts[1] !== 'all' && result.items[0]) {
           const item = result.items[0];
           const row = item.type === 'misc'
@@ -998,7 +1057,7 @@ export function createApiService({
       if (req.method === 'POST' && parts[0] === 'ws' && parts.length === 1) {
         const body = await jsonBody(req);
         const result = createRepoWorkstream(db, body, {
-          cwd, config, openTab, materialize, parseSelector: parseRepoSelector, expandIssue,
+          cwd, config, materialize, parseSelector: parseRepoSelector, expandIssue,
           writeSeed: writeSessionSeed, now: clock,
         });
         result.workstream = await refreshGitBeforeResponse(result.workstream);
@@ -1009,7 +1068,7 @@ export function createApiService({
       if (req.method === 'POST' && parts[0] === 'ws' && parts[1] === 'scratchpad' && parts.length === 2) {
         const body = await jsonBody(req);
         const result = createScratchpadWorkstream(db, body, {
-          cwd, config, openTab, createScratchpad: createScratchpadEntry, expandIssue,
+          cwd, config, createScratchpad: createScratchpadEntry, expandIssue,
           writeSeed: writeSessionSeed,
         });
         result.workstream = await refreshGitBeforeResponse(result.workstream);
@@ -1019,10 +1078,18 @@ export function createApiService({
       }
       if (req.method === 'POST' && parts[0] === 'ws' && parts.length === 3) {
         const body = await jsonBody(req);
+        const browserAgentConnected = parts[2] === 'agent-set'
+          && browserTerminalConnected(parts[1], 'agent');
         const result = executeWorkstreamCommand(db, parts[1], parts[2], body, {
-          cwd, config, tabNames: readOpenTabs(),
-          openTab, closeTab, togglePanel, replaceAgent, renameTab, focusAgent, focusShell, focusTerminal, openPath,
+          cwd, config, terminalSessionIds: terminalSessionIds(),
+          togglePanel,
+          replaceAgent: parts[2] === 'agent-set'
+            ? (_row, agent) => ({ agent, replaced: browserAgentConnected, browserTerminalRestart: browserAgentConnected })
+            : replaceAgent,
+          renameTab, focusAgent, focusShell, focusTerminal, openPath,
         });
+        if (parts[2] === 'pause' || parts[2] === 'close') closeBrowserTerminals(parts[1]);
+        if (parts[2] === 'agent-set' && result.result.changed) closeBrowserTerminals(parts[1], 'agent');
         broadcastChanges();
         if (result.workstream.type === 'misc') broadcastMiscChanges();
         if (parts[2] === 'panel-toggle') {
@@ -1045,8 +1112,8 @@ export function createApiService({
   });
 
   server.on('upgrade', (req, socket, head) => {
-    let pathname;
-    try { pathname = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname; }
+    let requestUrl;
+    try { requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`); }
     catch { socket.destroy(); return; }
     const key = req.headers['sec-websocket-key'];
     const origin = req.headers.origin;
@@ -1055,11 +1122,73 @@ export function createApiService({
       try { originAllowed = new URL(origin).host === req.headers.host; }
       catch { originAllowed = false; }
     }
-    if (pathname !== '/ws/events' || req.headers.upgrade?.toLowerCase() !== 'websocket'
+    const terminalUpgrade = requestUrl.pathname === '/ws/terminal';
+    const eventUpgrade = requestUrl.pathname === '/ws/events';
+    const remoteAddress = socket.remoteAddress || '';
+    const loopback = remoteAddress === '127.0.0.1' || remoteAddress === '::1'
+      || remoteAddress === '::ffff:127.0.0.1';
+    if ((!eventUpgrade && !terminalUpgrade) || req.headers.upgrade?.toLowerCase() !== 'websocket'
         || typeof key !== 'string' || !originAllowed) {
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
+    }
+    if (terminalUpgrade && !loopback) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    let terminal = null;
+    let terminalSessionId = null;
+    let terminalRole = null;
+    if (terminalUpgrade) {
+      try {
+        const requestedSessionId = requestUrl.searchParams.get('session');
+        const requestedRole = requestUrl.searchParams.get('role');
+        if (requestedRole && !PANEL_ROLES.includes(requestedRole)) {
+          throw new ApiError(400, `role must be one of: ${PANEL_ROLES.join(', ')}`);
+        }
+        if (requestedRole && !requestedSessionId) {
+          throw new ApiError(400, 'role requires a workstream session');
+        }
+        let terminalCwd = process.env.HOME || cwd;
+        let workstream = null;
+        if (requestedSessionId) {
+          workstream = queryWorkstreams(db, { id: requestedSessionId, status: 'all' }, {
+            cwd, config, terminalSessionIds: terminalSessionIds(),
+          }).items[0];
+          if (!workstream?.path) throw new ApiError(404, `no directory for workstream "${requestedSessionId}"`);
+          if (workstream.status === 'closed') {
+            throw new ApiError(409, `workstream "${requestedSessionId}" must be reopened before starting a terminal`);
+          }
+          if (!existsSync(workstream.path)) {
+            throw new ApiError(409, `workstream directory does not exist: ${workstream.path}`);
+          }
+          terminalSessionId = String(workstream.id);
+          terminalCwd = workstream.path;
+          terminalRole = requestedRole || 'shell';
+        }
+        const launch = workstream ? browserTerminalLaunch(terminalRole, workstream, config) : {};
+        terminal = spawnTerminal({
+          ...launch,
+          cwd: terminalCwd,
+          env: terminalSessionId
+            ? { ...process.env, AI_WORKSTREAM_ID: terminalSessionId }
+            : process.env,
+          cols: 80,
+          rows: 24,
+        });
+      } catch (error) {
+        const status = error instanceof ApiError ? error.status : 500;
+        const reason = status === 400 ? 'Bad Request'
+          : status === 404 ? 'Not Found'
+            : status === 409 ? 'Conflict' : 'Internal Server Error';
+        socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n\r\n`);
+        socket.destroy();
+        if (status === 500) process.stderr.write(`ai-workstream terminal: ${error.message}\n`);
+        return;
+      }
     }
     const accept = createHash('sha1')
       .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
@@ -1072,14 +1201,50 @@ export function createApiService({
       '',
       '',
     ].join('\r\n'));
-    clients.add(socket);
-    socket.on('close', () => clients.delete(socket));
-    socket.on('error', () => clients.delete(socket));
-    consumeWebSocketFrames(socket, head);
+    if (eventUpgrade) {
+      clients.add(socket);
+      socket.on('close', () => clients.delete(socket));
+      socket.on('error', () => clients.delete(socket));
+      consumeWebSocketFrames(socket, head);
+      return;
+    }
+
+    terminalClients.set(socket, { terminal, sessionId: terminalSessionId, role: terminalRole });
+    registerBrowserTerminal(terminalSessionId);
+    const disposeTerminal = () => {
+      disposeTerminalClient(socket);
+    };
+    socket.on('close', disposeTerminal);
+    socket.on('error', disposeTerminal);
+    terminal.onData((data) => send(socket, { type: 'output', data }));
+    terminal.onExit(({ exitCode, signal }) => {
+      disposeTerminalClient(socket, { kill: false });
+      send(socket, { type: 'exit', exitCode, signal: signal ?? null });
+      if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
+    });
+    consumeWebSocketFrames(socket, head, (payload, opcode) => {
+      if (opcode !== 0x1) return;
+      let message;
+      try { message = JSON.parse(payload.toString('utf8')); }
+      catch { send(socket, { type: 'error', message: 'invalid terminal message' }); return; }
+      if (message?.type === 'input' && typeof message.data === 'string') {
+        terminal.write(message.data);
+        return;
+      }
+      if (message?.type === 'resize'
+          && Number.isInteger(message.cols) && message.cols >= 2 && message.cols <= 500
+          && Number.isInteger(message.rows) && message.rows >= 1 && message.rows <= 300) {
+        try { terminal.resize(message.cols, message.rows); }
+        catch (error) { send(socket, { type: 'error', message: error.message }); }
+        return;
+      }
+      send(socket, { type: 'error', message: 'unsupported terminal message' });
+    });
   });
 
   const timer = pollInterval > 0 ? setInterval(() => {
     try {
+      refreshWorkstreamStatuses(db, terminalSessionIds());
       const changes = broadcastChanges();
       scheduleGitRefresh(changes);
       broadcastMiscChanges();
@@ -1093,6 +1258,7 @@ export function createApiService({
     server,
     db,
     clients,
+    terminalClients,
     broadcastChanges,
     broadcastMiscChanges,
     scheduleGitRefresh,
@@ -1101,6 +1267,11 @@ export function createApiService({
       if (timer) clearInterval(timer);
       for (const socket of clients) socket.destroy();
       clients.clear();
+      for (const [socket] of [...terminalClients]) {
+        disposeTerminalClient(socket);
+        socket.destroy();
+      }
+      terminalClients.clear();
       if (server.listening) await new Promise((resolve) => server.close(resolve));
       await Promise.allSettled([...pendingGitRefreshes.values()].map(({ promise }) => promise));
       if (ownsDb) db.close();

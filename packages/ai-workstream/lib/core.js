@@ -349,15 +349,16 @@ export function computeTabName(row) {
 }
 
 export function upsertWorkstream(db, ws) {
+  const status = ws.status === 'paused' ? 'paused' : 'active';
   db.prepare(`
     INSERT INTO workstreams (org, repo, branch, path, source, status, created_at, last_joined_at)
-    VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(org, repo, branch) DO UPDATE SET
       path = excluded.path,
       source = excluded.source,
-      status = 'active',
+      status = excluded.status,
       last_joined_at = excluded.last_joined_at
-  `).run(ws.org, ws.repo, ws.branch, ws.path, ws.source, ws.created_at, ws.last_joined_at);
+  `).run(ws.org, ws.repo, ws.branch, ws.path, ws.source, status, ws.created_at, ws.last_joined_at);
   return db.prepare('SELECT * FROM workstreams WHERE org=? AND repo=? AND branch=?')
     .get(ws.org, ws.repo, ws.branch);
 }
@@ -426,6 +427,10 @@ export function setStatus(db, id, status, touchJoined = false) {
   } else {
     db.prepare('UPDATE workstreams SET status=? WHERE id=?').run(status, id);
   }
+}
+
+export function touchLastJoined(db, id) {
+  db.prepare('UPDATE workstreams SET last_joined_at=? WHERE id=?').run(now(), id);
 }
 
 export function setAgentStatus(db, id, status) {
@@ -514,14 +519,14 @@ export function setSelectedAgent(db, id, agent) {
   return agent;
 }
 
-// Reconcile workstream status against a complete snapshot of open Zellij tab
-// names. An open tab is authoritative and makes its row active. A missing tab
-// pauses an active row, while an already closed row remains closed when absent.
-export function refreshWorkstreamStatuses(db, tabNames) {
-  const open = new Set(tabNames);
+// Reconcile workstream status against the browser terminal sessions currently
+// connected to the API daemon. A live browser PTY makes a non-closed row active;
+// without one, active rows become paused. Closed rows remain closed.
+export function refreshWorkstreamStatuses(db, terminalSessionIds) {
+  const active = new Set([...terminalSessionIds].map(String));
   const rows = db.prepare('SELECT * FROM workstreams ORDER BY id').all();
-  const activated = rows.filter((row) => row.status !== 'active' && open.has(computeTabName(row)));
-  const paused = rows.filter((row) => row.status === 'active' && !open.has(computeTabName(row)));
+  const activated = rows.filter((row) => row.status !== 'active' && row.status !== 'closed' && active.has(String(row.id)));
+  const paused = rows.filter((row) => row.status === 'active' && !active.has(String(row.id)));
   if (activated.length || paused.length) {
     const activate = db.prepare("UPDATE workstreams SET status='active' WHERE id=? AND status!='active'");
     const pause = db.prepare("UPDATE workstreams SET status='paused' WHERE id=? AND status='active'");
@@ -538,9 +543,9 @@ export function refreshWorkstreamStatuses(db, tabNames) {
   return {
     checked: rows.length,
     unchanged: rows.length - activated.length - paused.length,
-    activated: activated.map((row) => ({ ...row, status: 'active', tabName: computeTabName(row) })),
-    paused: paused.map((row) => ({ ...row, status: 'paused', tabName: computeTabName(row) })),
-    tabCount: open.size,
+    activated: activated.map((row) => ({ ...row, status: 'active' })),
+    paused: paused.map((row) => ({ ...row, status: 'paused' })),
+    terminalSessionCount: active.size,
   };
 }
 
@@ -879,7 +884,7 @@ export function createScratchpad(db, rawName) {
   mkdirSync(path, { recursive: true });
   return upsertWorkstream(db, {
     org: SCRATCH_ORG, repo: SCRATCH_ORG, branch: name, source: 'scratch',
-    path, created_at: now(), last_joined_at: now(),
+    path, status: 'paused', created_at: now(), last_joined_at: now(),
   });
 }
 

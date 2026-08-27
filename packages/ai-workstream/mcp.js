@@ -24,17 +24,31 @@ import {
   openDb, resolveRow, currentWorkstream, now,
   listWorkstreams, listIssues, addIssue, removeIssue, addLog, workstreamView,
   createScratchpad, parseSelector, materializeWorktree, upsertWorkstream,
-  setStatus, setPath, linkPr, linkedSessionSeed, renameWorkstream, writeSeed,
+  setStatus, touchLastJoined, setPath, linkPr, linkedSessionSeed, renameWorkstream, writeSeed,
   worktreeDirty, removeWorktree, isScratch, computeTabName,
   collectDayActivity, renderDigest, appendDayEntry, NOTES_ROOT,
   addNote, listNotes,
   parentOf, setParent, stackTree, stackLine, stackCheck, ghStackLink, briefStackRow,
 } from './lib/core.js';
 import { openTab, closeTab, inZellij, renameTab } from './lib/zellij.js';
+import { daemonStatus } from './lib/daemon.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 
 const json = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
+
+async function pauseBrowserTerminals(id) {
+  const daemon = await daemonStatus(CONFIG);
+  if (!daemon.running) return null;
+  const response = await fetch(`${daemon.url}/ws/${encodeURIComponent(id)}/pause`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(body?.message || `browser terminal pause failed (HTTP ${response.status})`);
+  return body;
+}
 
 // Resolve the workstream a tool acts on: explicit selector, else the worktree
 // containing the server's current directory. Throws if neither is available.
@@ -179,6 +193,7 @@ server.registerTool('ws_new', {
   const path = materializeWorktree(org, name, branch, source, sameRepo ? { base: parentRow.branch } : {});
   let row = upsertWorkstream(db, {
     org, repo: name, branch, source, path,
+    status: 'paused',
     created_at: now(), last_joined_at: now(),
   });
   if (parentRow) row = setParent(db, row, parentRow);
@@ -195,9 +210,9 @@ server.registerTool('ws_new', {
 
 server.registerTool('ws_resume', {
   description: 'Resume (rejoin) an existing workstream by selector: reconstitute its worktree if the '
-    + 'directory was removed, mark it active, link its PR if any, and — inside Zellij — (re)open or '
+    + 'directory was removed, link its PR if any, and — inside Zellij — (re)open or '
     + 'focus its configured tab in place. Outside Zellij it just reconstitutes the worktree and '
-    + 'returns its path.',
+    + 'returns its path. Active status is controlled only by connected browser terminals.',
   inputSchema: {
     workstream: workstreamArg,
     seed: seedArg,
@@ -214,7 +229,8 @@ server.registerTool('ws_resume', {
     const path = materializeWorktree(row.org, row.repo, row.branch, row.source);
     if (path && path !== row.path) { setPath(db, row.id, path); row.path = path; }
   }
-  setStatus(db, row.id, 'active', true);
+  if (row.status === 'closed') setStatus(db, row.id, 'paused', true);
+  else touchLastJoined(db, row.id);
   const linked = linkPr(db, row);
   return json({
     workstream: workstreamView(db, row, process.cwd()),
@@ -224,15 +240,15 @@ server.registerTool('ws_resume', {
 });
 
 server.registerTool('ws_pause', {
-  description: 'Pause a workstream: close its Zellij tab but keep the worktree on disk (status: paused, '
+  description: 'Pause a workstream: close its browser terminals but keep the worktree on disk (status: paused, '
     + 'resume is instant). Use this to set work aside without discarding anything. Defaults to the '
     + 'worktree containing the current directory.',
   inputSchema: { workstream: workstreamArg },
 }, async ({ workstream }) => {
   const db = openDb();
   const row = targetRow(db, workstream);
-  if (inZellij()) closeTab(row);
-  setStatus(db, row.id, 'paused');
+  const remote = await pauseBrowserTerminals(row.id);
+  if (!remote) setStatus(db, row.id, 'paused');
   return json({ workstream: workstreamView(db, row, process.cwd()), paused: true });
 });
 

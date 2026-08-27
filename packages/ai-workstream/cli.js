@@ -11,6 +11,7 @@ import { AGENT_PROVIDERS, CONFIG, PANEL_ROLES } from './lib/config.js';
 import {
   WS_SESSION, now, isScratch, computeTabName,
   openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus, setPath, renameWorkstream,
+  touchLastJoined,
   refreshWorkstreamStatuses,
   listWorkstreams, issuesByWorkstream, listIssues, addIssue, removeIssue, addLog,
   hasClone, parseSelector, materializeWorktree, removeWorktree, worktreeDirty,
@@ -22,7 +23,7 @@ import {
   linkedSessionSeed,
 } from './lib/core.js';
 import {
-  openTab, closeTab, renameTab, inZellij, openPane, closePane, openTabNames,
+  openTab, closeTab, renameTab, inZellij, openPane, closePane,
 } from './lib/zellij.js';
 import {
   daemonFiles, daemonStatus, openWebPage, runForeground, startDaemon, stopDaemon,
@@ -224,6 +225,7 @@ async function cmdNew(args) {
     sameRepo ? { base: parent.branch } : {});
   let row = upsertWorkstream(db, {
     org, repo, branch, source, path,
+    status: 'paused',
     created_at: now(),
     last_joined_at: now(),
   });
@@ -251,7 +253,20 @@ async function cmdScratch(args) {
 
 // Open (or focus) any configured location. These are never closed as state and
 // their directories are never removed; --close only pauses the Zellij tab.
-function cmdConfiguredLocation(id, args) {
+async function requestBrowserCommand(id, command, body = {}) {
+  const daemon = await daemonStatus(CONFIG);
+  if (!daemon.running) return null;
+  const response = await fetch(`${daemon.url}/ws/${encodeURIComponent(id)}/${command}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(result?.message || `browser terminal command failed (HTTP ${response.status})`);
+  return result;
+}
+
+async function cmdConfiguredLocation(id, args) {
   const location = CONFIG.locations[id];
   if (!location) die(`unknown configured location "${id}"`);
   const db = openDb();
@@ -261,7 +276,11 @@ function cmdConfiguredLocation(id, args) {
     tab_name: id,
     agent: selectedAgent(db, id, CONFIG.agent),
   };
-  if (args.includes('--close')) { closeTab(row); return; }
+  if (args.includes('--close')) {
+    await requestBrowserCommand(id, 'pause');
+    console.log(`Paused configured location "${id}" browser terminals.`);
+    return;
+  }
   const editorFile = location.weeklyNotes ? ensureWeeklyNote(location.path) : undefined;
   openTab(row, tabOpts(args, row, { ...(editorFile ? { editorFile } : {}) }));
 }
@@ -280,7 +299,8 @@ async function cmdJoin(args, verb = 'join') {
     if (path && path !== row.path) { setPath(db, row.id, path); row.path = path; }
     console.log(`Worktree missing; reconstituting at ${row.path}`);
   }
-  setStatus(db, row.id, 'active', true);
+  if (row.status === 'closed') setStatus(db, row.id, 'paused', true);
+  else touchLastJoined(db, row.id);
   linkPrForRow(db, row);
   // Focuses the tab if it already exists (layout flags have no effect then), else creates
   // it; either way this is a one-off layout choice for this open, not persisted.
@@ -292,8 +312,8 @@ async function cmdPause(args) {
   const positional = positionals(args);
   const db = openDb();
   const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), 'pause');
-  closeTab(row);
-  setStatus(db, row.id, 'paused');
+  const remote = await requestBrowserCommand(row.id, 'pause');
+  if (!remote) setStatus(db, row.id, 'paused');
   console.log(`Paused workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch}); worktree kept at ${row.path}`);
 }
 
@@ -330,24 +350,29 @@ function cmdConfig() {
   console.log(JSON.stringify(CONFIG, null, 2));
 }
 
-function cmdRefresh() {
-  // Collect the complete Zellij snapshot before touching the database. If Zellij
-  // cannot be queried, openTabNames throws and no statuses are changed.
-  const tabs = openTabNames();
+async function cmdRefresh() {
+  const daemon = await daemonStatus(CONFIG);
+  let terminalSessionIds = [];
+  if (daemon.running) {
+    const response = await fetch(`${daemon.url}/ws/terminal-sessions`);
+    if (!response.ok) throw new Error(`could not query browser terminals (HTTP ${response.status})`);
+    const body = await response.json();
+    terminalSessionIds = (body.sessions || []).map((session) => String(session.id));
+  }
   const db = openDb();
-  const result = refreshWorkstreamStatuses(db, tabs);
-  console.log(`Checked ${result.checked} workstream${result.checked === 1 ? '' : 's'} against ${result.tabCount} open Zellij tab${result.tabCount === 1 ? '' : 's'}.`);
+  const result = refreshWorkstreamStatuses(db, terminalSessionIds);
+  console.log(`Checked ${result.checked} workstream${result.checked === 1 ? '' : 's'} against ${result.terminalSessionCount} browser terminal session${result.terminalSessionCount === 1 ? '' : 's'}.`);
   if (!result.activated.length && !result.paused.length) {
     console.log('No statuses changed.');
     return;
   }
   for (const row of result.activated) {
     const repo = isScratch(row) ? 'scratch' : `${row.org}/${row.repo}`;
-    console.log(`Activated #${row.id} (${repo} @ ${row.branch}); tab "${row.tabName}" is open.`);
+    console.log(`Activated #${row.id} (${repo} @ ${row.branch}); browser terminals are connected.`);
   }
   for (const row of result.paused) {
     const repo = isScratch(row) ? 'scratch' : `${row.org}/${row.repo}`;
-    console.log(`Paused #${row.id} (${repo} @ ${row.branch}); tab "${row.tabName}" is not open.`);
+    console.log(`Paused #${row.id} (${repo} @ ${row.branch}); no browser terminals are connected.`);
   }
 }
 
@@ -759,10 +784,10 @@ Usage:
                                    (--parent <id|branch>: branch off that workstream and stack on it)
   ws scratch [name]                Create a scratchpad under the configured root (alias: sp)
                                    (both take --seed <file>: the agent opens reading that seed doc)
-  ws location <name> [--close]     Open any configured location; --close pauses its tab
+  ws location <name> [--close]     Open any configured location; --close pauses browser terminals
   ws <location-name> [--close]     Shorthand when the name is not another ws command
   ws join [id|branch]              Rejoin a workstream, reconstituting it if needed (alias: rejoin)
-  ws pause [id|branch]             Close the tab but keep the worktree (status: paused)
+  ws pause [id|branch]             Close browser terminals but keep the worktree
   ws open-shell|open-editor|open-agent [id|branch]   Add that panel to an open tab
   ws open-claude|open-codex [id|branch]              Add an agent panel using that provider
   ws close-shell|close-editor|close-agent [id|branch] Close that panel if it is open
@@ -784,7 +809,7 @@ Usage:
   ws digest [YYYY-MM-DD] [--write]      Draft a day's notes from commits + work logs
                                         (--write appends to the configured weekly notes file)
   ws config                        Print the resolved configuration and config file path
-  ws refresh                       Reconcile workstream status with open Zellij tabs
+  ws refresh                       Reconcile status with live browser terminal sessions
   ws hooks [install|status]         Install or inspect Claude/Codex agent-status hooks
   ws daemon [start|stop|restart|status|foreground|log] [--host H] [--port P]
                                    Manage the local REST/WebSocket service (default: start)
