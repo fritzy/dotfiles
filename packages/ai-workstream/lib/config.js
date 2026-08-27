@@ -7,11 +7,15 @@ export const PANEL_ROLES = ['shell', 'editor', 'agent'];
 export const AGENT_PROVIDERS = ['claude', 'codex'];
 export const DEFAULT_CONFIG_PATH = fileURLToPath(new URL('../config.ini', import.meta.url));
 
+const RESERVED_LOCATION_IDS = new Set(['all', 'new', 'events', 'repositories', 'scratchpads', 'data']);
+
 const firstDefined = (...values) => values.find((value) => value !== undefined);
 
 function iniValue(raw, source, lineNumber) {
   const value = raw.trim();
   if (value === '' || value === 'null') return null;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
   if (value.startsWith('[') || value.startsWith('"')) {
     try { return JSON.parse(value); }
     catch (error) { throw new Error(`${source}:${lineNumber}: invalid value: ${error.message}`); }
@@ -142,6 +146,38 @@ function modelValue(value, fallback) {
   return selected;
 }
 
+function integerValue(value, name, { min, max }) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new Error(`${name} must be an integer from ${min} to ${max}`);
+  }
+  return number;
+}
+
+function repositoryValue(value, name) {
+  const repository = typeof value === 'string' ? value.trim() : '';
+  const parts = repository.split('/');
+  if (parts.length !== 2
+      || parts.some((part) => !/^[A-Za-z0-9_.-]+$/.test(part) || part === '.' || part === '..')) {
+    throw new Error(`locations.${name}.repo must be in owner/repository form`);
+  }
+  return repository;
+}
+
+function branchValue(value, name) {
+  const branch = value ?? 'main';
+  if (typeof branch !== 'string' || branch.trim() === '') {
+    throw new Error(`locations.${name}.branch must be a non-empty string`);
+  }
+  return branch.trim();
+}
+
+function booleanValue(value, fallback, name) {
+  const selected = value ?? fallback;
+  if (typeof selected !== 'boolean') throw new Error(`${name} must be true or false`);
+  return selected;
+}
+
 export function resolveConfig({
   env = process.env,
   home = homedir(),
@@ -172,11 +208,32 @@ export function resolveConfig({
     dotfiles: firstDefined(env.AI_WORKSTREAM_DOTFILES, env.WS_DOTFILES),
     data: firstDefined(env.AI_WORKSTREAM_DATA, env.WS_DATA_DIR),
   };
-  const pathNames = ['repositories', 'scratchpads', 'notes', 'dotfiles', 'data'];
+  const pathNames = ['repositories', 'scratchpads', 'data'];
   const paths = Object.fromEntries(pathNames.map((name) => [
     name,
     expandPath(firstDefined(pathEnv[name], file.paths?.[name]), { home, dataHome, base }),
   ]));
+  const locations = Object.fromEntries(Object.entries(file.locations || {}).map(([id, location]) => {
+    if (RESERVED_LOCATION_IDS.has(id)) {
+      throw new Error(`locations.${id} uses a reserved location name`);
+    }
+    if (!location || typeof location !== 'object' || Array.isArray(location)) {
+      throw new Error(`locations.${id} must be a section with repo and path settings`);
+    }
+    const path = expandPath(firstDefined(pathEnv[id], file.paths?.[id], location.path), {
+      home, dataHome, base,
+    });
+    paths[id] = path;
+    return [id, {
+      id,
+      name: id,
+      repo: repositoryValue(location.repo, id),
+      path,
+      branch: branchValue(location.branch, id),
+      closeable: false,
+      weeklyNotes: booleanValue(location.weeklyNotes, false, `locations.${id}.weeklyNotes`),
+    }];
+  }));
 
   const agent = firstDefined(env.AI_WORKSTREAM_AGENT, env.WS_AGENT, file.agent);
   if (!AGENT_PROVIDERS.includes(agent)) {
@@ -212,18 +269,37 @@ export function resolveConfig({
   if (!['ssh', 'https'].includes(gitProtocol)) {
     throw new Error('gitProtocol must be "ssh" or "https"');
   }
+  const serverHost = firstDefined(env.AI_WORKSTREAM_HOST, env.WS_HOST, file.server?.host);
+  if (typeof serverHost !== 'string' || serverHost.trim() === '') {
+    throw new Error('server.host must be a non-empty string');
+  }
+  const server = {
+    host: serverHost,
+    port: integerValue(
+      firstDefined(env.AI_WORKSTREAM_PORT, env.WS_PORT, file.server?.port),
+      'server.port',
+      { min: 1, max: 65535 },
+    ),
+    pollInterval: integerValue(
+      firstDefined(env.AI_WORKSTREAM_POLL_INTERVAL, env.WS_POLL_INTERVAL, file.server?.pollInterval),
+      'server.pollInterval',
+      { min: 100, max: 60000 },
+    ),
+  };
 
   return {
     defaultConfigPath,
     configPath: selectedConfigPath,
     home,
     paths,
+    locations,
     panels,
     commands,
     agent,
     models,
     zellijSession,
     gitProtocol,
+    server,
   };
 }
 

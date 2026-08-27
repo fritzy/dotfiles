@@ -10,9 +10,10 @@
 // an stdio MCP server whose stdout carries the JSON-RPC stream.
 
 import { DatabaseSync } from 'node:sqlite';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, renameSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 
 import { CONFIG } from './config.js';
 
@@ -62,6 +63,9 @@ export function openDb(path = DB_PATH) {
       path TEXT NOT NULL,
       source TEXT NOT NULL DEFAULT 'origin',  -- origin | pr:<N> | fork:<owner>
       status TEXT NOT NULL DEFAULT 'active',
+      agent_status TEXT CHECK(agent_status IN ('working', 'ready')),
+      agent TEXT CHECK(agent IN ('claude', 'codex')),
+      git_clean INTEGER CHECK(git_clean IN (0, 1)),
       label TEXT,               -- optional display name override (set via ws rename)
       parent_id INTEGER,        -- the workstream this one is stacked on (see stacks below)
       created_at TEXT NOT NULL,
@@ -73,6 +77,9 @@ export function openDb(path = DB_PATH) {
   // the old `tab_name` column now that it's computed on demand (see computeTabName)
   // instead of stored — storing it let stale rows keep a pre-id-prefix name forever.
   try { db.exec("ALTER TABLE workstreams ADD COLUMN source TEXT NOT NULL DEFAULT 'origin'"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE workstreams ADD COLUMN agent_status TEXT CHECK(agent_status IN ('working', 'ready'))"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE workstreams ADD COLUMN agent TEXT CHECK(agent IN ('claude', 'codex'))"); } catch { /* exists */ }
+  try { db.exec('ALTER TABLE workstreams ADD COLUMN git_clean INTEGER CHECK(git_clean IN (0, 1))'); } catch { /* exists */ }
   try { db.exec('ALTER TABLE workstreams ADD COLUMN label TEXT'); } catch { /* exists */ }
   // parent_id carries no REFERENCES clause: rows are only ever status='closed',
   // never deleted, so there's nothing for a cascade to do — and a plain column
@@ -99,12 +106,171 @@ export function openDb(path = DB_PATH) {
       created_at TEXT NOT NULL
     );
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workstream_events (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      workstream_id INTEGER NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('new_session', 'update_session', 'agent_status')),
+      agent_status TEXT CHECK(agent_status IN ('working', 'ready')),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK(type = 'agent_status' OR agent_status IS NULL),
+      CHECK(type != 'agent_status' OR agent_status IS NOT NULL)
+    );
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS configured_location_state (
+      id TEXT PRIMARY KEY,
+      agent_status TEXT CHECK(agent_status IN ('working', 'ready')),
+      agent TEXT CHECK(agent IN ('claude', 'codex')),
+      git_clean INTEGER CHECK(git_clean IN (0, 1))
+    );
+  `);
+  try { db.exec("ALTER TABLE configured_location_state ADD COLUMN agent TEXT CHECK(agent IN ('claude', 'codex'))"); } catch { /* exists */ }
+  try { db.exec('ALTER TABLE configured_location_state ADD COLUMN git_clean INTEGER CHECK(git_clean IN (0, 1))'); } catch { /* exists */ }
+  const configuredLocationSchema = db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type='table' AND name='configured_location_state'
+  `).get()?.sql || '';
+  if (/CHECK\s*\(\s*id\s+IN\s*\(/i.test(configuredLocationSchema)) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS configured_location_event_agent_status_changed;
+      DROP TRIGGER IF EXISTS configured_location_event_agent_changed;
+      DROP TRIGGER IF EXISTS configured_location_event_git_clean_changed;
+      ALTER TABLE configured_location_state RENAME TO configured_location_state_legacy;
+      CREATE TABLE configured_location_state (
+        id TEXT PRIMARY KEY,
+        agent_status TEXT CHECK(agent_status IN ('working', 'ready')),
+        agent TEXT CHECK(agent IN ('claude', 'codex')),
+        git_clean INTEGER CHECK(git_clean IN (0, 1))
+      );
+      INSERT INTO configured_location_state (id, agent_status, agent, git_clean)
+      SELECT id, agent_status, agent, git_clean FROM configured_location_state_legacy;
+      DROP TABLE configured_location_state_legacy;
+    `);
+  }
+  // Migrate the original invalidation journal without discarding pending events.
+  // Trigger names are dropped first because SQLite rewrites their target table
+  // when a table is renamed, which would otherwise leave them writing to the
+  // temporary legacy table.
+  const eventColumns = db.prepare('PRAGMA table_info(workstream_events)').all();
+  if (eventColumns.some(({ name }) => name === 'change')) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS workstream_event_created;
+      DROP TRIGGER IF EXISTS workstream_event_status_changed;
+      DROP TRIGGER IF EXISTS workstream_event_issue_added;
+      DROP TRIGGER IF EXISTS workstream_event_issue_removed;
+      ALTER TABLE workstream_events RENAME TO workstream_events_legacy;
+      CREATE TABLE workstream_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        workstream_id INTEGER NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('new_session', 'update_session', 'agent_status')),
+        agent_status TEXT CHECK(agent_status IN ('working', 'ready')),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK(type = 'agent_status' OR agent_status IS NULL),
+        CHECK(type != 'agent_status' OR agent_status IS NOT NULL)
+      );
+      INSERT INTO workstream_events (sequence, workstream_id, type, created_at)
+      SELECT sequence, workstream_id,
+        CASE change WHEN 'new' THEN 'new_session' ELSE 'update_session' END,
+        created_at
+      FROM workstream_events_legacy;
+      DROP TABLE workstream_events_legacy;
+    `);
+  }
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS workstream_event_created
+    AFTER INSERT ON workstreams
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'new_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workstream_event_status_changed
+    AFTER UPDATE OF status ON workstreams
+    WHEN OLD.status IS NOT NEW.status
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'update_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workstream_event_agent_status_changed
+    AFTER UPDATE OF agent_status ON workstreams
+    WHEN OLD.agent_status IS NOT NEW.agent_status AND NEW.agent_status IS NOT NULL
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type, agent_status)
+      VALUES (NEW.id, 'agent_status', NEW.agent_status);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workstream_event_agent_changed
+    AFTER UPDATE OF agent ON workstreams
+    WHEN OLD.agent IS NOT NEW.agent
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'update_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workstream_event_git_clean_changed
+    AFTER UPDATE OF git_clean ON workstreams
+    WHEN OLD.git_clean IS NOT NEW.git_clean
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'update_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS configured_location_event_agent_status_changed
+    AFTER UPDATE OF agent_status ON configured_location_state
+    WHEN OLD.agent_status IS NOT NEW.agent_status AND NEW.agent_status IS NOT NULL
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type, agent_status)
+      VALUES (NEW.id, 'agent_status', NEW.agent_status);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS configured_location_event_agent_changed
+    AFTER UPDATE OF agent ON configured_location_state
+    WHEN OLD.agent IS NOT NEW.agent
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'update_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS configured_location_event_git_clean_changed
+    AFTER UPDATE OF git_clean ON configured_location_state
+    WHEN OLD.git_clean IS NOT NEW.git_clean
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'update_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workstream_event_issue_added
+    AFTER INSERT ON issues
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.workstream_id, 'update_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workstream_event_issue_removed
+    AFTER DELETE ON issues
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (OLD.workstream_id, 'update_session');
+    END;
+  `);
   return db;
 }
 
+export const latestWorkstreamEventSequence = (db) =>
+  Number(db.prepare('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM workstream_events').get().sequence);
+
+export const workstreamEventsAfter = (db, sequence) =>
+  db.prepare(`
+    SELECT sequence, workstream_id AS id, type, agent_status AS status
+    FROM workstream_events
+    WHERE sequence > ?
+    ORDER BY sequence
+  `).all(sequence).map((event) => {
+    const stringId = String(event.id);
+    return {
+      id: /^\d+$/.test(stringId) ? Number(stringId) : stringId,
+      type: event.type,
+      ...(event.type === 'agent_status' ? { status: event.status } : {}),
+      sequence: Number(event.sequence),
+    };
+  });
+
 // The tab name for a workstream: derived on demand from its id, org/repo/branch
 // (or label override), never stored — so it can't go stale relative to those
-// fields. `row.tab_name` lets synthetic non-db tabs (dotfiles, notes) pass a
+// fields. `row.tab_name` lets synthetic configured-location tabs pass a
 // literal name straight through instead of being computed.
 export function computeTabName(row) {
   if (row.tab_name) return row.tab_name;
@@ -166,10 +332,106 @@ export function setStatus(db, id, status, touchJoined = false) {
   }
 }
 
+export function setAgentStatus(db, id, status) {
+  if (status !== 'working' && status !== 'ready') {
+    throw new Error(`unknown agent status "${status}" (expected working or ready)`);
+  }
+  db.prepare('UPDATE workstreams SET agent_status=? WHERE id=?').run(status, id);
+}
+
+export function configuredLocationAgentStatus(db, id) {
+  return db.prepare('SELECT agent_status FROM configured_location_state WHERE id=?')
+    .get(id)?.agent_status || null;
+}
+
+const cachedBoolean = (value) => value === null || value === undefined ? null : Boolean(value);
+
+export function configuredLocationGitClean(db, id) {
+  return cachedBoolean(db.prepare('SELECT git_clean FROM configured_location_state WHERE id=?')
+    .get(id)?.git_clean);
+}
+
+const configuredLocationId = (id) => typeof id === 'string' && !/^\d+$/.test(id);
+
+function ensureConfiguredLocationState(db, id) {
+  db.prepare('INSERT OR IGNORE INTO configured_location_state (id) VALUES (?)').run(id);
+}
+
+export function setCachedGitClean(db, id, clean) {
+  if (clean !== null && typeof clean !== 'boolean') {
+    throw new Error('Git cleanliness must be true, false, or null');
+  }
+  const value = clean === null ? null : Number(clean);
+  const configured = configuredLocationId(id);
+  if (configured) ensureConfiguredLocationState(db, id);
+  const table = configured ? 'configured_location_state' : 'workstreams';
+  const result = db.prepare(`UPDATE ${table} SET git_clean=? WHERE id=? AND git_clean IS NOT ?`)
+    .run(value, id, value);
+  return result.changes > 0;
+}
+
+export function setConfiguredLocationAgentStatus(db, id, status) {
+  if (status !== 'working' && status !== 'ready') {
+    throw new Error(`unknown agent status "${status}" (expected working or ready)`);
+  }
+  ensureConfiguredLocationState(db, id);
+  db.prepare('UPDATE configured_location_state SET agent_status=? WHERE id=?').run(status, id);
+}
+
+export function selectedAgent(db, id, fallback = CONFIG.agent) {
+  const stored = configuredLocationId(id)
+    ? db.prepare('SELECT agent FROM configured_location_state WHERE id=?').get(id)?.agent
+    : db.prepare('SELECT agent FROM workstreams WHERE id=?').get(id)?.agent;
+  return stored || fallback;
+}
+
+export function setSelectedAgent(db, id, agent) {
+  if (agent !== 'claude' && agent !== 'codex') {
+    throw new Error(`unknown agent "${agent}" (expected claude or codex)`);
+  }
+  const configured = configuredLocationId(id);
+  if (configured) ensureConfiguredLocationState(db, id);
+  const result = configured
+    ? db.prepare('UPDATE configured_location_state SET agent=?, agent_status=NULL WHERE id=?').run(agent, id)
+    : db.prepare('UPDATE workstreams SET agent=?, agent_status=NULL WHERE id=?').run(agent, id);
+  if (result.changes === 0) throw new Error(`no workstream matching "${id}"`);
+  return agent;
+}
+
+// Reconcile workstream status against a complete snapshot of open Zellij tab
+// names. An open tab is authoritative and makes its row active. A missing tab
+// pauses an active row, while an already closed row remains closed when absent.
+export function refreshWorkstreamStatuses(db, tabNames) {
+  const open = new Set(tabNames);
+  const rows = db.prepare('SELECT * FROM workstreams ORDER BY id').all();
+  const activated = rows.filter((row) => row.status !== 'active' && open.has(computeTabName(row)));
+  const paused = rows.filter((row) => row.status === 'active' && !open.has(computeTabName(row)));
+  if (activated.length || paused.length) {
+    const activate = db.prepare("UPDATE workstreams SET status='active' WHERE id=? AND status!='active'");
+    const pause = db.prepare("UPDATE workstreams SET status='paused' WHERE id=? AND status='active'");
+    db.exec('BEGIN');
+    try {
+      for (const row of activated) activate.run(row.id);
+      for (const row of paused) pause.run(row.id);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  return {
+    checked: rows.length,
+    unchanged: rows.length - activated.length - paused.length,
+    activated: activated.map((row) => ({ ...row, status: 'active', tabName: computeTabName(row) })),
+    paused: paused.map((row) => ({ ...row, status: 'paused', tabName: computeTabName(row) })),
+    tabCount: open.size,
+  };
+}
+
 // Update a workstream's recorded directory. Used when the canonical path moves
   // (e.g. scratchpads migrating to a newly configured root).
 export function setPath(db, id, path) {
-  db.prepare('UPDATE workstreams SET path=? WHERE id=?').run(path, id);
+  db.prepare('UPDATE workstreams SET path=?, git_clean=NULL WHERE id=?').run(path, id);
 }
 
 // Resolve a selector to a row: numeric id, exact branch, or org/repo:branch.
@@ -379,6 +641,36 @@ export function issueKind(ref) {
   if (/linear\.app/i.test(ref) || /^[A-Z]{2,}-\d+$/.test(ref)) return 'linear';
   if (/github\.com/i.test(ref)) return 'github';
   return 'link';
+}
+
+export function expandIssueReference(row, value, { run = spawnSync } = {}) {
+  const ref = String(value).trim();
+  const localGitHub = ref.match(/^#(\d+)$/);
+  if (localGitHub) {
+    if (isScratch(row)) {
+      throw new Error(`"${ref}" needs an owner/repository in a scratchpad (for example owner/repo${ref})`);
+    }
+    return `https://github.com/${row.org}/${row.repo}/issues/${localGitHub[1]}`;
+  }
+
+  const explicitGitHub = ref.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+  if (explicitGitHub) {
+    return `https://github.com/${explicitGitHub[1]}/issues/${explicitGitHub[2]}`;
+  }
+
+  if (/^[A-Z]{2,}-\d+$/.test(ref)) {
+    const result = run('linear', ['issue', 'url', ref], { encoding: 'utf8' });
+    if (result.error) throw new Error(`could not run Linear CLI: ${result.error.message}`);
+    const output = stripVTControlCharacters(`${result.stdout || ''}\n${result.stderr || ''}`).trim();
+    if (result.status !== 0) {
+      throw new Error(`could not resolve Linear issue ${ref}${output ? `: ${output}` : ''}`);
+    }
+    const url = output.match(/https:\/\/linear\.app\/\S+/i)?.[0];
+    if (!url) throw new Error(`Linear CLI returned no URL for ${ref}`);
+    return url;
+  }
+
+  return ref;
 }
 
 export const listIssues = (db, workstreamId) =>
@@ -806,6 +1098,25 @@ export function worktreeDirty(path) {
   return out ? out : null;
 }
 
+// A tri-state cleanliness check for display/API consumers: true is a clean Git
+// worktree, false is dirty, and null means the path is missing or is not Git.
+export function worktreeClean(path, { exists = existsSync, run = gitTry } = {}) {
+  if (!exists(path)) return null;
+  const out = run(['-C', path, 'status', '--porcelain'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  return out === null ? null : out === '';
+}
+
+export function worktreeCleanAsync(path, { exists = existsSync, run = execFile } = {}) {
+  if (!exists(path)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    run('git', ['-C', path, 'status', '--porcelain'], {
+      encoding: 'utf8', timeout: 5000, windowsHide: true,
+    }, (error, stdout) => {
+      resolve(error ? null : String(stdout || '').trim() === '');
+    });
+  });
+}
+
 export function removeWorktree(org, repo, path) {
   // Scratchpads are plain temp directories, not git worktrees.
   if (org === SCRATCH_ORG) {
@@ -916,6 +1227,20 @@ export const workstreamSlug = (row) =>
 
 export const noteDir = (row, d = new Date(), root = NOTES_ROOT) =>
   join(root, 'work', String(d.getFullYear()), 'workstream', workstreamSlug(row));
+
+// Return the newest year-specific notes directory that already exists for a
+// workstream. A workstream can span a year boundary, so callers should not
+// assume its notes are under the current year.
+export function existingNoteDir(row, root = NOTES_ROOT) {
+  const workDir = join(root, 'work');
+  if (!existsSync(workDir)) return null;
+  const slug = workstreamSlug(row);
+  for (const year of readdirSync(workDir).sort().reverse()) {
+    const dir = join(workDir, year, 'workstream', slug);
+    if (existsSync(dir)) return dir;
+  }
+  return null;
+}
 
 // Note filenames sort chronologically: <YYYY-MM-DD-HHMMSS>[-<title-slug>].md.
 export function addNote(row, body, { title, root = NOTES_ROOT } = {}) {
@@ -1054,17 +1379,26 @@ export function workstreamView(db, r, cwd) {
   return {
     id: r.id,
     repo: scratch ? 'scratch' : `${r.org}/${r.repo}`,
+    repoUrl: scratch ? null : `https://github.com/${r.org}/${r.repo}`,
     branch: r.branch,
+    name: r.label || r.branch,
+    label: r.label || null,
     scratch,
     status: r.status,
+    agentStatus: r.agent_status || null,
+    agent: r.agent || CONFIG.agent,
+    gitClean: cachedBoolean(r.git_clean),
     source: r.source,
     path: r.path,
     worktreePresent: existsSync(r.path),
     current: cur ? cur.id === r.id : undefined,
+    createdAt: r.created_at,
     lastJoined: r.last_joined_at,
     stackedOn: parent ? briefStackRow(parent) : null,
     stackedBy: children.map(briefStackRow),
-    issues: listIssues(db, r.id).map((i) => ({ id: i.id, kind: i.kind, ref: i.ref })),
+    issues: listIssues(db, r.id).map((i) => ({
+      id: i.id, kind: i.kind, ref: i.ref, createdAt: i.created_at,
+    })),
   };
 }
 

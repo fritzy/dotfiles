@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FritzWorks</title>
+  <style>
+    :root {
+      --ink: #46425e;
+      --teal: #15788c;
+      --cyan: #00b9be;
+      --cream: #ffeecc;
+      --peach: #ffb0a3;
+      --coral: #ff6973;
+      --on-teal: var(--cream);
+      --on-cyan: var(--ink);
+      --on-peach: var(--ink);
+      --on-coral: var(--ink);
+      --active-bg: var(--teal);
+      --active-fg: var(--cream);
+      --paused-bg: var(--peach);
+      --closed-bg: var(--coral);
+      color-scheme: light;
+      font: 16px/1.45 system-ui, sans-serif;
+    }
+    html[data-theme="clement-8"] {
+      --ink: #000871;
+      --teal: #8854f3;
+      --cyan: #639bff;
+      --cream: #ffffff;
+      --peach: #fff982;
+      --coral: #ff79ae;
+      --active-bg: #63ffba;
+      --active-fg: #000871;
+      --paused-bg: #fff982;
+      --closed-bg: #ff8c5c;
+    }
+    html[data-theme="oil-6"] {
+      --ink: #272744;
+      --teal: #494d7e;
+      --cyan: #8b6d9c;
+      --cream: #fbf5ef;
+      --peach: #f2d3ab;
+      --coral: #c69fa5;
+      --active-bg: #494d7e;
+      --active-fg: #fbf5ef;
+      --paused-bg: #f2d3ab;
+      --closed-bg: #c69fa5;
+    }
+    html[data-theme="slso8"] {
+      --ink: #ffecd6;
+      --teal: #d08159;
+      --cyan: #ffd4a3;
+      --cream: #0d2b45;
+      --peach: #203c56;
+      --coral: #8d697a;
+      --active-bg: #ffaa5e;
+      --active-fg: #0d2b45;
+      --paused-bg: #544e68;
+      --closed-bg: #8d697a;
+      color-scheme: dark;
+    }
+    html[data-theme="endesga-8"] {
+      --ink: #1b1c33;
+      --teal: #7b53ad;
+      --cyan: #2d93dd;
+      --cream: #fdfdf8;
+      --peach: #e6da29;
+      --coral: #d32734;
+      --active-bg: #28c641;
+      --active-fg: #1b1c33;
+      --paused-bg: #e6da29;
+      --closed-bg: #d32734;
+    }
+    html[data-theme="funkyfuture-8"] {
+      --ink: #2b0f54;
+      --teal: #3368dc;
+      --cyan: #49e7ec;
+      --cream: #fff7f8;
+      --peach: #ff8142;
+      --coral: #ff4f69;
+      --active-bg: #49e7ec;
+      --active-fg: #2b0f54;
+      --paused-bg: #ffda45;
+      --closed-bg: #ab1f65;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--cream); color: var(--ink); }
+    body { margin: 1rem auto 2rem; max-width: calc(50vw + 34rem); padding: 0 1rem; }
+    a { color: var(--teal); text-decoration-color: var(--cyan); text-decoration-thickness: .12em; text-underline-offset: .15em; }
+    a:hover { color: var(--coral); }
+    header, form { align-items: center; display: flex; flex-wrap: wrap; gap: .75rem; }
+    header { border-bottom: .3rem solid var(--cyan); justify-content: space-between; padding-bottom: .45rem; }
+    .header-title { display: grid; gap: .4rem; justify-items: start; }
+    .new-session-controls { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .header-controls { align-items: start; display: flex; flex-wrap: wrap; gap: .75rem; }
+    .theme-control { display: grid; gap: .2rem; min-width: 8rem; }
+    #theme-credit { font-size: .8rem; }
+    h1, h2, h3 { color: var(--ink); }
+    h1 { margin: .2rem 0; }
+    header p { margin-top: 0; }
+    form { margin: 1.5rem 0; }
+    label { color: var(--teal); display: grid; font-size: .85rem; font-weight: 650; gap: .25rem; }
+    button, input, select, textarea { border: 1px solid var(--teal); border-radius: .3rem; font: inherit; padding: .4rem .6rem; }
+    button, select { box-sizing: border-box; font-size: .8rem; line-height: 1.2; min-height: 1.5rem; padding: .2rem .4rem; }
+    button { align-items: center; background: var(--teal); color: var(--on-teal); cursor: pointer; display: inline-flex; font-weight: 650; justify-content: center; }
+    button:hover { background: var(--cyan); color: var(--on-cyan); }
+    button:focus-visible, select:focus-visible, textarea:focus-visible { outline: .2rem solid var(--cyan); outline-offset: .15rem; }
+    input, select, textarea { background: var(--cream); color: var(--ink); }
+    table { border: 1px solid var(--teal); border-collapse: collapse; overflow: hidden; width: 100%; }
+    thead { background: color-mix(in srgb, var(--peach) 62%, var(--cream)); }
+    th { color: var(--ink); }
+    th, td { border-bottom: 1px solid color-mix(in srgb, var(--teal) 38%, var(--cream)); padding: .6rem; text-align: left; }
+    tbody td, tbody button { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+    tbody tr { cursor: pointer; }
+    tbody tr:nth-child(even) { background: color-mix(in srgb, var(--cream) 82%, var(--peach)); }
+    tbody tr:hover, tbody tr:focus-visible { background: var(--peach); outline: .2rem solid var(--cyan); outline-offset: -.2rem; }
+    .repo-column { padding-right: .15rem; text-align: right; }
+    .branch-column { padding-left: .15rem; }
+    .branch-value { align-items: center; display: flex; gap: .35rem; }
+    .branch-icon { background: color-mix(in srgb, var(--ink) 55%, transparent); display: inline-block; flex: 0 0 1rem; height: 1rem; mask: url('/icons/git-branch.svg') center / contain no-repeat; transform: scale(1.2); width: 1rem; -webkit-mask: url('/icons/git-branch.svg') center / contain no-repeat; }
+    .branch-icon-folder { background: var(--teal); mask-image: url('/icons/folder.svg'); transform: scale(1.1); -webkit-mask-image: url('/icons/folder.svg'); }
+    .branch-icon-clean { background: #168a5b; }
+    .branch-icon-dirty { background: var(--coral); }
+    .status-pill { align-items: center; border: 1px solid var(--ink); border-radius: 999px; box-sizing: border-box; display: inline-flex; font-size: .8rem; font-weight: 750; justify-content: center; line-height: 1.2; min-height: 1.5rem; padding: .2rem .4rem; text-transform: lowercase; }
+    .status-active { background: var(--active-bg); border-color: var(--teal); color: var(--active-fg); }
+    .status-paused { background: var(--paused-bg); color: var(--on-peach); }
+    .status-closed { background: var(--closed-bg); color: var(--on-coral); }
+    .status-action { font-family: inherit; padding: .2rem .4rem; }
+    .status-action:disabled { cursor: wait; filter: saturate(.3); opacity: .65; }
+    .links-column { min-width: 5.5rem; }
+    .issue-pills { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .issue-pill { align-items: center; background: var(--cyan); border: 1px solid var(--teal); border-radius: 999px; box-sizing: border-box; color: var(--on-cyan); display: inline-flex; font-size: .8rem; font-weight: 750; gap: .3rem; justify-content: center; line-height: 1.2; min-height: 1.5rem; padding: .2rem .4rem; text-decoration: none; white-space: nowrap; }
+    .issue-pill-icon { background: currentColor; display: block; flex: 0 0 .9rem; height: .9rem; mask-position: center; mask-repeat: no-repeat; mask-size: contain; transform: translateY(-.07rem) scale(1.15); width: .9rem; -webkit-mask-position: center; -webkit-mask-repeat: no-repeat; -webkit-mask-size: contain; }
+    .issue-pill-icon-github { mask-image: url('/icons/github.svg'); -webkit-mask-image: url('/icons/github.svg'); }
+    .issue-pill-icon-linear { mask-image: url('/icons/linear.svg'); -webkit-mask-image: url('/icons/linear.svg'); }
+    .issue-pill:hover { background: var(--coral); color: var(--on-coral); }
+    .action-column { min-width: 7.5rem; width: 7.5rem; }
+    .last-used-column { white-space: nowrap; }
+    .agent-column { min-width: 6.75rem; text-align: center; width: 6.75rem; }
+    .agent-pill { align-items: center; background: color-mix(in srgb, var(--cyan) 32%, var(--cream)); border: 1px solid var(--teal); border-radius: 999px; box-sizing: border-box; color: var(--ink); display: inline-flex; font-size: .8rem; font-weight: 750; gap: .3rem; justify-content: center; line-height: 1.2; min-height: 1.5rem; padding: .2rem .4rem; vertical-align: middle; white-space: nowrap; }
+    .status-pill, .issue-pill, .agent-pill { margin-left: .15rem; margin-right: .15rem; }
+    button.agent-pill:hover { background: var(--cyan); color: var(--on-cyan); }
+    button.agent-pill:disabled { cursor: wait; opacity: .55; }
+    button.optical-no-descender:not(.modal-dismiss):not(.path-action):not(.agent-pill),
+    .status-pill.optical-no-descender,
+    .issue-pill.optical-no-descender { padding-bottom: .14rem; padding-top: .26rem; }
+    .agent-label.optical-no-descender { transform: translateY(.06rem); }
+    .agent-icon-slot { align-items: center; display: inline-flex; height: .9rem; justify-content: center; width: .9rem; }
+    .agent-icon { display: block; height: .9rem; max-width: .9rem; width: .9rem; }
+    .agent-icon-codex { transform: scale(2); }
+    .agent-spinner { animation: agent-spin .75s linear infinite; border: .13rem solid color-mix(in srgb, var(--teal) 30%, var(--cream)); border-radius: 50%; border-top-color: var(--teal); height: .8rem; width: .8rem; }
+    @keyframes agent-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .agent-spinner { animation: none; } }
+    .row-action { min-width: 5.25rem; white-space: nowrap; }
+    .row-action-close { background: var(--closed-bg); color: var(--on-coral); }
+    .row-action-reopen { background: var(--teal); color: var(--on-teal); }
+    .row-action-close, .row-action-reopen, .action-close, .action-resume { min-width: 0; padding: .2rem; }
+    .close-action-icon, .refresh-action-icon { display: block; height: 1rem; width: 1rem; }
+    .row-actions { align-items: center; display: flex; gap: .35rem; justify-content: flex-end; }
+    .row-actions button:disabled { cursor: not-allowed; filter: saturate(.15); opacity: .35; }
+    .folder-action, .notes-action { background: var(--cyan); color: var(--on-cyan); min-width: 0; padding: .2rem; }
+    .folder-action:hover:not(:disabled), .notes-action:hover:not(:disabled) { background: var(--coral); color: var(--on-coral); }
+    .folder-action img, .notes-action img { display: block; height: 1rem; width: 1rem; }
+    .notes-action img { transform: scale(1.25); }
+    code { background: color-mix(in srgb, var(--peach) 38%, var(--cream)); border-radius: .2rem; font-size: .9em; padding: .08rem .2rem; }
+    #connection::before { background: currentColor; border-radius: 50%; content: ''; display: inline-block; height: .65rem; margin-right: .4rem; width: .65rem; }
+    #connection { padding-top: .1rem; }
+    #connection[data-state="open"] { color: var(--teal); }
+    #connection[data-state="open"]::before { background: var(--cyan); }
+    #connection[data-state="closed"] { color: var(--coral); }
+    #empty, #error { padding: 1rem 0; }
+    #error { color: var(--coral); font-weight: 650; white-space: pre-wrap; }
+    #pagination { align-items: center; display: flex; flex-wrap: wrap; gap: .55rem; justify-content: center; margin: 1.25rem 0; }
+    #pagination[hidden] { display: none; }
+    #page-numbers { display: flex; flex-wrap: wrap; gap: .35rem; }
+    #page-numbers button { min-width: 2.35rem; }
+    #page-numbers button[aria-current="page"] { background: var(--cyan); color: var(--on-cyan); }
+    #pagination button:disabled { cursor: not-allowed; filter: saturate(.25); opacity: .5; }
+    #page-numbers button[aria-current="page"]:disabled { cursor: default; filter: none; opacity: 1; }
+    .page-ellipsis { align-content: center; min-width: 1.5rem; text-align: center; }
+    dialog { background: var(--cream); border: .2rem solid var(--teal); border-radius: .6rem; box-shadow: .6rem .6rem 0 var(--cyan); color: var(--ink); max-height: 85vh; max-width: 48rem; overflow: auto; padding: 0; width: calc(100% - 2rem); }
+    dialog::backdrop { background: rgb(70 66 94 / 65%); }
+    .modal-content { padding: 1.25rem 1.5rem 1.5rem; }
+    .modal-header { display: grid; gap: .65rem; position: relative; }
+    .modal-header h2 { margin: 0; overflow-wrap: anywhere; padding-right: 2.75rem; }
+    .modal-dismiss-form { margin: 0; position: absolute; right: 0; top: 0; }
+    .modal-header > .modal-dismiss { position: absolute; right: 0; top: 0; }
+    .modal-dismiss { align-items: center; background: transparent; border-color: transparent; color: var(--ink); display: inline-flex; height: 2.25rem; justify-content: center; padding: .35rem; width: 2.25rem; }
+    .modal-dismiss:hover { background: var(--coral); color: var(--on-coral); }
+    .modal-dismiss svg { height: 1.35rem; width: 1.35rem; }
+    .modal-status-bar { align-items: center; border-bottom: .2rem solid var(--cyan); display: flex; flex-wrap: wrap; gap: .65rem; justify-content: space-between; padding-bottom: .85rem; }
+    .modal-actions { display: flex; flex-wrap: wrap; gap: .65rem; justify-content: flex-end; margin-left: auto; }
+    .modal-actions button { flex: none; }
+    .modal-actions button:disabled { cursor: not-allowed; filter: saturate(.25); opacity: .5; }
+    .action-pause { background: var(--peach); color: var(--on-peach); }
+    .action-close { background: var(--coral); border-color: var(--coral); color: var(--on-coral); }
+    #modal-error { color: var(--coral); font-weight: 650; margin: 1rem 0 0; }
+    .detail-grid { display: grid; gap: 0; grid-template-columns: minmax(8rem, 1fr) minmax(12rem, 3fr); margin: 1.25rem 0; }
+    .detail-grid > div { border-top: 1px solid color-mix(in srgb, var(--teal) 32%, var(--cream)); display: contents; }
+    dt, dd { border-top: inherit; margin: 0; padding: .55rem 0; }
+    dt { font-weight: 650; padding-right: 1rem; }
+    dd { min-width: 0; overflow-wrap: anywhere; }
+    .path-presence { display: inline-block; font-size: 1.1rem; font-weight: 900; line-height: 1; margin-right: .35rem; }
+    .path-present { color: #168a5b; }
+    .path-missing { color: var(--coral); }
+    .path-action { background: color-mix(in srgb, var(--peach) 38%, var(--cream)); border-color: transparent; color: var(--ink); font: .9em ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; padding: .08rem .25rem; text-align: left; }
+    .path-action:hover { border-color: var(--teal); }
+    .path-action:disabled { cursor: wait; opacity: .65; }
+    #modal-agent-select { min-width: 9rem; }
+    #modal-links-title { border-bottom: .2rem solid var(--coral); padding-bottom: .25rem; }
+    #modal-links-editor { border: 1px solid transparent; border-radius: .3rem; cursor: text; min-height: 3rem; padding: .35rem .5rem; }
+    #modal-links-editor:hover, #modal-links-editor:focus-visible { border-color: var(--teal); outline: none; }
+    #modal-links-editor[aria-disabled="true"] { cursor: default; }
+    #modal-links { margin: .25rem 0; padding-left: 1.25rem; }
+    #modal-links-input { display: block; min-height: 7rem; resize: vertical; width: 100%; }
+    #modal-links-input[hidden] { display: none; }
+    #modal-links-note { color: var(--teal); font-size: .8rem; margin: .35rem .5rem 0; }
+    #modal-panels-title { border-bottom: .2rem solid var(--cyan); padding-bottom: .25rem; }
+    .panel-toggles { display: flex; flex-wrap: wrap; gap: .65rem; }
+    .panel-toggle { background: var(--cream); color: var(--teal); min-width: 5.75rem; }
+    .panel-toggle[aria-pressed="true"] { background: var(--cyan); color: var(--on-cyan); }
+    .panel-toggle:disabled { cursor: not-allowed; filter: saturate(.25); opacity: .5; }
+    #modal-panel-note { color: var(--teal); margin: .65rem 0 0; }
+    .new-repo-form { display: block; margin: 0; position: relative; }
+    .new-repo-grid input, .new-repo-grid select { box-sizing: border-box; width: 100%; }
+    .new-repo-grid output { display: block; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; overflow-wrap: anywhere; padding: .55rem .1rem; }
+    .new-repo-links { box-sizing: border-box; display: block; min-height: 7rem; resize: vertical; width: 100%; }
+    .field-note { color: var(--teal); font-size: .8rem; margin: .35rem 0 0; }
+    .new-repo-actions { align-items: center; border-top: .2rem solid var(--cyan); display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1.25rem; padding-top: .85rem; }
+    .new-repo-cancel { background: var(--cream); color: var(--teal); }
+    .new-panel-toggles { display: flex; flex-wrap: wrap; gap: .65rem; }
+    .new-panel-toggle { background: var(--cream); color: var(--teal); min-width: 5.75rem; }
+    .new-panel-toggle[aria-pressed="true"] { background: var(--cyan); color: var(--on-cyan); }
+    #new-repo-error { color: var(--coral); font-weight: 650; margin: 1rem 0 0; }
+    .new-scratchpad-form { display: block; margin: 0; position: relative; }
+    .new-scratchpad-grid input, .new-scratchpad-grid select { box-sizing: border-box; width: 100%; }
+    .new-scratchpad-grid output { display: block; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; overflow-wrap: anywhere; padding: .55rem .1rem; }
+    .new-scratchpad-links { box-sizing: border-box; display: block; min-height: 7rem; resize: vertical; width: 100%; }
+    .new-scratchpad-actions { align-items: center; border-top: .2rem solid var(--cyan); display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1.25rem; padding-top: .85rem; }
+    .new-scratchpad-cancel { background: var(--cream); color: var(--teal); }
+    .new-scratchpad-panel-toggles { display: flex; flex-wrap: wrap; gap: .65rem; }
+    .new-scratchpad-panel-toggle { background: var(--cream); color: var(--teal); min-width: 5.75rem; }
+    .new-scratchpad-panel-toggle[aria-pressed="true"] { background: var(--cyan); color: var(--on-cyan); }
+    #new-scratchpad-error { color: var(--coral); font-weight: 650; margin: 1rem 0 0; }
+    .new-session-submit-overlay { align-items: center; background: rgb(72 72 78 / 58%); display: flex; flex-direction: column; gap: 1rem; inset: 0; justify-content: center; position: absolute; z-index: 5; }
+    .new-session-submit-overlay[hidden] { display: none; }
+    .new-session-submit-overlay strong { color: white; font-size: 1rem; text-shadow: 0 1px 2px rgb(0 0 0 / 65%); }
+    .new-session-submit-spinner { animation: agent-spin .75s linear infinite; border: .42rem solid rgb(255 255 255 / 45%); border-radius: 50%; border-top-color: white; display: block; height: 4rem; width: 4rem; }
+    @media (prefers-reduced-motion: reduce) { .new-session-submit-spinner { animation: none; } }
+    @media (max-width: 36rem) {
+      .detail-grid { grid-template-columns: 1fr; }
+      .detail-grid > div { display: block; }
+      dt { padding-bottom: 0; }
+      dd { border-top: 0; padding-top: .2rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-title">
+      <h1>FritzWorks</h1>
+      <div class="new-session-controls">
+        <button id="new-repo-button" type="button">New Repo</button>
+        <button id="new-scratchpad-button" type="button">New Scratchpad</button>
+      </div>
+    </div>
+    <div class="header-controls">
+      <div class="theme-control">
+        <select id="theme-select" aria-label="Theme">
+          <option value="curiosities">Curiosities</option>
+          <option value="clement-8">Clément 8</option>
+          <option value="oil-6">Oil 6</option>
+          <option value="slso8">SLSO8</option>
+          <option value="endesga-8">Endesga 8</option>
+          <option value="funkyfuture-8">FunkyFuture 8</option>
+        </select>
+        <a id="theme-credit" href="https://lospec.com/palette-list/curiosities" target="_blank" rel="noreferrer">curiosities on Lospec</a>
+        <strong id="connection" data-state="closed">connecting…</strong>
+      </div>
+    </div>
+  </header>
+
+  <form id="filters">
+    <select name="type" aria-label="Type">
+      <option value="">All</option>
+      <option value="repo">Repo</option>
+      <option value="scratchpad">Scratchpad</option>
+      <option value="misc">Misc</option>
+    </select>
+    <select name="status" aria-label="Status">
+      <option value="active_paused">Active &amp; Paused</option>
+      <option value="active">Active</option>
+      <option value="paused">Paused</option>
+      <option value="closed">Closed</option>
+      <option value="all">All</option>
+    </select>
+  </form>
+
+  <div id="error" hidden></div>
+  <table>
+    <tbody id="workstreams"></tbody>
+  </table>
+  <p id="empty" hidden>No matching workstreams.</p>
+  <nav id="pagination" aria-label="Pagination" hidden>
+    <button id="page-previous" type="button">Previous</button>
+    <div id="page-numbers" aria-label="Page numbers"></div>
+    <button id="page-next" type="button">Next</button>
+    <select id="perpage" aria-label="Rows per page">
+      <option value="10">10 Per Page</option>
+      <option value="25" selected>25 Per Page</option>
+      <option value="50">50 Per Page</option>
+      <option value="100">100 Per Page</option>
+    </select>
+  </nav>
+
+  <dialog id="session-modal" aria-labelledby="modal-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-title">Workstream details</h2>
+        <form method="dialog" class="modal-dismiss-form">
+          <button type="submit" class="modal-dismiss" aria-label="Close session details" title="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M5 5l14 14M19 5L5 19" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.5"/>
+            </svg>
+          </button>
+        </form>
+        <div class="modal-status-bar">
+          <span id="modal-status" class="status-pill"></span>
+          <div class="modal-actions" aria-label="Workstream actions">
+            <button type="button" class="modal-action action-close" data-command="close" aria-label="Close workstream" title="Close">
+              <svg class="close-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M5 5l14 14M19 5L5 19" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.5"/>
+              </svg>
+            </button>
+            <button type="button" class="modal-action action-pause" data-command="pause">Pause</button>
+            <button type="button" class="modal-action action-resume" data-command="resume" aria-label="Open or resume workstream" title="Open / Resume">
+              <svg class="refresh-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18.2 17.3A8.5 8.5 0 1 1 18.4 6.4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3.25"/>
+                <polygon points="23,11.5 12.5,8.7 19.7,1.5" fill="currentColor" stroke="currentColor" stroke-linejoin="round" stroke-width=".8"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <dl class="detail-grid">
+        <div id="modal-repo-row"><dt>Repository</dt><dd><a id="modal-repo" target="_blank" rel="noreferrer"></a></dd></div>
+        <div><dt>Branch</dt><dd class="branch-value"><span id="modal-branch-icon" class="branch-icon" role="img"></span><code id="modal-branch"></code></dd></div>
+        <div><dt>Source</dt><dd id="modal-source"></dd></div>
+        <div><dt>Agent</dt><dd>
+          <select id="modal-agent-select" aria-label="Agent provider">
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+        </dd></div>
+        <div><dt>Path</dt><dd><span id="modal-path-presence" class="path-presence" role="img"></span><button id="modal-path" class="path-action" type="button"></button></dd></div>
+        <div><dt>Created</dt><dd id="modal-created"></dd></div>
+        <div><dt>Last joined</dt><dd id="modal-last-joined"></dd></div>
+        <div><dt>Stack</dt><dd id="modal-stack"></dd></div>
+      </dl>
+
+      <section aria-labelledby="modal-links-title">
+        <h3 id="modal-links-title">Associated links</h3>
+        <div id="modal-links-editor" tabindex="0" aria-label="Edit associated links">
+          <ul id="modal-links"></ul>
+          <textarea id="modal-links-input" rows="5" aria-label="Associated links, one per line" hidden></textarea>
+        </div>
+        <p id="modal-links-note">Click the area to edit; changes save when focus leaves it.</p>
+      </section>
+
+      <section aria-labelledby="modal-panels-title">
+        <h3 id="modal-panels-title">Panels</h3>
+        <div class="panel-toggles">
+          <button type="button" class="panel-toggle" data-panel="shell" aria-pressed="false">Shell: off</button>
+          <button type="button" class="panel-toggle" data-panel="editor" aria-pressed="false">Editor: off</button>
+          <button type="button" class="panel-toggle" data-panel="agent" aria-pressed="false">Agent: off</button>
+        </div>
+        <p id="modal-panel-note" hidden></p>
+      </section>
+
+      <p id="modal-error" hidden></p>
+    </div>
+  </dialog>
+
+  <dialog id="new-repo-modal" aria-labelledby="new-repo-title">
+    <form id="new-repo-form" class="modal-content new-repo-form">
+      <div class="modal-header">
+        <h2 id="new-repo-title">New repository session</h2>
+        <button id="new-repo-dismiss" type="button" class="modal-dismiss" aria-label="Close new repository session" title="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M5 5l14 14M19 5L5 19" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.5"/>
+          </svg>
+        </button>
+      </div>
+
+      <dl class="detail-grid new-repo-grid">
+        <div><dt><label for="new-repo-repository">Repository</label></dt><dd><input id="new-repo-repository" name="repository" type="text" placeholder="owner/repository" autocomplete="off" required></dd></div>
+        <div><dt><label for="new-repo-selector">Branch / ref</label></dt><dd><input id="new-repo-selector" name="selector" type="text" placeholder="feature-branch, #123, or owner:branch" autocomplete="off" required></dd></div>
+        <div><dt>Source</dt><dd><output id="new-repo-source">—</output></dd></div>
+        <div><dt><label for="new-repo-agent">Agent</label></dt><dd>
+          <select id="new-repo-agent" name="agent">
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+        </dd></div>
+        <div><dt>Path</dt><dd><output id="new-repo-path">—</output></dd></div>
+      </dl>
+
+      <section aria-labelledby="new-repo-links-title">
+        <h3 id="new-repo-links-title">Associated links</h3>
+        <textarea id="new-repo-links" class="new-repo-links" rows="5" aria-label="Associated links, one per line" placeholder="#123&#10;ECO-1234"></textarea>
+        <p class="field-note">One GitHub or Linear reference per line.</p>
+      </section>
+
+      <section aria-labelledby="new-repo-panels-title">
+        <h3 id="new-repo-panels-title">Panels</h3>
+        <div class="new-panel-toggles">
+          <button type="button" class="new-panel-toggle" data-panel="shell" aria-pressed="false">Shell: off</button>
+          <button type="button" class="new-panel-toggle" data-panel="editor" aria-pressed="false">Editor: off</button>
+          <button type="button" class="new-panel-toggle" data-panel="agent" aria-pressed="false">Agent: off</button>
+        </div>
+      </section>
+
+      <p id="new-repo-error" hidden></p>
+      <div class="new-repo-actions">
+        <button id="new-repo-cancel" type="button" class="new-repo-cancel">Cancel</button>
+        <button id="new-repo-submit" type="submit">Create &amp; Open</button>
+      </div>
+      <div id="new-repo-submitting" class="new-session-submit-overlay" role="status" aria-label="Creating and opening repository session" hidden>
+        <span class="new-session-submit-spinner" aria-hidden="true"></span>
+        <strong>Creating and opening…</strong>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="new-scratchpad-modal" aria-labelledby="new-scratchpad-title">
+    <form id="new-scratchpad-form" class="modal-content new-scratchpad-form">
+      <div class="modal-header">
+        <h2 id="new-scratchpad-title">New scratchpad</h2>
+        <button id="new-scratchpad-dismiss" type="button" class="modal-dismiss" aria-label="Close new scratchpad" title="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M5 5l14 14M19 5L5 19" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.5"/>
+          </svg>
+        </button>
+      </div>
+
+      <dl class="detail-grid new-scratchpad-grid">
+        <div><dt><label for="new-scratchpad-name">Name</label></dt><dd><input id="new-scratchpad-name" name="name" type="text" placeholder="Optional; a random name is generated" autocomplete="off"></dd></div>
+        <div><dt>Source</dt><dd><output>scratch</output></dd></div>
+        <div><dt><label for="new-scratchpad-agent">Agent</label></dt><dd>
+          <select id="new-scratchpad-agent" name="agent">
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+        </dd></div>
+        <div><dt>Path</dt><dd><output id="new-scratchpad-path">—</output></dd></div>
+      </dl>
+
+      <section aria-labelledby="new-scratchpad-links-title">
+        <h3 id="new-scratchpad-links-title">Associated links</h3>
+        <textarea id="new-scratchpad-links" class="new-scratchpad-links" rows="5" aria-label="Associated links, one per line" placeholder="owner/repository#123&#10;ECO-1234"></textarea>
+        <p class="field-note">Use owner/repository#123 for GitHub links in a scratchpad, or a Linear key.</p>
+      </section>
+
+      <section aria-labelledby="new-scratchpad-panels-title">
+        <h3 id="new-scratchpad-panels-title">Panels</h3>
+        <div class="new-scratchpad-panel-toggles">
+          <button type="button" class="new-scratchpad-panel-toggle" data-panel="shell" aria-pressed="false">Shell: off</button>
+          <button type="button" class="new-scratchpad-panel-toggle" data-panel="editor" aria-pressed="false">Editor: off</button>
+          <button type="button" class="new-scratchpad-panel-toggle" data-panel="agent" aria-pressed="false">Agent: off</button>
+        </div>
+      </section>
+
+      <p id="new-scratchpad-error" hidden></p>
+      <div class="new-scratchpad-actions">
+        <button id="new-scratchpad-cancel" type="button" class="new-scratchpad-cancel">Cancel</button>
+        <button id="new-scratchpad-submit" type="submit">Create &amp; Open</button>
+      </div>
+      <div id="new-scratchpad-submitting" class="new-session-submit-overlay" role="status" aria-label="Creating and opening scratchpad" hidden>
+        <span class="new-session-submit-spinner" aria-hidden="true"></span>
+        <strong>Creating and opening…</strong>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/webclient.js"></script>
+</body>
+</html>

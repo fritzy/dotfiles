@@ -11,15 +11,22 @@ import { AGENT_PROVIDERS, CONFIG, PANEL_ROLES } from './lib/config.js';
 import {
   WS_SESSION, now, isScratch, computeTabName,
   openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus, setPath, renameWorkstream,
+  refreshWorkstreamStatuses,
   listWorkstreams, issuesByWorkstream, listIssues, addIssue, removeIssue, addLog,
   hasClone, parseSelector, materializeWorktree, removeWorktree, worktreeDirty,
   createScratchpad, linkPr, listNotes, readNote, writeSeed,
   parentOf, setParent, stackTree, stackLine, stackCheck, ghStackLink, rebaseStack,
   NOTES_ROOT, ensureWeeklyNote, appendDayEntry, collectDayActivity, renderDigest,
+  selectedAgent,
+  expandIssueReference,
 } from './lib/core.js';
 import {
-  openTab, closeTab, renameTab, inZellij, openPane, closePane,
+  openTab, closeTab, renameTab, inZellij, openPane, closePane, openTabNames,
 } from './lib/zellij.js';
+import {
+  daemonFiles, daemonStatus, openWebPage, runForeground, startDaemon, stopDaemon,
+} from './lib/daemon.js';
+import { agentHookStatus, installAgentHooks, recordAgentHook } from './lib/hooks.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 export const VERSION = PACKAGE.version;
@@ -74,11 +81,11 @@ function agentFlag(args) {
   return agent;
 }
 
-// Convert one-run layout flags into openTab/openPane options. These override the
-// config file without being persisted, so a later resume returns to configured defaults.
+// Convert one-run layout flags into openTab/openPane options. Explicit flags
+// override the session's persisted provider; other layout flags remain one-run.
 function tabOpts(args, row, extra = {}) {
   const opts = { ...extra };
-  const agent = agentFlag(args);
+  const agent = agentFlag(args) || row.agent;
   if (agent) opts.agent = agent;
   const model = flagValue(args, '--model');
   if (model) opts.model = model;
@@ -225,20 +232,21 @@ async function cmdScratch(args) {
   openTab(row, tabOpts(args, row));
 }
 
-// Open (or focus) the configured dotfiles tab. Not a workstream: no worktree or db row.
-// --close closes it instead (nothing to remove, since there's no worktree or db row).
-function cmdDotfiles(args) {
-  const row = { id: 'dotfiles', tab_name: 'dotfiles', path: CONFIG.paths.dotfiles };
+// Open (or focus) any configured location. These are never closed as state and
+// their directories are never removed; --close only pauses the Zellij tab.
+function cmdConfiguredLocation(id, args) {
+  const location = CONFIG.locations[id];
+  if (!location) die(`unknown configured location "${id}"`);
+  const db = openDb();
+  const row = {
+    ...location,
+    id,
+    tab_name: id,
+    agent: selectedAgent(db, id, CONFIG.agent),
+  };
   if (args.includes('--close')) { closeTab(row); return; }
-  openTab(row, tabOpts(args, row));
-}
-
-// Open the configured notes tab, ensuring the weekly work-notes file exists and
-// loading it in the editor panel. Not a workstream: no worktree and no db row.
-function cmdNotes(args) {
-  const file = ensureWeeklyNote(NOTES_ROOT);
-  const row = { id: 'notes', tab_name: 'notes', path: NOTES_ROOT };
-  openTab(row, tabOpts(args, row, { editorFile: file }));
+  const editorFile = location.weeklyNotes ? ensureWeeklyNote(location.path) : undefined;
+  openTab(row, tabOpts(args, row, { ...(editorFile ? { editorFile } : {}) }));
 }
 
 // Open (or focus) a workstream's tab, reconstituting the worktree if it's gone.
@@ -303,6 +311,127 @@ async function cmdClosePane(kind, args) {
 
 function cmdConfig() {
   console.log(JSON.stringify(CONFIG, null, 2));
+}
+
+function cmdRefresh() {
+  // Collect the complete Zellij snapshot before touching the database. If Zellij
+  // cannot be queried, openTabNames throws and no statuses are changed.
+  const tabs = openTabNames();
+  const db = openDb();
+  const result = refreshWorkstreamStatuses(db, tabs);
+  console.log(`Checked ${result.checked} workstream${result.checked === 1 ? '' : 's'} against ${result.tabCount} open Zellij tab${result.tabCount === 1 ? '' : 's'}.`);
+  if (!result.activated.length && !result.paused.length) {
+    console.log('No statuses changed.');
+    return;
+  }
+  for (const row of result.activated) {
+    const repo = isScratch(row) ? 'scratch' : `${row.org}/${row.repo}`;
+    console.log(`Activated #${row.id} (${repo} @ ${row.branch}); tab "${row.tabName}" is open.`);
+  }
+  for (const row of result.paused) {
+    const repo = isScratch(row) ? 'scratch' : `${row.org}/${row.repo}`;
+    console.log(`Paused #${row.id} (${repo} @ ${row.branch}); tab "${row.tabName}" is not open.`);
+  }
+}
+
+function daemonOptions(args) {
+  const host = flagValue(args, '--host') || CONFIG.server.host;
+  const rawPort = flagValue(args, '--port');
+  const port = rawPort === null ? CONFIG.server.port : Number(rawPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    die('--port must be an integer from 1 to 65535');
+  }
+  return { config: CONFIG, host, port };
+}
+
+async function cmdDaemon(args) {
+  const positional = positionals(args, ['--host', '--port']);
+  const action = positional[0] || 'start';
+  const options = daemonOptions(args);
+  switch (action) {
+    case 'start': {
+      const status = await startDaemon(options);
+      console.log(status.alreadyRunning
+        ? `API daemon already running (pid ${status.info.pid}) at ${status.url}`
+        : `Started API daemon (pid ${status.info.pid}) at ${status.url}`);
+      console.log(`  log: ${status.log}`);
+      return;
+    }
+    case 'stop': {
+      const result = await stopDaemon(CONFIG);
+      console.log(result.stopped ? `Stopped API daemon (pid ${result.pid})` : `API daemon ${result.reason}`);
+      return;
+    }
+    case 'restart': {
+      await stopDaemon(CONFIG);
+      const status = await startDaemon(options);
+      console.log(`Restarted API daemon (pid ${status.info.pid}) at ${status.url}`);
+      console.log(`  log: ${status.log}`);
+      return;
+    }
+    case 'status': {
+      const status = await daemonStatus(CONFIG);
+      if (status.running) {
+        console.log(`API daemon running (pid ${status.info.pid}) at ${status.url}`);
+        console.log(`  uptime: ${Math.floor(status.health.uptime)}s`);
+        console.log(`  log: ${status.log}`);
+      } else if (status.stale) {
+        console.log(`API daemon not responding (stale pid ${status.info.pid})`);
+      } else {
+        console.log('API daemon is not running');
+      }
+      return;
+    }
+    case 'foreground':
+      console.log(`Starting API server in foreground at http://${options.host}:${options.port}`);
+      return runForeground(options);
+    case 'log':
+      console.log(daemonFiles(CONFIG).log);
+      return;
+    default:
+      die(`unknown daemon action "${action}" (try: start | stop | restart | status | foreground | log)`);
+  }
+}
+
+function cmdHooks(args) {
+  const action = positionals(args)[0] || 'status';
+  if (action === 'install') {
+    for (const result of installAgentHooks()) {
+      console.log(`${result.provider}: ${result.added ? `installed ${result.added} hooks` : 'already installed'} (${result.path})`);
+    }
+    return;
+  }
+  if (action === 'status') {
+    for (const result of agentHookStatus()) {
+      console.log(`${result.provider}: ${result.installed ? 'installed' : 'not installed'} (${result.path})`);
+    }
+    return;
+  }
+  die(`unknown hooks action "${action}" (try: install | status)`);
+}
+
+function cmdAgentHook(args) {
+  if (args[0] !== 'agent-status') die('unknown internal hook');
+  try {
+    const payload = JSON.parse(readFileSync(0, 'utf8'));
+    recordAgentHook(payload);
+  } catch (error) {
+    // Hooks are observational and must never prevent a prompt, permission, or
+    // completed turn from proceeding if their local state update fails.
+    console.error(`ws hook agent-status: ${error.message}`);
+  }
+}
+
+async function cmdWeb(args) {
+  const positional = positionals(args, ['--host', '--port']);
+  const action = positional[0] || 'start';
+  if (action !== 'start') die(`unknown web action "${action}" (try: ws web start)`);
+  const status = await startDaemon(daemonOptions(args));
+  console.log(status.alreadyRunning
+    ? `API daemon already running (pid ${status.info.pid}) at ${status.url}`
+    : `Started API daemon (pid ${status.info.pid}) at ${status.url}`);
+  const opened = openWebPage(status.url);
+  console.log(`Opened ${opened.url} with ${opened.opener}`);
 }
 
 // Rename a workstream's display name (and its tab, if open). For a scratchpad
@@ -495,8 +624,9 @@ async function cmdIssueAdd(args) {
   }
   if (refs.length === 0) die('no issue given');
   for (const ref of refs) {
-    const { added, kind } = addIssue(db, row.id, ref);
-    console.log(added ? `  + [${kind}] ${ref}` : `  (already linked) ${ref}`);
+    const expanded = expandIssueReference(row, ref);
+    const { added, kind } = addIssue(db, row.id, expanded);
+    console.log(added ? `  + [${kind}] ${expanded}` : `  (already linked) ${expanded}`);
   }
   console.log(`Issues on #${row.id} (${row.org}/${row.repo} @ ${row.branch}):`);
   printIssues(db, row.id);
@@ -595,8 +725,8 @@ Usage:
                                    (--parent <id|branch>: branch off that workstream and stack on it)
   ws scratch [name]                Create a scratchpad under the configured root (alias: sp)
                                    (both take --seed <file>: the agent opens reading that seed doc)
-  ws dotfiles [--close]            Open the configured dotfiles tab; --close closes it
-  ws notes                         Open the configured notes tab and weekly note
+  ws location <name> [--close]     Open any configured location; --close pauses its tab
+  ws <location-name> [--close]     Shorthand when the name is not another ws command
   ws join [id|branch]              Rejoin a workstream, reconstituting it if needed (alias: rejoin)
   ws pause [id|branch]             Close the tab but keep the worktree (status: paused)
   ws open-shell|open-editor|open-agent [id|branch]   Add that panel to an open tab
@@ -620,8 +750,14 @@ Usage:
   ws digest [YYYY-MM-DD] [--write]      Draft a day's notes from commits + work logs
                                         (--write appends to the configured weekly notes file)
   ws config                        Print the resolved configuration and config file path
+  ws refresh                       Reconcile workstream status with open Zellij tabs
+  ws hooks [install|status]         Install or inspect Claude/Codex agent-status hooks
+  ws daemon [start|stop|restart|status|foreground|log] [--host H] [--port P]
+                                   Manage the local REST/WebSocket service (default: start)
+  ws web start [--host H] [--port P]
+                                   Start the daemon if needed and open its web client
 
-Tab options for new/scratch/join/resume/dotfiles/notes/open-agent:
+Tab options for new/scratch/join/resume/location/open-agent:
   --agent claude|codex             Override the configured agent (--claude/--codex shorthand)
   --model <name>                   Override that agent's configured model
   --panels shell,editor,agent      Override the configured panel roles for this tab
@@ -654,8 +790,11 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'list': case 'ls': return cmdList(rest);
     case 'new': case 'create': return cmdNew(rest);
     case 'scratch': case 'scratchpad': case 'sp': return cmdScratch(rest);
-    case 'dotfiles': return cmdDotfiles(rest);
-    case 'notes': return cmdNotes(rest);
+    case 'location': {
+      const [id, ...locationArgs] = rest;
+      if (!id) die('location requires a configured location name');
+      return cmdConfiguredLocation(id, locationArgs);
+    }
     case 'join': case 'rejoin': return cmdJoin(rest);
     case 'resume': return cmdJoin(rest, 'resume');
     case 'pause': return cmdPause(rest);
@@ -675,9 +814,16 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'note': return cmdNote(rest);
     case 'digest': return cmdDigest(rest);
     case 'config': return cmdConfig();
+    case 'refresh': return cmdRefresh();
+    case 'hooks': return cmdHooks(rest);
+    case 'hook': return cmdAgentHook(rest);
+    case 'daemon': case 'server': return cmdDaemon(rest);
+    case 'web': return cmdWeb(rest);
     case 'version': case '-V': case '--version': return console.log(VERSION);
     case undefined: case 'help': case '-h': case '--help': return usage();
-    default: die(`unknown command "${cmd}" (try: ws help)`);
+    default:
+      if (CONFIG.locations[cmd]) return cmdConfiguredLocation(cmd, rest);
+      die(`unknown command "${cmd}" (try: ws help)`);
   }
 };
 

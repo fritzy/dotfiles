@@ -42,6 +42,14 @@ both config paths plus the resolved paths, panels, commands, agent, and models. 
 `--agent claude|codex` (`--claude` / `--codex`), `--model`, `--panels`, and
 `--no-editor` as one-run overrides when opening a tab.
 
+`ws daemon` starts the configured localhost REST/WebSocket service in the background;
+use `ws daemon status|stop|restart|foreground|log` to manage it. Its workstream API is
+`GET /ws/{id}/` (use `id=all` for a collection), commands are
+`POST /ws/{id}/{cmd}`, and invalidations stream from `/ws/events` as
+`{"id":123,"change":"new"}` or `{"id":123,"change":"changed"}`. Fetch the
+workstream again after an event. `ws web start` starts the daemon if needed and
+opens its local web client.
+
 ## Commands
 
 ### List
@@ -51,6 +59,17 @@ ws list          # active workstreams
 ws list --all    # include closed ones
 ```
 `●` = worktree present on disk, `○` = worktree removed (rejoin to reconstitute).
+
+### Refresh
+
+```bash
+ws refresh
+```
+
+Scans every running Zellij session. A workstream with an open expected tab becomes
+`active`; an `active` workstream with no tab becomes `paused`; and an absent closed
+workstream remains closed. It aborts without changing statuses if Zellij cannot be
+queried reliably.
 
 ### Create / open
 

@@ -19,6 +19,15 @@ gitProtocol = https
 repositories = ./repos
 notes = ~/writing
 
+[locations.dotfiles]
+repo = example/dotfiles
+path = ./settings
+branch = trunk
+
+[locations.savefiles]
+repo = example/savefiles
+path = ~/savefiles
+
 [commands]
 editor = ["nvim", "--clean"]
 codex = /opt/codex
@@ -34,11 +43,25 @@ default =
       XDG_DATA_HOME: '/var/example-data',
       AI_WORKSTREAM_PANELS: 'editor,agent',
       AI_WORKSTREAM_SHELL: '["fish","--login"]',
+      AI_WORKSTREAM_PORT: '7444',
     },
   });
 
   assert.equal(config.paths.repositories, join(dir, 'repos'));
   assert.equal(config.paths.notes, '/users/example/writing');
+  assert.deepEqual(config.locations.notes, {
+    id: 'notes', name: 'notes', repo: 'fritzy/notes', path: '/users/example/writing', branch: 'main',
+    closeable: false, weeklyNotes: true,
+  });
+  assert.deepEqual(config.locations.dotfiles, {
+    id: 'dotfiles', name: 'dotfiles', repo: 'example/dotfiles', path: join(dir, 'settings'), branch: 'trunk',
+    closeable: false, weeklyNotes: false,
+  });
+  assert.deepEqual(config.locations.savefiles, {
+    id: 'savefiles', name: 'savefiles', repo: 'example/savefiles', path: '/users/example/savefiles', branch: 'main',
+    closeable: false, weeklyNotes: false,
+  });
+  assert.equal(config.paths.dotfiles, join(dir, 'settings'));
   assert.equal(config.paths.data, '/var/example-data/ws');
   assert.equal(config.paths.scratchpads, '/users/example/scratchpad');
   assert.deepEqual(config.panels, ['editor', 'agent']);
@@ -49,6 +72,7 @@ default =
   assert.equal(config.models.claude.default, null);
   assert.equal(config.models.claude.scratch, 'sonnet');
   assert.equal(config.gitProtocol, 'https');
+  assert.deepEqual(config.server, { host: '127.0.0.1', port: 7444, pollInterval: 1000 });
   assert.equal(config.defaultConfigPath, DEFAULT_CONFIG_PATH);
   assert.equal(config.configPath, configPath);
 });
@@ -75,10 +99,16 @@ test('default user path follows XDG_CONFIG_HOME and the bundled data path follow
   });
   assert.equal(config.configPath, '/var/example-config/ai-workstream/config.ini');
   assert.equal(config.paths.data, '/var/example-data/ws');
+  assert.equal(config.locations.notes.repo, 'fritzy/notes');
+  assert.equal(config.locations.notes.branch, 'main');
+  assert.equal(config.locations.dotfiles.repo, 'fritzy/dotfiles');
+  assert.deepEqual(Object.keys(config.locations), ['notes', 'dotfiles']);
   assert.deepEqual(config.panels, ['shell', 'editor', 'agent']);
+  assert.equal(config.server.port, 7337);
 });
 
 test('INI parser reports malformed input with its source and line', () => {
   assert.throws(() => parseIni('[paths]\nrepositories', 'broken.ini'), /broken\.ini:2: expected key = value/);
   assert.throws(() => parseIni('[bad section]', 'broken.ini'), /broken\.ini:1: invalid section name/);
+  assert.deepEqual(parseIni('[location]\nenabled = true', 'boolean.ini'), { location: { enabled: true } });
 });

@@ -38,9 +38,16 @@ gitProtocol = ssh
 [paths]
 repositories = ~/github
 scratchpads = ~/scratchpad
-notes = ~/notes
-dotfiles = ~/dotfiles
 data = ${XDG_DATA_HOME}/ws
+
+[locations.notes]
+repo = fritzy/notes
+path = /home/nathan.fritz/notes/
+weeklyNotes = true
+
+[locations.dotfiles]
+repo = fritzy/dotfiles
+path = /home/nathan.fritz/dotfiles/
 
 [commands]
 shell = zsh
@@ -55,9 +62,14 @@ scratch = sonnet
 [models.codex]
 default =
 scratch =
+
+[server]
+host = 127.0.0.1
+port = 7337
+pollInterval = 1000
 ```
 
-Paths beginning with `~/` are expanded against the user's home directory. `${HOME}` and `${XDG_DATA_HOME}` are also supported at the start of a path. Relative user paths are resolved from the user configuration file's directory. Commands may be a single executable string or a JSON-style array containing the executable and fixed arguments, such as `editor = ["nvim", "--clean"]`. Empty model values disable an explicit model selection.
+Paths beginning with `~/` are expanded against the user's home directory. `${HOME}` and `${XDG_DATA_HOME}` are also supported at the start of a path. Relative user paths are resolved from the user configuration file's directory. Every `[locations.<name>]` section becomes a configured location in API list/detail responses, assumes the `main` branch unless a `branch` setting is present, and is always non-closeable (pause only). `weeklyNotes = true` asks the editor panel to open that location's current weekly notes file. The legacy `[paths]` `notes` and `dotfiles` settings remain supported as path overrides. Commands may be a single executable string or a JSON-style array containing the executable and fixed arguments, such as `editor = ["nvim", "--clean"]`. Empty model values disable an explicit model selection.
 
 The default data path intentionally remains `~/.local/share/ws` so existing databases continue to work after upgrading.
 
@@ -81,6 +93,8 @@ Every setting can also be overridden without editing the INI file:
 | Scratchpad models | `AI_WORKSTREAM_CLAUDE_SCRATCH_MODEL`, `AI_WORKSTREAM_CODEX_SCRATCH_MODEL` |
 | Zellij session | `AI_WORKSTREAM_ZELLIJ_SESSION` |
 | GitHub URL protocol | `AI_WORKSTREAM_GIT_PROTOCOL` |
+| API bind address/port | `AI_WORKSTREAM_HOST`, `AI_WORKSTREAM_PORT` |
+| API state polling interval | `AI_WORKSTREAM_POLL_INTERVAL` |
 
 Command arrays in environment variables can be JSON, for example `AI_WORKSTREAM_EDITOR='["nvim","--clean"]'`. Existing `WS_*` forms are accepted as compatibility aliases.
 
@@ -107,12 +121,22 @@ For an existing workstream directory, Claude uses `--continue`; Codex uses the o
 
 Panel-management commands are `ws open-shell`, `ws open-editor`, `ws open-agent`, and their `close-*` counterparts. `open-claude` and `open-codex` force a provider. The older `zsh`, `nvim`, and `claude` command aliases remain available.
 
+Install the user-level Claude Code and Codex lifecycle hooks once to track when an agent is working or waiting for input:
+
+```sh
+ws hooks install
+ws hooks status
+```
+
+The installer preserves existing hooks and is idempotent. It adds `UserPromptSubmit`, `Stop`, `PermissionRequest`, `PostToolUse`, and `SessionStart` handlers to both clients, plus Claude's idle/permission notification handler. Agent panes opened by `ws` carry their workstream ID; hooks fall back to matching the session working directory when an agent was started manually.
+
 ## Main commands
 
 Run `ws help` for the complete command reference. Common workflows include:
 
 ```sh
 ws list
+ws refresh
 ws new org/repo feature-branch
 ws join feature-branch
 ws pause feature-branch
@@ -123,9 +147,78 @@ ws log "identified the root cause" --ws feature-branch
 ws stack --ws feature-branch
 ```
 
+`ws refresh` scans tabs across every running Zellij session. An open tab makes its workstream `active`; an `active` workstream with no tab becomes `paused`; and a `closed` workstream with no tab remains closed. It makes no database changes if Zellij cannot be queried reliably.
+
 Worktrees are stored under `<repositories>/<org>/<repo>/<branch>` with a bare clone at `<repositories>/<org>/<repo>/.bare`. Scratchpads are plain directories without Git backing. The SQLite database and agent seed documents live under the configured data directory.
 
 `ws close` refuses to remove a dirty Git worktree unless explicitly forced. Scratchpad directories are retained unless deletion is explicitly requested. `ws stack rebase` rewrites history, and `ws stack link` pushes branches and may create pull requests; review their output and confirmations carefully.
+
+## REST API and web client
+
+Start the local service in the background with:
+
+```sh
+ws daemon                 # same as: ws daemon start
+ws daemon status
+ws daemon stop
+ws web start              # ensure it is running and open the web client
+```
+
+`restart`, `foreground`, and `log` are also available. `--host` and `--port` override the configured address for `start`, `restart`, `foreground`, or `web start`. The default is `http://127.0.0.1:7337`; opening that URL serves the packaged `index.html` and `webclient.js`. Click a workstream row to open its detail modal with repository and issue links, path and directory availability, source, stack relationships, timestamps, and workstream actions. The open modal is stored as `session=<id>` in the URL, so it participates in Back/Forward history and survives reloads and bookmarks. Click the Associated links area to edit newline-delimited refs; leaving the textarea saves added and removed links. A `#2353` line expands against a repository workstream, `owner/repo#23945` expands anywhere (and is required for GitHub shorthand in a scratchpad), and a Linear key such as `ECO-23550` is resolved with `linear issue url` before its full URL is saved. The theme selector includes [curiosities](https://lospec.com/palette-list/curiosities) (the default palette), [Clément 8](https://lospec.com/palette-list/clement-8), [Oil 6](https://lospec.com/palette-list/oil-6), [SLSO8](https://lospec.com/palette-list/slso8), [Endesga 8](https://lospec.com/palette-list/endesga-8), and [FunkyFuture 8](https://lospec.com/palette-list/funkyfuture-8) from Lospec, and remembers the selection in local storage. `ws web start` reuses a healthy daemon or starts one, then invokes `xdg-open` on Linux or `open` on macOS with its actual URL.
+
+The collection/detail endpoint is:
+
+```text
+GET /ws/{id}/?type={repo,scratchpad,misc}&page=0&perpage=25&status={active,paused,closed,all,active_paused}
+```
+
+Use `all` as the ID for a collection, or a numeric/configured-location ID for one item. `type` is optional; `status` defaults to `active_paused`, and `perpage` defaults to 25 and is capped at 100. The web client keeps type, status, page, and per-page settings in the URL without reloading the page, and shows numbered pagination below the list. The `misc` type contains every configured `[locations.<name>]` entry.
+
+The New Repo button opens a creation modal with repository and branch/ref inputs, source and path previews, agent selection, associated links, and the initial panel layout. It submits the following collection request, creates or restores the worktree, opens its Zellij tab, and then shows the new session details:
+
+```text
+POST /ws
+{"repository":"org/repo","selector":"feature-branch","agent":"claude","panels":["shell","editor","agent"],"links":["#123"]}
+```
+
+`GET /ws/new` returns the configured repository and scratchpad roots, default agent, and default panels used to initialize the creation modals.
+
+The New Scratchpad button opens a parallel modal with an optional name, scratch path preview, agent, links, and initial panels. Leaving the name empty generates a readable random name. GitHub shorthand must include its repository because scratchpads have no associated repository of their own.
+
+```text
+POST /ws/scratchpad
+{"name":"investigation","agent":"codex","panels":["shell","agent"],"links":["org/repo#123"]}
+```
+
+Commands accept a JSON object:
+
+```text
+POST /ws/{id}/{cmd}
+```
+
+| Command | JSON body |
+| --- | --- |
+| `pause`, `resume` | `{}` |
+| `close` | `{}` closes state only; `{"remove":true}` also removes the directory; dirty Git worktrees require `"force":true` |
+| `rename` | `{"name":"New label"}` |
+| `log` | `{"body":"What changed","done":true}` |
+| `issue-add` | `{"refs":["ABC-123"]}` or `{"ref":"ABC-123"}` |
+| `issue-remove` | `{"ref":"ABC-123"}` |
+| `panel-toggle` | `{"panel":"shell"}`, `{"panel":"editor"}`, or `{"panel":"agent"}` |
+| `agent-set` | `{"agent":"claude"}` or `{"agent":"codex"}` persists the provider and replaces an open agent panel |
+| `focus-agent` | `{}` focuses the workstream's Zellij tab and Claude/Codex pane |
+| `open-path` | `{}` launches the workstream directory with `xdg-open` |
+| `open-notes` | `{}` launches the newest existing notes directory for the workstream with `xdg-open` |
+
+The `resume` command reconstitutes a missing worktree, creates or focuses its tab in the configured Zellij session, and marks the workstream active. The daemon performs Zellij operations without attaching itself to an interactive terminal. Workstream detail responses include live `panels` state, which powers the Shell, Editor, and Agent toggles in the modal. The modal's provider selector persists Claude or Codex per session. If its Agent panel is open, changing providers stops that pane and starts the selected provider with Claude `--continue` or Codex `resume --last`; otherwise the choice applies when the panel is next opened. Every configured location supports pause/resume, panel toggles, provider selection, focus, and path opening, but the API always rejects `close` for it.
+
+In the web list, click a working/waiting Agent icon to focus that workstream's Zellij tab and agent pane. On Kitty, `ws` also focuses the exact terminal window when Kitty exposes a remote-control socket (`allow_remote_control yes` or `socket-only`, plus `listen_on` in `kitty.conf`). Zellij focus still succeeds when terminal-window activation is unavailable.
+
+Web clients connect to `ws://127.0.0.1:7337/ws/events`. Adding a workstream emits `{"id":123,"type":"new_session"}`; changing its session status or associated links emits `{"id":123,"type":"update_session"}`; and changing its agent status emits `{"id":123,"type":"agent_status","status":"working"}` (or `"ready"`). Session messages are invalidations, so clients GET the affected workstream and their current collection again. Mutations are recorded in a durable event journal; the service detects changes made through the CLI or MCP by polling that journal every `server.pollInterval` milliseconds, while REST changes emit immediately.
+
+Git cleanliness is cached in SQLite. List and detail GETs return the cached value immediately, then queue an asynchronous `git status` for each loaded repository or configured location. A changed result records an `update_session` event and is pushed over the WebSocket, causing clients to reload the new cached state without making the original GET wait on Git.
+
+The API has no authentication and therefore binds to loopback by default. Do not expose it on a public interface without putting an authenticated proxy in front of it.
 
 ## MCP server
 
