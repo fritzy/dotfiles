@@ -4,6 +4,8 @@
 
 The package also installs `ws-mcp`, an stdio MCP server exposing the non-interactive workstream operations.
 
+![](./fritzworks.png)
+
 ## Requirements
 
 - macOS or Linux
@@ -164,7 +166,7 @@ ws daemon stop
 ws web start              # ensure it is running and open the web client
 ```
 
-`restart`, `foreground`, and `log` are also available. `--host` and `--port` override the configured address for `start`, `restart`, `foreground`, or `web start`. The default is `http://127.0.0.1:7337`; opening that URL serves the packaged `index.html` and `webclient.js`. Click a workstream row to open its detail modal with repository and issue links, path and directory availability, source, stack relationships, timestamps, and workstream actions. The open modal is stored as `session=<id>` in the URL, so it participates in Back/Forward history and survives reloads and bookmarks. Click the Associated links area to edit newline-delimited refs; leaving the textarea saves added and removed links. A `#2353` line expands against a repository workstream, `owner/repo#23945` expands anywhere (and is required for GitHub shorthand in a scratchpad), and a Linear key such as `ECO-23550` is resolved with `linear issue url` before its full URL is saved. The theme selector includes [curiosities](https://lospec.com/palette-list/curiosities) (the default palette), [Clément 8](https://lospec.com/palette-list/clement-8), [Oil 6](https://lospec.com/palette-list/oil-6), [SLSO8](https://lospec.com/palette-list/slso8), [Endesga 8](https://lospec.com/palette-list/endesga-8), and [FunkyFuture 8](https://lospec.com/palette-list/funkyfuture-8) from Lospec, and remembers the selection in local storage. `ws web start` reuses a healthy daemon or starts one, then invokes `xdg-open` on Linux or `open` on macOS with its actual URL.
+`restart`, `foreground`, and `log` are also available. `--host` and `--port` override the configured address for `start`, `restart`, `foreground`, or `web start`. The default is `http://127.0.0.1:7337`; opening that URL serves the packaged `index.html` and `webclient.js`. Click a workstream row to open its detail modal with repository and issue links, path and directory availability, source, stack relationships, timestamps, and workstream actions. The open modal is stored as `session=<id>` in the URL, so it participates in Back/Forward history and survives reloads and bookmarks. Click the Associated links area to edit newline-delimited refs; leaving the textarea saves added and removed links. A `#2353` line expands against a repository workstream, `owner/repo#23945` expands anywhere (and is required for GitHub shorthand in a scratchpad), and a Linear key such as `ECO-23550` is resolved with `linear issue url` before its full URL is saved. The theme selector includes [curiosities](https://lospec.com/palette-list/curiosities) (the default palette), [Clément 8](https://lospec.com/palette-list/clement-8), [Oil 6](https://lospec.com/palette-list/oil-6), [SLSO8](https://lospec.com/palette-list/slso8), [Endesga 8](https://lospec.com/palette-list/endesga-8), and [FunkyFuture 8](https://lospec.com/palette-list/funkyfuture-8) from Lospec, plus [Dracula](https://github.com/dracula/dracula-theme) and [Nord](https://www.nordtheme.com/docs/colors-and-palettes/), and remembers the selection in local storage. `ws web start` reuses a healthy daemon or starts one, then invokes `xdg-open` on Linux or `open` on macOS with its actual URL.
 
 The collection/detail endpoint is:
 

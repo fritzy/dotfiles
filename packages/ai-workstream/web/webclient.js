@@ -104,6 +104,14 @@ const THEMES = {
     href: 'https://lospec.com/palette-list/funkyfuture-8',
     credit: 'FunkyFuture 8 on Lospec',
   },
+  dracula: {
+    href: 'https://github.com/dracula/dracula-theme',
+    credit: 'Dracula color scheme',
+  },
+  nord: {
+    href: 'https://www.nordtheme.com/docs/colors-and-palettes/',
+    credit: 'Nord color scheme',
+  },
 };
 
 function colorChannels(value) {
@@ -225,7 +233,7 @@ function branchCell(row, item) {
   icon.setAttribute('role', 'img');
   icon.setAttribute('aria-label', state.label);
   icon.title = state.label;
-  const branch = document.createElement('code');
+  const branch = document.createElement('span');
   branch.textContent = item.branch;
   value.append(icon, branch);
   td.append(value);

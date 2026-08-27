@@ -435,6 +435,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(indexHtml, /value="slso8">SLSO8/);
   assert.match(indexHtml, /value="endesga-8">Endesga 8/);
   assert.match(indexHtml, /value="funkyfuture-8">FunkyFuture 8/);
+  assert.match(indexHtml, /value="dracula">Dracula/);
+  assert.match(indexHtml, /value="nord">Nord/);
   assert.match(indexHtml, /#000871/);
   assert.match(indexHtml, /#63ffba/);
   assert.match(indexHtml, /#ff8c5c/);
@@ -442,6 +444,10 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(indexHtml, /#0d2b45/);
   assert.match(indexHtml, /#1b1c33/);
   assert.match(indexHtml, /#2b0f54/);
+  assert.match(indexHtml, /#282a36/);
+  assert.match(indexHtml, /#2e3440/);
+  assert.match(indexHtml, /--row-highlight-fg: #282a36/);
+  assert.match(indexHtml, /--row-highlight-fg: #2e3440/);
   const webClient = await (await fetch(`${base}/webclient.js`)).text();
   for (const icon of ['claude.svg', 'folder.svg', 'notes.svg', 'openai.svg']) {
     const response = await fetch(`${base}/icons/${icon}`);
@@ -459,6 +465,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(webClient, /function contrastRatio/);
   assert.match(webClient, /function branchCell/);
   assert.match(webClient, /function repoCell/);
+  assert.doesNotMatch(webClient, /const branch = document\.createElement\('code'\)/);
+  assert.doesNotMatch(indexHtml, /<code id="modal-branch"/);
   assert.doesNotMatch(webClient, /cell\(row, item\.id\)/);
   assert.match(webClient, /newRepoSubmitting\.hidden = !busy/);
   assert.match(webClient, /newScratchpadSubmitting\.hidden = !busy/);

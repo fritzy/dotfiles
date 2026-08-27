@@ -20,6 +20,7 @@
       --active-fg: var(--cream);
       --paused-bg: var(--peach);
       --closed-bg: var(--coral);
+      --row-highlight-fg: var(--ink);
       color-scheme: light;
       font: 16px/1.45 system-ui, sans-serif;
     }
@@ -84,6 +85,34 @@
       --paused-bg: #ffda45;
       --closed-bg: #ab1f65;
     }
+    html[data-theme="dracula"] {
+      --ink: #f8f8f2;
+      --teal: #bd93f9;
+      --cyan: #8be9fd;
+      --cream: #282a36;
+      --peach: #ffb86c;
+      --coral: #ff5555;
+      --active-bg: #50fa7b;
+      --active-fg: #282a36;
+      --paused-bg: #f1fa8c;
+      --closed-bg: #ff5555;
+      --row-highlight-fg: #282a36;
+      color-scheme: dark;
+    }
+    html[data-theme="nord"] {
+      --ink: #eceff4;
+      --teal: #5e81ac;
+      --cyan: #88c0d0;
+      --cream: #2e3440;
+      --peach: #ebcb8b;
+      --coral: #bf616a;
+      --active-bg: #a3be8c;
+      --active-fg: #2e3440;
+      --paused-bg: #ebcb8b;
+      --closed-bg: #bf616a;
+      --row-highlight-fg: #2e3440;
+      color-scheme: dark;
+    }
     * { box-sizing: border-box; }
     html { background: var(--cream); color: var(--ink); }
     body { margin: 1rem auto 2rem; max-width: calc(50vw + 34rem); padding: 0 1rem; }
@@ -114,7 +143,7 @@
     tbody td, tbody button { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
     tbody tr { cursor: pointer; }
     tbody tr:nth-child(even) { background: color-mix(in srgb, var(--cream) 82%, var(--peach)); }
-    tbody tr:hover, tbody tr:focus-visible { background: var(--peach); outline: .2rem solid var(--cyan); outline-offset: -.2rem; }
+    tbody tr:hover, tbody tr:focus-visible { background: var(--peach); color: var(--row-highlight-fg); outline: .2rem solid var(--cyan); outline-offset: -.2rem; }
     .repo-column { padding-right: .15rem; text-align: right; }
     .branch-column { padding-left: .15rem; }
     .branch-value { align-items: center; display: flex; gap: .35rem; }
@@ -274,6 +303,8 @@
           <option value="slso8">SLSO8</option>
           <option value="endesga-8">Endesga 8</option>
           <option value="funkyfuture-8">FunkyFuture 8</option>
+          <option value="dracula">Dracula</option>
+          <option value="nord">Nord</option>
         </select>
         <a id="theme-credit" href="https://lospec.com/palette-list/curiosities" target="_blank" rel="noreferrer">curiosities on Lospec</a>
         <strong id="connection" data-state="closed">connecting…</strong>
@@ -346,7 +377,7 @@
 
       <dl class="detail-grid">
         <div id="modal-repo-row"><dt>Repository</dt><dd><a id="modal-repo" target="_blank" rel="noreferrer"></a></dd></div>
-        <div><dt>Branch</dt><dd class="branch-value"><span id="modal-branch-icon" class="branch-icon" role="img"></span><code id="modal-branch"></code></dd></div>
+        <div><dt>Branch</dt><dd class="branch-value"><span id="modal-branch-icon" class="branch-icon" role="img"></span><span id="modal-branch"></span></dd></div>
         <div><dt>Source</dt><dd id="modal-source"></dd></div>
         <div><dt>Agent</dt><dd>
           <select id="modal-agent-select" aria-label="Agent provider">
