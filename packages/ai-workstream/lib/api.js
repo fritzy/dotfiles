@@ -18,12 +18,15 @@ import {
   expandIssueReference,
   isScratch,
   latestWorkstreamEventSequence,
+  linkPrAsync,
   linkedSessionSeed,
+  listIssues,
   listWorkstreams,
   materializeWorktree,
   now,
   openDb,
   parseSelector,
+  prCheckDue,
   recentRepositories,
   removeIssue,
   removeWorktree,
@@ -66,7 +69,7 @@ import { spawnZshTerminal } from './pty.js';
 const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 const WEB_ICONS = new Set([
-  'claude.svg', 'folder.svg', 'git-branch.svg', 'git-pull-request.svg', 'github.svg', 'linear.svg', 'notes.svg', 'openai.svg',
+  'check.svg', 'claude.svg', 'folder.svg', 'git-branch.svg', 'git-pull-request.svg', 'github.svg', 'linear.svg', 'notes.svg', 'openai.svg',
 ]);
 const V2_ASSET_TYPES = new Map([
   ['css', 'text/css; charset=utf-8'],
@@ -754,6 +757,8 @@ export function createApiService({
   focusTerminal = focusTerminalForZellij,
   openPath = openPathWithXdg,
   checkGit = worktreeCleanAsync,
+  checkPr = linkPrAsync,
+  prCheckIntervalMs = 3 * 60_000,
   materialize = materializeWorktree,
   parseRepoSelector = parseSelector,
   expandIssue = expandIssueReference,
@@ -772,6 +777,7 @@ export function createApiService({
   const terminalClients = new Map();
   const browserTerminalCounts = new Map();
   const pendingGitRefreshes = new Map();
+  const pendingPrRefreshes = new Map();
   const suggestionCaches = new Map();
   let closing = false;
   refreshWorkstreamStatuses(db, []);
@@ -957,6 +963,38 @@ export function createApiService({
     }
   };
 
+  const prRefreshTarget = (id) => {
+    const row = resolveRow(db, String(id));
+    return row && !isScratch(row) ? row : null;
+  };
+
+  const refreshPr = (id, { force = false } = {}) => {
+    if (closing) return Promise.resolve(null);
+    const key = String(id);
+    if (pendingPrRefreshes.has(key)) return pendingPrRefreshes.get(key);
+    const row = prRefreshTarget(id);
+    if (!row || (!force && !prCheckDue(row, {
+      reference: clock(), intervalMs: prCheckIntervalMs,
+    }))) return Promise.resolve(null);
+    const pending = Promise.resolve()
+      .then(() => checkPr(db, row, { checkedAt: clock() }))
+      .then((result) => {
+        if (!closing) broadcastChanges();
+        return result;
+      })
+      .catch((error) => {
+        if (!closing) process.stderr.write(`ai-workstream API PR status: ${error.message}\n`);
+        return null;
+      })
+      .finally(() => pendingPrRefreshes.delete(key));
+    pendingPrRefreshes.set(key, pending);
+    return pending;
+  };
+
+  const schedulePrRefresh = (id) => {
+    if (id !== null && id !== undefined) void refreshPr(id);
+  };
+
   const server = createServer((req, res) => {
     Promise.resolve().then(async () => {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -1060,6 +1098,25 @@ export function createApiService({
           cwd, config, materialize, parseSelector: parseRepoSelector, expandIssue,
           writeSeed: writeSessionSeed, now: clock,
         });
+        const linkedPr = await refreshPr(result.workstream.id, { force: true });
+        if (linkedPr?.added) {
+          const row = resolveRow(db, String(result.workstream.id));
+          try {
+            writeSessionSeed(row, linkedSessionSeed(
+              'repo',
+              listIssues(db, row.id).map((issue) => issue.ref),
+            ));
+          } catch (error) {
+            throw new ApiError(
+              502,
+              `workstream #${row.id} was created, but its agent seed could not be updated: ${error.message}`,
+              { id: row.id },
+            );
+          }
+        }
+        result.workstream = queryWorkstreams(db, {
+          id: result.workstream.id, status: 'all',
+        }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
         result.workstream = await refreshGitBeforeResponse(result.workstream);
         broadcastChanges();
         json(res, result.created ? 201 : 200, result);
@@ -1088,6 +1145,12 @@ export function createApiService({
             : replaceAgent,
           renameTab, focusAgent, focusShell, focusTerminal, openPath,
         });
+        if (result.workstream.type === 'repo' && ['pause', 'resume', 'close'].includes(parts[2])) {
+          await refreshPr(result.workstream.id, { force: true });
+          result.workstream = queryWorkstreams(db, {
+            id: result.workstream.id, status: 'all',
+          }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
+        }
         if (parts[2] === 'pause' || parts[2] === 'close') closeBrowserTerminals(parts[1]);
         if (parts[2] === 'agent-set' && result.result.changed) closeBrowserTerminals(parts[1], 'agent');
         broadcastChanges();
@@ -1216,7 +1279,10 @@ export function createApiService({
     };
     socket.on('close', disposeTerminal);
     socket.on('error', disposeTerminal);
-    terminal.onData((data) => send(socket, { type: 'output', data }));
+    terminal.onData((data) => {
+      schedulePrRefresh(terminalSessionId);
+      send(socket, { type: 'output', data });
+    });
     terminal.onExit(({ exitCode, signal }) => {
       disposeTerminalClient(socket, { kill: false });
       send(socket, { type: 'exit', exitCode, signal: signal ?? null });
@@ -1228,6 +1294,7 @@ export function createApiService({
       try { message = JSON.parse(payload.toString('utf8')); }
       catch { send(socket, { type: 'error', message: 'invalid terminal message' }); return; }
       if (message?.type === 'input' && typeof message.data === 'string') {
+        schedulePrRefresh(terminalSessionId);
         terminal.write(message.data);
         return;
       }
@@ -1247,6 +1314,11 @@ export function createApiService({
       refreshWorkstreamStatuses(db, terminalSessionIds());
       const changes = broadcastChanges();
       scheduleGitRefresh(changes);
+      for (const change of changes) {
+        if (change.type === 'agent_status' || change.type === 'shell_status') {
+          schedulePrRefresh(change.id);
+        }
+      }
       broadcastMiscChanges();
     } catch (error) {
       process.stderr.write(`ai-workstream API poll: ${error.message}\n`);
@@ -1274,6 +1346,7 @@ export function createApiService({
       terminalClients.clear();
       if (server.listening) await new Promise((resolve) => server.close(resolve));
       await Promise.allSettled([...pendingGitRefreshes.values()].map(({ promise }) => promise));
+      await Promise.allSettled([...pendingPrRefreshes.values()]);
       if (ownsDb) db.close();
     },
   };

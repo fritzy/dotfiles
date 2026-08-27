@@ -313,7 +313,10 @@ async function cmdPause(args) {
   const db = openDb();
   const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), 'pause');
   const remote = await requestBrowserCommand(row.id, 'pause');
-  if (!remote) setStatus(db, row.id, 'paused');
+  if (!remote) {
+    linkPrForRow(db, row);
+    setStatus(db, row.id, 'paused');
+  }
   console.log(`Paused workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch}); worktree kept at ${row.path}`);
 }
 
@@ -520,6 +523,7 @@ async function cmdClose(args) {
   const scratch = isScratch(row);
   const noun = scratch ? 'directory' : 'worktree';
 
+  linkPrForRow(db, row);
   closeTab(row);
   // Git worktrees are removed by default (commits/branch survive in the bare clone);
   // a scratchpad has no such backing, so its directory is kept by default and only

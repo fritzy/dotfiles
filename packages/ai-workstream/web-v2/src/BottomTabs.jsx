@@ -79,7 +79,7 @@ function FontSizeControls({ terminal, onChange }) {
 const BottomTabs = forwardRef(function BottomTabs({
   focusedPanel, onPanelFocus, leftOffset = '0rem', layoutResizing = false,
   terminalMode = 'dark', fontFamily = '"Roboto Mono", monospace', onFullscreenChange,
-  onSidebarFocus, onWorkspaceFocus, onToggleSidebar,
+  fullscreenExitRevision, onSidebarFocus, onWorkspaceFocus, onToggleSidebar,
 }, ref) {
   const [terminals, setTerminals] = useState([]);
   const [active, setActive] = useState(null);
@@ -110,13 +110,27 @@ const BottomTabs = forwardRef(function BottomTabs({
     fullscreenReportedRef.current = false;
   }, [onFullscreenChange]);
 
+  const leaveFullscreen = useCallback(() => {
+    if (!terminals.some((terminal) => terminal.fullscreen)) return false;
+    onFullscreenChange?.('bottom-terminals', false);
+    setTerminals((current) => current.map((terminal) => terminal.fullscreen
+      ? { ...terminal, fullscreen: false }
+      : terminal));
+    return true;
+  }, [onFullscreenChange, terminals]);
+
+  useEffect(() => {
+    leaveFullscreen();
+  }, [fullscreenExitRevision]);
+
   const hideDrawer = useCallback(() => {
     if (!drawerOpen && !closing) return false;
+    leaveFullscreen();
     queuedTab.current = null;
     setDrawerOpen(false);
     if (drawerOpen) setClosing(true);
     return true;
-  }, [closing, drawerOpen]);
+  }, [closing, drawerOpen, leaveFullscreen]);
 
   const collapseDrawer = useCallback(() => {
     if (!hideDrawer()) return false;
@@ -126,6 +140,7 @@ const BottomTabs = forwardRef(function BottomTabs({
 
   const focusTerminal = useCallback((id) => {
     if (!id) return false;
+    if (id !== active) leaveFullscreen();
     lastUsedRef.current = id;
     if (closing) {
       queuedTab.current = id;
@@ -138,47 +153,36 @@ const BottomTabs = forwardRef(function BottomTabs({
     setDrawerOpen(true);
     onPanelFocus(`bottom-${id}`);
     return true;
-  }, [closing, onPanelFocus]);
+  }, [active, closing, leaveFullscreen, onPanelFocus]);
 
-  const focusLastUsed = useCallback(() => {
-    const remembered = lastUsedRef.current;
-    const id = terminals.some((terminal) => terminal.id === remembered)
-      ? remembered
-      : terminals.at(-1)?.id;
-    return id ? focusTerminal(id) : false;
-  }, [focusTerminal, terminals]);
-
-  useImperativeHandle(ref, () => ({
-    focusLastUsed,
-    hide: hideDrawer,
-  }), [focusLastUsed, hideDrawer]);
-
-  function chooseTab(id) {
+  const chooseTab = useCallback((id) => {
     lastUsedRef.current = id;
+    if (id !== active || (drawerOpen && active === id)) leaveFullscreen();
     if (closing) {
       queuedTab.current = id;
       onPanelFocus(`bottom-${id}`);
-      return;
+      return true;
     }
     if (drawerOpen && active === id) {
       collapseDrawer();
-      return;
+      return true;
     }
     if (drawerOpen) {
       queuedTab.current = id;
       setDrawerOpen(false);
       setClosing(true);
       onPanelFocus(`bottom-${id}`);
-      return;
+      return true;
     }
     queuedTab.current = null;
     setDisplayed(id);
     setActive(id);
     setDrawerOpen(true);
     onPanelFocus(`bottom-${id}`);
-  }
+    return true;
+  }, [active, closing, collapseDrawer, drawerOpen, leaveFullscreen, onPanelFocus]);
 
-  function addTerminal() {
+  const createTerminal = useCallback(() => {
     const number = nextTerminalNumber.current;
     nextTerminalNumber.current += 1;
     const terminal = {
@@ -188,8 +192,21 @@ const BottomTabs = forwardRef(function BottomTabs({
       fullscreen: false,
     };
     setTerminals((current) => [...current, terminal]);
-    chooseTab(terminal.id);
-  }
+    return chooseTab(terminal.id);
+  }, [chooseTab]);
+
+  const focusLastUsed = useCallback(() => {
+    const remembered = lastUsedRef.current;
+    const id = terminals.some((terminal) => terminal.id === remembered)
+      ? remembered
+      : terminals.at(-1)?.id;
+    return id ? focusTerminal(id) : createTerminal();
+  }, [createTerminal, focusTerminal, terminals]);
+
+  useImperativeHandle(ref, () => ({
+    focusLastUsed,
+    hide: hideDrawer,
+  }), [focusLastUsed, hideDrawer]);
 
   function withoutTerminal(current, id) {
     const remaining = current.filter((terminal) => terminal.id !== id);
@@ -227,6 +244,10 @@ const BottomTabs = forwardRef(function BottomTabs({
   }
 
   function toggleFullscreen(id) {
+    const terminal = terminals.find((item) => item.id === id);
+    if (!terminal) return;
+    // Report during the input event so requestFullscreen retains user activation.
+    onFullscreenChange?.('bottom-terminals', !terminal.fullscreen);
     setTerminals((current) => current.map((terminal) => terminal.id === id
       ? { ...terminal, fullscreen: !terminal.fullscreen }
       : terminal));
@@ -239,9 +260,15 @@ const BottomTabs = forwardRef(function BottomTabs({
     const next = terminals[index + direction];
     if (next) return focusTerminal(next.id);
     if (direction === -1 && index === 0) {
+      leaveFullscreen();
       return typeof onSidebarFocus === 'function' ? onSidebarFocus() : false;
     }
     return true;
+  }
+
+  function focusWorkspace() {
+    leaveFullscreen();
+    return onWorkspaceFocus();
   }
 
   useEffect(() => {
@@ -294,7 +321,7 @@ const BottomTabs = forwardRef(function BottomTabs({
         style={{ left: leftOffset }}
       >
         <div className={`pointer-events-none relative z-10 flex h-10 shrink-0 items-end gap-1 px-2 transition-opacity duration-200 motion-reduce:transition-none ${tabOpacity}`}>
-          <AddTerminalButton onClick={addTerminal} />
+          <AddTerminalButton onClick={createTerminal} />
           {terminals.map((terminal) => active === terminal.id
             ? <TabButton key={terminal.id} terminal={terminal} selected onChoose={chooseTab} onClose={closeTerminal} />
             : <span key={terminal.id} className="block h-10 min-w-28" aria-hidden="true" />)}
@@ -329,7 +356,7 @@ const BottomTabs = forwardRef(function BottomTabs({
                           autoFocus={false}
                           focused={terminalVisible && focusedPanel === `bottom-${terminal.id}`}
                           onPanelNavigate={(direction) => navigateTerminal(terminal.id, direction)}
-                          onNavigateUp={onWorkspaceFocus}
+                          onNavigateUp={focusWorkspace}
                           onToggleFullscreen={() => toggleFullscreen(terminal.id)}
                           onToggleSidebar={onToggleSidebar}
                           onExit={() => closeTerminal(terminal.id)}

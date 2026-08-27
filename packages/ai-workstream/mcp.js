@@ -198,6 +198,7 @@ server.registerTool('ws_new', {
   });
   if (parentRow) row = setParent(db, row, parentRow);
   const linked = linkPr(db, row);
+  row = resolveRow(db, String(row.id));
   return json({
     workstream: workstreamView(db, row, process.cwd()),
     linkedPr: linked ? linked.pr : null,
@@ -224,7 +225,7 @@ server.registerTool('ws_resume', {
   },
 }, async ({ workstream, seed, noVim, noEditor, agent, model, panels }) => {
   const db = openDb();
-  const row = targetRow(db, workstream);
+  let row = targetRow(db, workstream);
   if (!existsSync(row.path)) {
     const path = materializeWorktree(row.org, row.repo, row.branch, row.source);
     if (path && path !== row.path) { setPath(db, row.id, path); row.path = path; }
@@ -232,6 +233,7 @@ server.registerTool('ws_resume', {
   if (row.status === 'closed') setStatus(db, row.id, 'paused', true);
   else touchLastJoined(db, row.id);
   const linked = linkPr(db, row);
+  row = resolveRow(db, String(row.id));
   return json({
     workstream: workstreamView(db, row, process.cwd()),
     linkedPr: linked ? linked.pr : null,
@@ -248,8 +250,11 @@ server.registerTool('ws_pause', {
   const db = openDb();
   const row = targetRow(db, workstream);
   const remote = await pauseBrowserTerminals(row.id);
-  if (!remote) setStatus(db, row.id, 'paused');
-  return json({ workstream: workstreamView(db, row, process.cwd()), paused: true });
+  if (!remote) {
+    linkPr(db, row);
+    setStatus(db, row.id, 'paused');
+  }
+  return json({ workstream: workstreamView(db, resolveRow(db, String(row.id)), process.cwd()), paused: true });
 });
 
 server.registerTool('ws_rename', {
@@ -292,6 +297,7 @@ server.registerTool('ws_close', {
 }, async ({ workstream, keep, force }) => {
   const db = openDb();
   const row = targetRow(db, workstream);
+  linkPr(db, row);
   const scratch = isScratch(row);
   // Git worktrees are safe to remove by default (work survives in the bare clone),
   // so remove unless keep:true. Scratchpads have no such backing, so keep the dir
@@ -316,7 +322,7 @@ server.registerTool('ws_close', {
   const noun = scratch ? 'directory' : 'worktree';
   if (removing) removeWorktree(row.org, row.repo, row.path);
   setStatus(db, row.id, 'closed');
-  const view = workstreamView(db, row, process.cwd());
+  const view = workstreamView(db, resolveRow(db, String(row.id)), process.cwd());
   const kept = !removing && existsSync(row.path);
   // Close the tab last: if this is the current workstream, closing its tab ends
   // the session, so the db/worktree state is already settled before that happens.

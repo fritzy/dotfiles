@@ -16,10 +16,12 @@ import {
   issueKind,
   listIssues,
   linkedSessionSeed,
+  linkPr,
   listLogs,
   latestWorkstreamEventSequence,
   openDb,
   parentOf,
+  prCheckDue,
   recentRepositories,
   refreshWorkstreamStatuses,
   removeIssue,
@@ -38,6 +40,7 @@ import {
   workstreamEventsAfter,
   worktreeClean,
   worktreeCleanAsync,
+  workstreamView,
 } from '../lib/core.js';
 
 test('recent repositories are unique, ordered by use, and limited to three months', (t) => {
@@ -99,6 +102,88 @@ test('cached Git cleanliness emits update-session events only when it changes', 
       { id: 'savefiles', type: 'update_session' },
     ],
   );
+});
+
+test('branch PR checks link the PR, cache completion, and throttle terminal checks', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-pr-cache-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const db = openDb(join(dir, 'workstreams.db'));
+  t.after(() => db.close());
+  const row = upsertWorkstream(db, {
+    org: 'example', repo: 'project', branch: 'feature', source: 'origin',
+    path: join(dir, 'feature'), created_at: '2026-08-26T12:00:00.000Z',
+    last_joined_at: '2026-08-26T12:00:00.000Z',
+  });
+  const checkedAt = '2026-08-26T14:00:00.000Z';
+  const cursor = latestWorkstreamEventSequence(db);
+  const calls = [];
+  const closedPr = (_command, args) => {
+    calls.push(args);
+    return {
+      status: 0,
+      stdout: JSON.stringify([{
+        number: 42,
+        url: 'https://github.com/example/project/pull/42',
+        state: 'closed',
+        createdAt: '2026-08-26T13:00:00.000Z',
+      }]),
+    };
+  };
+
+  assert.deepEqual(linkPr(db, row, { run: closedPr, checkedAt }), {
+    pr: {
+      number: 42,
+      url: 'https://github.com/example/project/pull/42',
+      state: 'closed',
+    },
+    added: true,
+    done: true,
+  });
+  assert.deepEqual(calls[0].slice(0, 7), [
+    'pr', 'list', '--repo', 'example/project', '--head', 'feature', '--state',
+  ]);
+  let fresh = resolveRow(db, String(row.id));
+  assert.equal(fresh.pr_done, 1);
+  assert.equal(fresh.pr_checked_at, checkedAt);
+  assert.equal(workstreamView(db, fresh).prDone, true);
+  assert.deepEqual(listIssues(db, row.id).map((issue) => issue.ref), [
+    'https://github.com/example/project/pull/42',
+  ]);
+  assert.equal(prCheckDue(fresh, {
+    reference: '2026-08-26T14:02:59.999Z',
+  }), false);
+  assert.equal(prCheckDue(fresh, {
+    reference: '2026-08-26T14:03:00.000Z',
+  }), true);
+
+  const openPr = () => ({
+    status: 0,
+    stdout: JSON.stringify([{
+      number: 42,
+      url: 'https://github.com/example/project/pull/42',
+      state: 'OPEN',
+      createdAt: '2026-08-26T13:00:00.000Z',
+    }]),
+  });
+  assert.equal(linkPr(db, fresh, {
+    run: openPr,
+    checkedAt: '2026-08-26T14:03:00.000Z',
+  }).added, false);
+  fresh = resolveRow(db, String(row.id));
+  assert.equal(fresh.pr_done, 0);
+  assert.equal(workstreamView(db, fresh).prDone, false);
+  assert.equal(listIssues(db, row.id).length, 1);
+  assert.deepEqual(
+    workstreamEventsAfter(db, cursor).map(({ sequence, ...event }) => event),
+    [
+      { id: row.id, type: 'update_session' },
+      { id: row.id, type: 'update_session' },
+      { id: row.id, type: 'update_session' },
+    ],
+  );
+  const columns = db.prepare('PRAGMA table_info(workstreams)').all().map(({ name }) => name);
+  assert.equal(columns.includes('pr_done'), true);
+  assert.equal(columns.includes('pr_checked_at'), true);
 });
 
 test('shell status emits typed events for workstreams and configured locations', (t) => {

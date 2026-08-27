@@ -94,6 +94,9 @@ export function branchState(item) {
   if (item.type === 'scratchpad') {
     return { icon: 'folder', color: 'text-primary', label: 'Scratchpad directory' };
   }
+  if (item.prDone === true) {
+    return { icon: 'check', color: 'text-success', label: 'Pull request is closed or merged' };
+  }
   if (item.gitClean === true) {
     return { icon: 'git-branch', color: 'text-success', label: 'Git worktree is clean' };
   }

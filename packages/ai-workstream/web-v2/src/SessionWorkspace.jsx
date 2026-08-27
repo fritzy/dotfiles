@@ -70,7 +70,7 @@ function columnsFor(boundaries) {
 }
 
 function SplitHandle({
-  index, value, containerRef, boundaries, onChange, onCommit, onFocus,
+  index, value, containerRef, boundaries, onChange, onCommit, onFocus, onReset,
 }) {
   const pointer = useRef(null);
   const [dragging, setDragging] = useState(false);
@@ -132,6 +132,12 @@ function SplitHandle({
     onCommit();
   }
 
+  function reset(event) {
+    event.preventDefault();
+    onFocus();
+    onReset();
+  }
+
   return (
     <div
       role="separator"
@@ -147,6 +153,7 @@ function SplitHandle({
       onPointerMove={move}
       onPointerUp={(event) => finish(event)}
       onPointerCancel={(event) => finish(event, true)}
+      onDoubleClick={reset}
       onKeyDown={keyDown}
     >
       <span className={`h-full transition-[width,background-color] ${dragging ? 'w-1 bg-accent' : 'w-px bg-primary/50 group-hover:w-1 group-hover:bg-accent group-focus-visible:w-1 group-focus-visible:bg-accent'}`} aria-hidden="true" />
@@ -157,7 +164,7 @@ function SplitHandle({
 export default function SessionWorkspace({
   session, visible, focusedPanel, onPanelFocus, onDetails, onClose, onAgentChange,
   onOpenNotes, terminalMode, fontFamily, onSidebarFocus, onBottomTerminalFocus,
-  onFullscreenChange, onToggleSidebar,
+  onFullscreenChange, fullscreenExitRevision, onToggleSidebar,
 }) {
   const [panelMode, setPanelMode] = useState('two');
   const roles = useMemo(() => panelsForMode(panelMode), [panelMode]);
@@ -193,6 +200,12 @@ export default function SessionWorkspace({
     fullscreenReportedRef.current = false;
   }, [fullscreenSource, onFullscreenChange]);
 
+  useEffect(() => {
+    if (!fullscreenRole) return;
+    onFullscreenChange?.(fullscreenSource, false);
+    setFullscreenRole(null);
+  }, [fullscreenExitRevision]);
+
   useLayoutEffect(() => {
     if (boundariesRef.current.length === roles.length - 1) return;
     const next = readBoundaries(roles.length);
@@ -214,15 +227,37 @@ export default function SessionWorkspace({
     } catch { /* optional persistence */ }
   }
 
+  function resetBoundaries() {
+    const next = defaultBoundaries(roles.length);
+    boundariesRef.current = next;
+    setBoundaries(next);
+    try {
+      localStorage.setItem(`${SPLIT_STORAGE_PREFIX}-${roles.length}`, JSON.stringify(next));
+    } catch { /* optional persistence */ }
+  }
+
   function navigatePanel(index, direction) {
-    if (fullscreenRole) return;
     if (index === 0 && direction === -1) {
+      leaveFullscreen();
       onSidebarFocus();
       return;
     }
     const nextRole = roles[index + direction];
     if (!nextRole) return;
+    leaveFullscreen();
     onPanelFocus(`workspace-${session.id}-${nextRole}`);
+  }
+
+  function leaveFullscreen() {
+    if (!fullscreenRole) return false;
+    onFullscreenChange?.(fullscreenSource, false);
+    setFullscreenRole(null);
+    return true;
+  }
+
+  function focusBottomTerminal() {
+    leaveFullscreen();
+    return onBottomTerminalFocus();
   }
 
   async function changeAgent(agent) {
@@ -267,7 +302,10 @@ export default function SessionWorkspace({
   }
 
   function toggleFullscreen(role) {
-    setFullscreenRole((current) => current === role ? null : role);
+    const nextRole = fullscreenRole === role ? null : role;
+    // Report during the input event so requestFullscreen retains user activation.
+    onFullscreenChange?.(fullscreenSource, nextRole !== null);
+    setFullscreenRole(nextRole);
     onPanelFocus(`workspace-${session.id}-${role}`);
   }
 
@@ -355,7 +393,7 @@ export default function SessionWorkspace({
                     autoFocus={index === 0}
                     focused={visible && !suppressed && focused}
                     onPanelNavigate={(direction) => navigatePanel(index, direction)}
-                    onNavigateDown={onBottomTerminalFocus}
+                    onNavigateDown={focusBottomTerminal}
                     onToggleFullscreen={() => toggleFullscreen(role)}
                     onToggleSidebar={onToggleSidebar}
                     label={`${label} terminal for ${displayName}`}
@@ -376,6 +414,7 @@ export default function SessionWorkspace({
             onChange={changeBoundary}
             onCommit={saveBoundaries}
             onFocus={() => onPanelFocus(`workspace-${session.id}-${roles[index]}`)}
+            onReset={resetBoundaries}
           />
         ))}
       </div>

@@ -67,6 +67,8 @@ export function openDb(path = DB_PATH) {
       shell_status TEXT CHECK(shell_status IN ('working', 'ready')),
       agent TEXT CHECK(agent IN ('claude', 'codex')),
       git_clean INTEGER CHECK(git_clean IN (0, 1)),
+      pr_done INTEGER CHECK(pr_done IN (0, 1)),
+      pr_checked_at TEXT,
       label TEXT,               -- optional display name override (set via ws rename)
       parent_id INTEGER,        -- the workstream this one is stacked on (see stacks below)
       created_at TEXT NOT NULL,
@@ -82,6 +84,8 @@ export function openDb(path = DB_PATH) {
   try { db.exec("ALTER TABLE workstreams ADD COLUMN shell_status TEXT CHECK(shell_status IN ('working', 'ready'))"); } catch { /* exists */ }
   try { db.exec("ALTER TABLE workstreams ADD COLUMN agent TEXT CHECK(agent IN ('claude', 'codex'))"); } catch { /* exists */ }
   try { db.exec('ALTER TABLE workstreams ADD COLUMN git_clean INTEGER CHECK(git_clean IN (0, 1))'); } catch { /* exists */ }
+  try { db.exec('ALTER TABLE workstreams ADD COLUMN pr_done INTEGER CHECK(pr_done IN (0, 1))'); } catch { /* exists */ }
+  try { db.exec('ALTER TABLE workstreams ADD COLUMN pr_checked_at TEXT'); } catch { /* exists */ }
   try { db.exec('ALTER TABLE workstreams ADD COLUMN label TEXT'); } catch { /* exists */ }
   // parent_id carries no REFERENCES clause: rows are only ever status='closed',
   // never deleted, so there's nothing for a cascade to do — and a plain column
@@ -259,6 +263,13 @@ export function openDb(path = DB_PATH) {
     CREATE TRIGGER IF NOT EXISTS workstream_event_git_clean_changed
     AFTER UPDATE OF git_clean ON workstreams
     WHEN OLD.git_clean IS NOT NEW.git_clean
+    BEGIN
+      INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'update_session');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workstream_event_pr_done_changed
+    AFTER UPDATE OF pr_done ON workstreams
+    WHEN OLD.pr_done IS NOT NEW.pr_done
     BEGIN
       INSERT INTO workstream_events (workstream_id, type) VALUES (NEW.id, 'update_session');
     END;
@@ -968,16 +979,18 @@ function ghPr(org, repo, number) {
 // the repo itself and from forks (gh's --head filters by head ref name). Prefers an
 // open PR, else the most recently created. Returns {number, url, state} or null
 // (no gh / no match). Best-effort: callers treat null as "no PR".
-export function prForBranch(org, repo, branch) {
-  const r = spawnSync('gh', ['pr', 'list', '--repo', `${org}/${repo}`, '--head', branch,
-    '--state', 'all', '--limit', '20', '--json', 'number,url,state,createdAt'],
-    { encoding: 'utf8' });
-  if (r.status !== 0 || !r.stdout) return null;
+const prListArgs = (org, repo, branch) => [
+  'pr', 'list', '--repo', `${org}/${repo}`, '--head', branch,
+  '--state', 'all', '--limit', '20', '--json', 'number,url,state,createdAt',
+];
+
+function selectBranchPr(output) {
+  if (!output) return null;
   try {
-    const prs = JSON.parse(r.stdout);
+    const prs = JSON.parse(output);
     if (!Array.isArray(prs) || prs.length === 0) return null;
     prs.sort((a, b) => {
-      const rank = (p) => (p.state === 'OPEN' ? 0 : 1);
+      const rank = (p) => (String(p.state).toUpperCase() === 'OPEN' ? 0 : 1);
       return rank(a) - rank(b) || String(b.createdAt).localeCompare(String(a.createdAt));
     });
     const pr = prs[0];
@@ -985,15 +998,60 @@ export function prForBranch(org, repo, branch) {
   } catch { return null; }
 }
 
+export function prForBranch(org, repo, branch, { run = spawnSync } = {}) {
+  const r = run('gh', prListArgs(org, repo, branch), { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  return selectBranchPr(r.stdout);
+}
+
+export function prForBranchAsync(org, repo, branch, { run = execFile } = {}) {
+  return new Promise((resolve) => {
+    run('gh', prListArgs(org, repo, branch), {
+      encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 20_000,
+    }, (error, stdout) => resolve(error ? null : selectBranchPr(stdout)));
+  });
+}
+
+export function prCheckDue(row, { reference = new Date(), intervalMs = 3 * 60_000 } = {}) {
+  if (!row || isScratch(row)) return false;
+  const checked = Date.parse(row.pr_checked_at || '');
+  const current = new Date(reference).valueOf();
+  return !Number.isFinite(checked) || !Number.isFinite(current) || current - checked >= intervalMs;
+}
+
+export function recordPrCheck(db, row, pr, { checkedAt = now() } = {}) {
+  if (!row || isScratch(row)) return null;
+  const done = pr ? String(pr.state).toUpperCase() !== 'OPEN' : null;
+  db.exec('BEGIN');
+  try {
+    if (pr) {
+      db.prepare('UPDATE workstreams SET pr_done=?, pr_checked_at=? WHERE id=?')
+        .run(Number(done), checkedAt, row.id);
+    } else {
+      db.prepare('UPDATE workstreams SET pr_checked_at=? WHERE id=?').run(checkedAt, row.id);
+    }
+    const issue = pr ? addIssue(db, row.id, pr.url) : null;
+    db.exec('COMMIT');
+    return pr ? { pr, added: issue.added, done } : null;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 // Link the workstream's branch PR (if any) as an issue. Best-effort and
 // idempotent (duplicates are ignored, so resuming won't re-add). Returns
-// { pr, added } when a PR was found, else null (no PR / scratchpad / no gh).
-export function linkPr(db, row) {
+// { pr, added, done } when a PR was found, else null (no PR / scratchpad / no gh).
+export function linkPr(db, row, options = {}) {
   if (isScratch(row)) return null;
-  const pr = prForBranch(row.org, row.repo, row.branch);
-  if (!pr) return null;
-  const { added } = addIssue(db, row.id, pr.url);
-  return { pr, added };
+  const pr = prForBranch(row.org, row.repo, row.branch, options);
+  return recordPrCheck(db, row, pr, options);
+}
+
+export async function linkPrAsync(db, row, options = {}) {
+  if (isScratch(row)) return null;
+  const pr = await prForBranchAsync(row.org, row.repo, row.branch, options);
+  return recordPrCheck(db, row, pr, options);
 }
 
 // The authenticated GitHub login (from gh), cached. null if gh is missing/unauth'd.
@@ -1525,6 +1583,7 @@ export function workstreamView(db, r, cwd) {
     shellStatus: r.shell_status || null,
     agent: r.agent || CONFIG.agent,
     gitClean: cachedBoolean(r.git_clean),
+    prDone: cachedBoolean(r.pr_done),
     source: r.source,
     path: r.path,
     worktreePresent: existsSync(r.path),

@@ -176,6 +176,7 @@ export default function ActiveSessionsSidebar({
   theme, onThemeChange,
   terminalMode, onTerminalModeChange,
   terminalFont, onTerminalFontChange,
+  syncWindowFullscreen, onSyncWindowFullscreenChange,
   onWorkspaceFocus,
   focusedPanel, onPanelFocus, keyboardEnabled, sidebarWidth, sidebarWidthPixels, sidebarResizing,
   onSidebarResizeStart, onSidebarResize, onSidebarResizeEnd,
@@ -219,16 +220,24 @@ export default function ActiveSessionsSidebar({
   }, [currentPanel, focusedPanel, open]);
 
   useEffect(() => {
+    if (!open || focusedPanel !== currentPanel || !keyboardEnabled) return undefined;
+    function controlNavigation(event) {
+      const key = event.key.toLowerCase();
+      if (event.defaultPrevented || !event.ctrlKey || event.altKey || event.metaKey
+          || event.shiftKey || !['f', 'h', 'j', 'k', 'l'].includes(key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (key === 'l' && !event.repeat) onWorkspaceFocus();
+    }
+    document.addEventListener('keydown', controlNavigation);
+    return () => document.removeEventListener('keydown', controlNavigation);
+  }, [currentPanel, focusedPanel, keyboardEnabled, onWorkspaceFocus, open]);
+
+  useEffect(() => {
     if (!open || view !== 'sessions' || focusedPanel !== 'sidebar-sessions' || !keyboardEnabled) return undefined;
     function shortcuts(event) {
       if (event.defaultPrevented || event.metaKey || event.altKey) return;
-      if (event.ctrlKey) {
-        if (!event.shiftKey && event.key.toLowerCase() === 'l') {
-          event.preventDefault();
-          onWorkspaceFocus();
-        }
-        return;
-      }
+      if (event.ctrlKey) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('input, textarea, select, a, [contenteditable="true"]')) return;
       if (!['j', 'k', 'h', 'l', 'Enter'].includes(event.key) || !navigationItems.length) return;
@@ -393,6 +402,18 @@ export default function ActiveSessionsSidebar({
                   {Object.entries(TERMINAL_FONTS).map(([value, option]) => <option key={value} value={value}>{option.label}</option>)}
                 </select>
                 <p className="text-xs text-muted">Terminal colors are independent from the interface theme.</p>
+                <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md border border-primary/50 p-2 text-primary transition-colors hover:bg-soft hover:text-on-soft">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 size-4 shrink-0 accent-accent"
+                    checked={syncWindowFullscreen}
+                    onChange={(event) => onSyncWindowFullscreenChange(event.target.checked)}
+                  />
+                  <span className="grid gap-0.5">
+                    <span className="text-sm font-bold">Syncing Window Fullscreen</span>
+                    <span className="text-xs opacity-75">Fullscreen the browser window with the focused terminal.</span>
+                  </span>
+                </label>
               </section>
             </div>
           )}

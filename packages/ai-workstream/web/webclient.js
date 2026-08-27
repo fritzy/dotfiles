@@ -308,6 +308,9 @@ function branchIconState(item) {
   if (item.type === 'scratchpad') {
     return { className: 'branch-icon-folder', label: 'Scratchpad directory' };
   }
+  if (item.prDone === true) {
+    return { className: 'branch-icon-pr-done', label: 'Pull request is closed or merged' };
+  }
   return gitState(item);
 }
 

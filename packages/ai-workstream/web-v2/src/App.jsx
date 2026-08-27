@@ -7,7 +7,8 @@ import {
 } from './api.js';
 import {
   DEFAULT_TERMINAL_FONT, DEFAULT_WORKSPACE_ROLES, SIDEBAR_WIDTH_STORAGE_KEY,
-  SOCKET_MESSAGE_TYPES, TERMINAL_FONTS, TERMINAL_FONT_STORAGE_KEY, TERMINAL_MODE_STORAGE_KEY,
+  SOCKET_MESSAGE_TYPES, SYNC_WINDOW_FULLSCREEN_STORAGE_KEY, TERMINAL_FONTS,
+  TERMINAL_FONT_STORAGE_KEY, TERMINAL_MODE_STORAGE_KEY,
   THEMES, THEME_STORAGE_KEY,
 } from './constants.js';
 import BottomTabs from './BottomTabs.jsx';
@@ -54,6 +55,8 @@ export default function App() {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
   const [sidebarVisibility, setSidebarVisibility] = useState('shown');
   const fullscreenSourcesRef = useRef(new Set());
+  const browserFullscreenWantedRef = useRef(false);
+  const [fullscreenExitRevision, setFullscreenExitRevision] = useState(0);
   const sidebarOpen = sidebarVisibility === 'shown';
   const [sidebarWidthPixels, setSidebarWidthPixels] = useState(() => clampSidebarWidth(
     storedValue(SIDEBAR_WIDTH_STORAGE_KEY, DEFAULT_SIDEBAR_WIDTH),
@@ -77,9 +80,17 @@ export default function App() {
     const value = storedValue(TERMINAL_FONT_STORAGE_KEY, DEFAULT_TERMINAL_FONT);
     return TERMINAL_FONTS[value] ? value : DEFAULT_TERMINAL_FONT;
   });
+  const [syncWindowFullscreen, setSyncWindowFullscreen] = useState(() => (
+    storedValue(SYNC_WINDOW_FULLSCREEN_STORAGE_KEY, 'true') !== 'false'
+  ));
+  const syncWindowFullscreenRef = useRef(syncWindowFullscreen);
   const activeWorkspaceSession = workspaceSessions.find(
     (item) => String(item.id) === activeWorkspaceId,
   ) || null;
+
+  const requestTerminalFullscreenExit = useCallback(() => {
+    setFullscreenExitRevision((value) => value + 1);
+  }, []);
 
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
@@ -96,6 +107,13 @@ export default function App() {
     try { localStorage.setItem(TERMINAL_FONT_STORAGE_KEY, terminalFont); } catch { /* optional persistence */ }
   }, [terminalFont]);
 
+  useEffect(() => {
+    syncWindowFullscreenRef.current = syncWindowFullscreen;
+    if (!syncWindowFullscreen) browserFullscreenWantedRef.current = false;
+    try { localStorage.setItem(SYNC_WINDOW_FULLSCREEN_STORAGE_KEY, String(syncWindowFullscreen)); }
+    catch { /* optional persistence */ }
+  }, [syncWindowFullscreen]);
+
   const writeSessionUrl = useCallback((nextSession, { replace = false, modal = false } = {}) => {
     const url = new URL(location.href);
     if (nextSession) url.searchParams.set('session', String(nextSession)); else url.searchParams.delete('session');
@@ -111,6 +129,7 @@ export default function App() {
 
   const activateSession = useCallback((item) => {
     const selected = String(item.id);
+    if (fullscreenSourcesRef.current.size > 0) requestTerminalFullscreenExit();
     bottomTabsRef.current?.hide();
     setWorkspaceSessions((current) => {
       const existing = current.find((session) => String(session.id) === selected);
@@ -119,7 +138,7 @@ export default function App() {
     });
     setActiveWorkspaceId(selected);
     setFocusedPanel(`workspace-${item.id}-${DEFAULT_WORKSPACE_ROLES[0]}`);
-  }, []);
+  }, [requestTerminalFullscreenExit]);
 
   const closeWorkspace = useCallback((id) => {
     const selected = String(id);
@@ -280,15 +299,49 @@ export default function App() {
       if (sources.has(source)) return;
       sources.add(source);
       setSidebarVisibility((current) => current === 'shown' ? 'temporarily-hidden' : current);
+      if (syncWindowFullscreenRef.current && !document.fullscreenElement
+          && typeof document.documentElement.requestFullscreen === 'function') {
+        browserFullscreenWantedRef.current = true;
+        document.documentElement.requestFullscreen()
+          .then(() => {
+            if (!browserFullscreenWantedRef.current && document.fullscreenElement
+                && typeof document.exitFullscreen === 'function') {
+              return document.exitFullscreen();
+            }
+            return undefined;
+          })
+          .catch(() => {
+            // Terminal fullscreen remains useful when the browser denies fullscreen.
+          });
+      }
       return;
     }
     if (!sources.delete(source) || sources.size > 0) return;
     setSidebarVisibility((current) => current === 'temporarily-hidden' ? 'shown' : current);
+    if (syncWindowFullscreenRef.current) browserFullscreenWantedRef.current = false;
+    if (syncWindowFullscreenRef.current && document.fullscreenElement
+        && typeof document.exitFullscreen === 'function') {
+      document.exitFullscreen().catch(() => {
+        // The browser may already be leaving fullscreen through its own controls.
+      });
+    }
   }, []);
 
   const toggleSidebar = useCallback(() => {
+    if (fullscreenSourcesRef.current.size > 0) requestTerminalFullscreenExit();
     setSidebarVisibility((current) => current === 'shown' ? 'manually-hidden' : 'shown');
-  }, []);
+  }, [requestTerminalFullscreenExit]);
+
+  useEffect(() => {
+    function browserFullscreenChanged() {
+      if (syncWindowFullscreenRef.current && !document.fullscreenElement
+          && fullscreenSourcesRef.current.size > 0) {
+        requestTerminalFullscreenExit();
+      }
+    }
+    document.addEventListener('fullscreenchange', browserFullscreenChanged);
+    return () => document.removeEventListener('fullscreenchange', browserFullscreenChanged);
+  }, [requestTerminalFullscreenExit]);
 
   useEffect(() => {
     function toggleSidebarShortcut(event) {
@@ -372,6 +425,8 @@ export default function App() {
           onTerminalModeChange={setTerminalMode}
           terminalFont={terminalFont}
           onTerminalFontChange={setTerminalFont}
+          syncWindowFullscreen={syncWindowFullscreen}
+          onSyncWindowFullscreenChange={setSyncWindowFullscreen}
           onWorkspaceFocus={focusActiveWorkspace}
           focusedPanel={focusedPanel}
           onPanelFocus={setFocusedPanel}
@@ -400,6 +455,7 @@ export default function App() {
               onSidebarFocus={focusSessionsSidebar}
               onBottomTerminalFocus={focusLastBottomTerminal}
               onFullscreenChange={reportTerminalFullscreen}
+              fullscreenExitRevision={fullscreenExitRevision}
               onToggleSidebar={toggleSidebar}
             />
           ))}
@@ -439,6 +495,7 @@ export default function App() {
         terminalMode={terminalMode}
         fontFamily={TERMINAL_FONTS[terminalFont].family}
         onFullscreenChange={reportTerminalFullscreen}
+        fullscreenExitRevision={fullscreenExitRevision}
         onSidebarFocus={focusVisibleSidebar}
         onWorkspaceFocus={focusActiveWorkspace}
         onToggleSidebar={toggleSidebar}

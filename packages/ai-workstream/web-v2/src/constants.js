@@ -54,6 +54,7 @@ export const THEMES = {
 export const THEME_STORAGE_KEY = 'ai-workstream-theme';
 export const TERMINAL_MODE_STORAGE_KEY = 'ai-workstream-terminal-mode';
 export const TERMINAL_FONT_STORAGE_KEY = 'ai-workstream-terminal-font';
+export const SYNC_WINDOW_FULLSCREEN_STORAGE_KEY = 'ai-workstream-sync-window-fullscreen';
 export const SIDEBAR_WIDTH_STORAGE_KEY = 'ai-workstream-sidebar-width';
 export const TERMINAL_FONTS = {
   'roboto-mono': { label: 'Roboto Mono', family: '"Roboto Mono", monospace' },
