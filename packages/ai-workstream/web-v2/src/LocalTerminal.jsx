@@ -199,7 +199,13 @@ export default function LocalTerminal({
         }
       });
     };
-    const loaded = document.fonts?.load(`${fontSize}px ${fontFamily}`);
+    // Cell metrics come from the primary family only. Waiting on the whole stack
+    // would hold the first fit until the Nerd Font fallback finishes streaming,
+    // and it contributes no glyph the terminal measures.
+    const primaryFamily = fontFamily.split(',')[0].trim();
+    let loaded = null;
+    try { loaded = document.fonts?.load(`${fontSize}px ${primaryFamily}`); }
+    catch { loaded = null; }
     if (loaded) Promise.resolve(loaded).catch(() => {}).then(applyFont);
     else applyFont();
     return () => {

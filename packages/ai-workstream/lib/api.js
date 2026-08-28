@@ -13,6 +13,7 @@ import {
   configuredLocationShellStatus,
   computeTabName,
   createScratchpad,
+  dayHeading,
   ensureWeeklyNote,
   existingNoteDir,
   expandIssueReference,
@@ -63,6 +64,17 @@ import {
   linearSearchSuggestions as searchLinearSuggestions,
   linearWorkSuggestions,
 } from './suggestions.js';
+import {
+  NotesFileError,
+  listNotesFiles,
+  notesRelativePath,
+  openWeeklyNote,
+  readEditorTabs,
+  readNotesFile,
+  weeklyNotePath,
+  writeEditorTabs,
+  writeNotesFile,
+} from './notes-files.js';
 import { DAEMON_REVISION } from './daemon.js';
 import { spawnZshTerminal } from './pty.js';
 
@@ -662,7 +674,9 @@ function staticFile(res, path, contentType, headOnly = false) {
     'Content-Type': contentType,
     'Content-Length': body.length,
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self' 'unsafe-inline'",
+    // img-src is widened so markdown previews can show images a note links to;
+    // everything else stays same-origin.
+    'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:",
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(headOnly ? undefined : body);
@@ -770,6 +784,8 @@ export function createApiService({
   githubSuggestions = githubWorkSuggestions,
   suggestionCacheMs = 60_000,
   spawnTerminal = spawnZshTerminal,
+  notesRoot = config.paths.notes,
+  dataDir = config.paths.data,
 } = {}) {
   const db = suppliedDb || openDb();
   const ownsDb = !suppliedDb;
@@ -995,17 +1011,64 @@ export function createApiService({
     if (id !== null && id !== undefined) void refreshPr(id);
   };
 
+  // ---------------------------------------------------------------- notes editor
+  //
+  // The browser markdown editor reads and writes files under the configured notes
+  // root only, and remembers its open tabs server-side so the tab strip survives a
+  // reload. `notesDate` is derived from `clock` so tests can pin "today".
+  const notesDate = () => new Date(clock());
+
+  const notesRoute = async (req, res, url) => {
+    const segment = url.pathname.slice('/notes/'.length);
+    try {
+      if (req.method === 'GET' && segment === 'files') {
+        // Only the work tree: journal entries and per-session `ws note` files are
+        // written elsewhere and are not what this editor is for.
+        const date = notesDate();
+        const { path: weekPath, iso } = weeklyNotePath(notesRoot, 'work', date);
+        return json(res, 200, {
+          root: notesRoot,
+          today: dayHeading(date),
+          weekly: [{
+            kind: 'work',
+            week: iso,
+            path: notesRelativePath(notesRoot, weekPath),
+            exists: existsSync(weekPath),
+          }],
+          files: listNotesFiles(notesRoot, { subtree: 'work' }),
+        });
+      }
+      if (req.method === 'GET' && segment === 'file') {
+        return json(res, 200, readNotesFile(notesRoot, url.searchParams.get('path'), { date: notesDate() }));
+      }
+      if (req.method === 'PUT' && segment === 'file') {
+        const body = await jsonBody(req);
+        const saved = writeNotesFile(notesRoot, body.path, body.content, { version: body.version ?? null });
+        return json(res, 200, saved);
+      }
+      if (req.method === 'POST' && segment === 'weekly') {
+        const body = await jsonBody(req);
+        return json(res, 200, openWeeklyNote(notesRoot, body.kind, { date: notesDate() }));
+      }
+      if (req.method === 'GET' && segment === 'tabs') {
+        return json(res, 200, readEditorTabs(dataDir, url.searchParams.get('scope') || 'global'));
+      }
+      if (req.method === 'PUT' && segment === 'tabs') {
+        const body = await jsonBody(req);
+        return json(res, 200, writeEditorTabs(dataDir, body.scope || 'global', body, { root: notesRoot }));
+      }
+    } catch (error) {
+      if (error instanceof NotesFileError) throw new ApiError(error.status, error.message);
+      throw error;
+    }
+    throw new ApiError(404, 'not found');
+  };
+
   const server = createServer((req, res) => {
     Promise.resolve().then(async () => {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
       const headOnly = req.method === 'HEAD';
-      if ((req.method === 'GET' || headOnly) && url.pathname === '/') {
-        return staticFile(res, `${webRoot}/index.html`, 'text/html; charset=utf-8', headOnly);
-      }
-      if ((req.method === 'GET' || headOnly) && url.pathname === '/webclient.js') {
-        return staticFile(res, `${webRoot}/webclient.js`, 'text/javascript; charset=utf-8', headOnly);
-      }
-      if ((req.method === 'GET' || headOnly) && (url.pathname === '/v2' || url.pathname === '/v2/')) {
+      if ((req.method === 'GET' || headOnly) && (url.pathname === '/' || url.pathname === '/v2' || url.pathname === '/v2/')) {
         return staticFile(res, `${webRoot}/v2/index.html`, 'text/html; charset=utf-8', headOnly);
       }
       const v2Asset = url.pathname.match(/^\/v2\/assets\/([A-Za-z0-9_.-]+\.(css|js|map))$/);
@@ -1043,6 +1106,10 @@ export function createApiService({
             count,
           })),
         });
+      }
+
+      if (url.pathname.startsWith('/notes/')) {
+        return await notesRoute(req, res, url);
       }
 
       const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));

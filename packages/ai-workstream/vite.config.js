@@ -17,6 +17,7 @@ export default defineConfig({
         target: 'http://127.0.0.1:7337',
         ws: true,
       },
+      '/notes': 'http://127.0.0.1:7337',
       '/icons': 'http://127.0.0.1:7337',
     },
   },

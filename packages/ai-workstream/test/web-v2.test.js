@@ -10,6 +10,7 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   const api = read('web-v2/src/api.js');
   const constants = read('web-v2/src/constants.js');
   const styles = read('web-v2/src/styles.css');
+  const localTerminal = read('web-v2/src/LocalTerminal.jsx');
   const vite = read('vite.config.js');
 
   assert.match(main, /createRoot/);
@@ -24,12 +25,20 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.match(constants, /TERMINAL_MODE_STORAGE_KEY = 'ai-workstream-terminal-mode'/);
   assert.match(constants, /SYNC_WINDOW_FULLSCREEN_STORAGE_KEY = 'ai-workstream-sync-window-fullscreen'/);
   assert.match(constants, /TERMINAL_FONT_STORAGE_KEY = 'ai-workstream-terminal-font'/);
+  // Every terminal font falls back to the Nerd Fonts symbol face for Powerline,
+  // Devicons, Octicons, box drawing, and the rest.
+  assert.match(constants, /NERD_FONT_FALLBACK = '"Symbols Nerd Font Mono"'/);
+  assert.equal(constants.match(/\$\{NERD_FONT_FALLBACK\}, monospace`/g).length, 5);
+  assert.match(styles, /font-family: "Symbols Nerd Font Mono"/);
+  assert.match(localTerminal, /const primaryFamily = fontFamily\.split\(','\)\[0\]\.trim\(\)/);
+  assert.match(localTerminal, /document\.fonts\?\.load\(`\$\{fontSize\}px \$\{primaryFamily\}`\)/);
   for (const family of ['Roboto Mono', 'Inconsolata', 'JetBrains Mono', 'Source Code Pro', 'IBM Plex Mono']) {
     assert.match(constants, new RegExp(family));
   }
   for (const asset of [
     'roboto-mono-latin.woff2', 'inconsolata-latin.woff2', 'jetbrains-mono-latin.woff2',
     'source-code-pro-latin.woff2', 'ibm-plex-mono-400-latin.woff2', 'ibm-plex-mono-700-latin.woff2',
+    'symbols-nerd-font-mono.woff2',
   ]) {
     assert.equal(statSync(new URL(`../web-v2/public/fonts/${asset}`, import.meta.url)).size > 10_000, true);
     assert.match(styles, new RegExp(`/v2/fonts/${asset.replaceAll('.', '\\.')}`));
@@ -219,7 +228,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(app, /<SessionDetailModal/);
   assert.match(app, /<NewSessionModal/);
   assert.match(app, /<BottomTabs/);
-  assert.match(bottomTabs, /aria-label="Custom terminals"/);
+  assert.match(bottomTabs, /aria-label="Terminals and notes"/);
   assert.match(bottomTabs, /forwardRef\(function BottomTabs/);
   assert.match(bottomTabs, /useImperativeHandle\(ref/);
   assert.match(bottomTabs, /focusLastUsed/);
@@ -228,40 +237,47 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(bottomTabs, /if \(!hideDrawer\(\)\) return false/);
   assert.match(bottomTabs, /hide: hideDrawer/);
   assert.match(bottomTabs, /const lastUsedRef = useRef\(null\)/);
-  assert.match(bottomTabs, /function navigateTerminal\(id, direction\)/);
-  assert.match(bottomTabs, /onPanelNavigate=\{\(direction\) => navigateTerminal\(terminal\.id, direction\)\}/);
+  assert.match(bottomTabs, /function navigateTab\(id, direction\)/);
+  assert.match(bottomTabs, /onPanelNavigate=\{\(direction\) => navigateTab\(tab\.id, direction\)\}/);
   assert.match(bottomTabs, /onNavigateUp=\{focusWorkspace\}/);
   assert.match(bottomTabs, /onToggleSidebar=\{onToggleSidebar\}/);
-  assert.match(bottomTabs, /onExit=\{\(\) => closeTerminal\(terminal\.id\)\}/);
-  assert.match(bottomTabs, /function AddTerminalButton/);
-  assert.match(bottomTabs, /aria-label="New terminal"/);
-  assert.match(bottomTabs, /relative z-10 flex h-10[\s\S]*<AddTerminalButton onClick=\{createTerminal\} \/>/);
-  assert.match(bottomTabs, /fixed right-0 bottom-0 z-50[\s\S]*<span className="block h-10 min-w-14" aria-hidden="true" \/>/);
-  assert.match(bottomTabs, /<ShellIcon className="size-4" \/>/);
-  assert.match(bottomTabs, /const \[terminals, setTerminals\] = useState\(\[\]\)/);
+  assert.match(bottomTabs, /onExit=\{\(\) => closeTab\(tab\.id\)\}/);
+  assert.match(bottomTabs, /function AddButton/);
+  assert.match(bottomTabs, /label="New terminal"/);
+  assert.match(bottomTabs, /relative z-10 flex h-10[\s\S]*<AddButton label="New terminal" Icon=\{ShellIcon\} onClick=\{createTerminal\} \/>/);
+  assert.match(bottomTabs, /<AddButton label="Open a note" Icon=\{EditorIcon\}/);
+  // One strip, inside the sliding container: every tab rides up and down with the
+  // panel instead of the unselected ones staying pinned to the viewport.
+  assert.match(bottomTabs, /const TAB_WIDTH = 'w-40'/);
+  assert.equal(bottomTabs.match(/\$\{TAB_WIDTH\}/g).length, 1);
+  assert.equal(bottomTabs.match(/<TabButton/g).length, 1);
+  assert.doesNotMatch(bottomTabs, /z-50/);
+  assert.match(bottomTabs, /selected=\{active === tab\.id\}/);
+  assert.match(bottomTabs, /<Icon className="size-4" \/>/);
+  assert.match(bottomTabs, /const \[tabs, setTabs\] = useState\(\[\]\)/);
   assert.match(bottomTabs, /const nextTerminalNumber = useRef\(1\)/);
   assert.match(bottomTabs, /id: `terminal-\$\{number\}`/);
-  assert.match(bottomTabs, /setTerminals\(\(current\) => \[\.\.\.current, terminal\]\)/);
+  assert.match(bottomTabs, /setTabs\(\(current\) => \[\.\.\.current, terminal\]\)/);
   assert.match(bottomTabs, /return chooseTab\(terminal\.id\)/);
   assert.match(bottomTabs, /const createTerminal = useCallback/);
-  assert.match(bottomTabs, /return id \? focusTerminal\(id\) : createTerminal\(\)/);
+  assert.match(bottomTabs, /return id \? focusTab\(id\) : createTerminal\(\)/);
   assert.match(bottomTabs, /aria-controls="bottom-terminal-panel"/);
-  assert.match(bottomTabs, /fixed right-0 bottom-0 z-50/);
+  // The tab strip is inside the sliding container, so it moves with the panel.
+  assert.match(bottomTabs, /fixed right-0 bottom-0 z-40 flex flex-col[\s\S]*relative z-10 flex h-10 shrink-0 items-end/);
   assert.match(bottomTabs, /focusedPanel\?\.startsWith\('workspace-'\)/);
   assert.match(bottomTabs, /opacity-20 hover:opacity-100 focus-within:opacity-100/);
-  assert.match(bottomTabs, /transition-\[left,opacity\]/);
   assert.match(bottomTabs, /fixed top-0 right-0 bottom-0 z-30 cursor-default bg-transparent/);
-  assert.match(bottomTabs, /active === terminal\.id/);
+  assert.match(bottomTabs, /active === tab\.id/);
   assert.match(bottomTabs, /transition-\[translate,left\]/);
   assert.match(bottomTabs, /queuedTab\.current = id/);
   assert.match(bottomTabs, /reducedMotion \? 0 : TAB_SWITCH_MS/);
   assert.match(bottomTabs, /const pendingRemoval = useRef\(null\)/);
-  assert.match(bottomTabs, /withoutTerminal\(current, removed\)/);
-  assert.match(bottomTabs, /function closeTerminal\(id\)/);
-  assert.match(bottomTabs, /onClose=\{closeTerminal\}/);
-  assert.match(bottomTabs, /aria-label=\{`Close \$\{terminal\.label\}`\}/);
+  assert.match(bottomTabs, /withoutTab\(current, removed\)/);
+  assert.match(bottomTabs, /function closeTab\(id\)/);
+  assert.match(bottomTabs, /onClose=\{closeTab\}/);
+  assert.match(bottomTabs, /aria-label=\{`Close \$\{tab\.label\}`\}/);
   assert.match(bottomTabs, /<XIcon className="size-3\.5" \/>/);
-  assert.match(bottomTabs, /current\.filter\(\(terminal\) => terminal\.id !== id\)/);
+  assert.match(bottomTabs, /current\.filter\(\(tab\) => tab\.id !== id\)/);
   assert.doesNotMatch(bottomTabs, /<header/);
   assert.doesNotMatch(bottomTabs, /<h2/);
   assert.doesNotMatch(bottomTabs, /IconButton/);
@@ -271,25 +287,25 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.doesNotMatch(bottomTabs, /Lorem ipsum/);
   assert.doesNotMatch(bottomTabs, /test 1/);
   assert.match(bottomTabs, /<LocalTerminal/);
-  assert.match(bottomTabs, /terminals\.map\(\(terminal\) =>/);
-  assert.match(bottomTabs, /visible=\{terminalVisible\}/);
-  assert.match(bottomTabs, /focused=\{terminalVisible && focusedPanel === `bottom-\$\{terminal\.id\}`\}/);
+  assert.match(bottomTabs, /tabs\.map\(\(tab\) =>/);
+  assert.match(bottomTabs, /visible=\{tabVisible\}/);
+  assert.match(bottomTabs, /focused=\{tabVisible && focusedPanel === `bottom-\$\{tab\.id\}`\}/);
   assert.match(bottomTabs, /onPanelFocus\(null\)/);
   assert.match(bottomTabs, /data-panel=\{activePanel \|\| undefined\}/);
   assert.match(bottomTabs, /leftOffset = '0rem'/);
   assert.match(bottomTabs, /transition-\[translate,left\]/);
   assert.match(bottomTabs, /style=\{\{ left: leftOffset \}\}/);
   assert.match(bottomTabs, /onPointerEnter=\{\(\) => \{ if \(activePanel\) onPanelFocus\(activePanel\); \}\}/);
-  assert.match(bottomTabs, /fontSize=\{terminal\.fontSize\}/);
+  assert.match(bottomTabs, /fontSize=\{tab\.fontSize\}/);
   assert.match(bottomTabs, /fullscreen: false/);
   assert.match(bottomTabs, /function toggleFullscreen\(id\)/);
-  assert.match(bottomTabs, /onFullscreenChange\?\.\('bottom-terminals', !terminal\.fullscreen\)/);
+  assert.match(bottomTabs, /onFullscreenChange\?\.\('bottom-terminals', !target\.fullscreen\)/);
   assert.match(bottomTabs, /const leaveFullscreen = useCallback/);
   assert.match(bottomTabs, /fullscreenExitRevision/);
-  assert.match(bottomTabs, /fullscreen: !terminal\.fullscreen/);
+  assert.match(bottomTabs, /fullscreen: !tab\.fullscreen/);
   assert.match(bottomTabs, /activeFullscreen \? 'h-screen' : 'h-\[calc\(75vh\+2\.5rem\)\]'/);
   assert.match(bottomTabs, /data-terminal-fullscreen=\{activeFullscreen\}/);
-  assert.match(bottomTabs, /onToggleFullscreen=\{\(\) => toggleFullscreen\(terminal\.id\)\}/);
+  assert.match(bottomTabs, /onToggleFullscreen=\{\(\) => toggleFullscreen\(tab\.id\)\}/);
   assert.match(bottomTabs, /const fullscreenVisible = drawerOpen && activeFullscreen/);
   assert.match(bottomTabs, /onFullscreenChange\?\.\('bottom-terminals', fullscreenVisible\)/);
   assert.match(bottomTabs, /onFullscreenChange\?\.\('bottom-terminals', false\)/);
@@ -301,7 +317,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(localTerminal, /terminal\.options\.theme = terminalTheme\(themeMode\)/);
   assert.match(localTerminal, /terminal\.options\.fontSize = fontSize/);
   assert.match(localTerminal, /terminal\.options\.fontFamily = fontFamily/);
-  assert.match(localTerminal, /document\.fonts\?\.load\(`\$\{fontSize\}px \$\{fontFamily\}`\)/);
+  assert.match(localTerminal, /document\.fonts\?\.load\(`\$\{fontSize\}px \$\{primaryFamily\}`\)/);
   assert.match(localTerminal, /\[fontFamily, fontSize, themeMode\]/);
   assert.doesNotMatch(localTerminal, /MutationObserver/);
   assert.match(localTerminal, /new FitAddon/);
@@ -431,4 +447,127 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(icons, /export function GearIcon/);
   assert.match(table, /focus-\$\{panel\}/);
   assert.match(table, /open-notes/);
+});
+
+test('v2 markdown preview parses the shapes the notes skill actually writes', async () => {
+  const { parseMarkdown, parseInline } = await import('../web-v2/src/markdown.js');
+  const blocks = parseMarkdown([
+    '## Thursday, June 25th, 2026',
+    '',
+    '- [x] Shipped the **editor**',
+    '    - https://github.com/example/project/pull/41',
+    '    - [ ] follow-up still to do',
+    '- [x] Another item',
+    '',
+    '> a quoted aside',
+    '',
+    '```js',
+    'const answer = 42;',
+    '```',
+    '',
+    'Trailing `code` paragraph.',
+  ].join('\n'));
+
+  assert.deepEqual(blocks.map((block) => block.type), ['heading', 'list', 'quote', 'code', 'paragraph']);
+  assert.equal(blocks[0].level, 2);
+  assert.equal(blocks[1].items.length, 2);
+  assert.equal(blocks[1].items[0].checked, true);
+  assert.deepEqual(blocks[1].items[0].spans.map((span) => span.type), ['text', 'strong']);
+  assert.equal(blocks[1].items[0].children.length, 2);
+  assert.equal(blocks[1].items[0].children[0].spans[0].href, 'https://github.com/example/project/pull/41');
+  assert.equal(blocks[1].items[0].children[1].checked, false);
+  assert.equal(blocks[3].lang, 'js');
+  assert.equal(blocks[3].code, 'const answer = 42;');
+
+  const link = parseInline('see [the plan](https://linear.app/eco-1) now');
+  assert.deepEqual(link.map((span) => span.type), ['text', 'link', 'text']);
+  assert.equal(link[1].href, 'https://linear.app/eco-1');
+  assert.equal(link[1].text, 'the plan');
+
+  // An image match starts one character before a link would, so `![...]` must not
+  // fall through to the link branch and leave a stray "!" behind.
+  const image = parseInline('before ![desc](https://example.com/a/fritzworks.png) after');
+  assert.deepEqual(image.map((span) => span.type), ['text', 'image', 'text']);
+  assert.equal(image[1].href, 'https://example.com/a/fritzworks.png');
+  assert.equal(image[1].text, 'desc');
+  assert.equal(image[0].text, 'before ');
+  assert.deepEqual(parseInline('![](https://example.com/b.png)').map((span) => span.type), ['image']);
+  // A bare image line is still a paragraph holding a single image span.
+  const [block] = parseMarkdown('![shot](https://example.com/c.png)');
+  assert.equal(block.type, 'paragraph');
+  assert.equal(block.spans[0].type, 'image');
+});
+
+test('v2 markdown editing helpers continue lists, indent, and log the day', async () => {
+  const {
+    appendUnderHeading, continueList, shiftIndent,
+  } = await import('../web-v2/src/markdown.js');
+
+  const task = '- [x] shipped it';
+  const continued = continueList(task, task.length);
+  assert.equal(continued.value, '- [x] shipped it\n- [ ] ');
+  assert.equal(continued.caret, continued.value.length);
+
+  const numbered = continueList('1. first', 8);
+  assert.equal(numbered.value, '1. first\n2. ');
+
+  // An empty item ends the list rather than adding another bullet.
+  const ended = continueList('- [x] done\n- ', 13);
+  assert.equal(ended.value, '- [x] done\n');
+  assert.equal(continueList('plain text', 10), null);
+
+  const indented = shiftIndent('- one\n- two', 0, 11);
+  assert.equal(indented.value, '  - one\n  - two');
+  assert.equal(shiftIndent(indented.value, 0, 15, true).value, '- one\n- two');
+
+  const heading = '## Thursday, June 25th, 2026';
+  const logged = appendUnderHeading(`## Monday, June 22nd, 2026\n\n${heading}\n\n- [x] earlier\n\n## Friday, June 26th, 2026\n`, heading);
+  assert.match(logged.value, /- \[x\] earlier\n- \[x\] \n\n## Friday/);
+  assert.equal(logged.value.slice(0, logged.caret).endsWith('- [x] '), true);
+  assert.equal(appendUnderHeading('# no day headings', heading), null);
+});
+
+test('v2 bottom drawer hosts markdown tabs backed by the notes endpoints', () => {
+  const bottomTabs = read('web-v2/src/BottomTabs.jsx');
+  const editor = read('web-v2/src/MarkdownEditor.jsx');
+  const picker = read('web-v2/src/NotePicker.jsx');
+  const api = read('web-v2/src/api.js');
+
+  assert.match(api, /'\/notes\/files'/);
+  assert.match(api, /`\/notes\/file\?path=\$\{encodeURIComponent\(path\)\}`/);
+  assert.match(api, /'\/notes\/weekly'/);
+  assert.match(api, /`\/notes\/tabs\?scope=\$\{encodeURIComponent\(scope\)\}`/);
+  // Open tabs live server-side so the strip survives a reload.
+  assert.match(bottomTabs, /readEditorTabs\(EDITOR_TAB_SCOPE/);
+  assert.match(bottomTabs, /writeEditorTabs\(EDITOR_TAB_SCOPE/);
+  assert.match(bottomTabs, /kind === 'editor'/);
+  assert.match(bottomTabs, /<MarkdownEditor/);
+  assert.match(editor, /parseMarkdown/);
+  assert.match(editor, /writeNotesFile/);
+  assert.match(editor, /span\.type === 'image'/);
+  assert.match(editor, /<img[\s\S]*src=\{span\.href\}[\s\S]*alt=\{span\.text\}/);
+  assert.match(picker, /openWeeklyNote/);
+  // The scaffold action disappears once the week's file exists, because it is then
+  // listed like any other work note.
+  assert.match(picker, /const missingWeekly = \(data\?\.weekly \|\| \[\]\)\.filter\(\(entry\) => !entry\.exists\);/);
+  assert.match(picker, /\{missingWeekly\.length > 0 && \(/);
+  assert.doesNotMatch(picker, /create \$\{week\}/);
+
+  // Ctrl-H/L must only ever move between existing tabs. A terminal is spawned only
+  // when the drawer is empty, so navigating into a strip of restored notes cannot
+  // keep creating terminals.
+  assert.match(bottomTabs, /const id = tabs\.some\(\(tab\) => tab\.id === remembered\) \? remembered : tabs\.at\(-1\)\?\.id;/);
+  assert.equal(bottomTabs.match(/createTerminal\(\)/g).length, 1);
+  assert.match(bottomTabs, /if \(remembered\) lastUsedRef\.current = editorTabId\(remembered\)/);
+  assert.match(bottomTabs, /if \(key !== 'h' && key !== 'l' && key !== 'k'\) return;/);
+  assert.match(bottomTabs, /event\.defaultPrevented \|\| !event\.ctrlKey/);
+  // The textarea only exists once the file has loaded, so focus has to be reapplied.
+  assert.match(editor, /if \(!focused \|\| preview \|\| loading\) return;/);
+  assert.match(editor, /\}, \[focused, loading, preview\]\);/);
+
+  // The drawer slides away as soon as it stops being the focused panel, whatever
+  // moved focus, and a tab switch mid-animation is not mistaken for focus loss.
+  assert.match(bottomTabs, /if \(!drawerOpen \|\| closing \|\| !activeTab\) return;/);
+  assert.match(bottomTabs, /if \(focusedPanel !== `bottom-\$\{activeTab\.id\}`\) hideDrawer\(\);/);
+  assert.match(bottomTabs, /\[activeTab, closing, drawerOpen, focusedPanel, hideDrawer\]/);
 });

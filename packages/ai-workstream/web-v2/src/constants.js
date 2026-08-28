@@ -56,12 +56,16 @@ export const TERMINAL_MODE_STORAGE_KEY = 'ai-workstream-terminal-mode';
 export const TERMINAL_FONT_STORAGE_KEY = 'ai-workstream-terminal-font';
 export const SYNC_WINDOW_FULLSCREEN_STORAGE_KEY = 'ai-workstream-sync-window-fullscreen';
 export const SIDEBAR_WIDTH_STORAGE_KEY = 'ai-workstream-sidebar-width';
+// Every stack falls back to Symbols Nerd Font Mono, which supplies the Nerd Font
+// glyphs the chosen family does not have. Text still renders from the family
+// itself, so the variable weight ranges are preserved.
+export const NERD_FONT_FALLBACK = '"Symbols Nerd Font Mono"';
 export const TERMINAL_FONTS = {
-  'roboto-mono': { label: 'Roboto Mono', family: '"Roboto Mono", monospace' },
-  inconsolata: { label: 'Inconsolata', family: '"Inconsolata", monospace' },
-  'jetbrains-mono': { label: 'JetBrains Mono', family: '"JetBrains Mono", monospace' },
-  'source-code-pro': { label: 'Source Code Pro', family: '"Source Code Pro", monospace' },
-  'ibm-plex-mono': { label: 'IBM Plex Mono', family: '"IBM Plex Mono", monospace' },
+  'roboto-mono': { label: 'Roboto Mono', family: `"Roboto Mono", ${NERD_FONT_FALLBACK}, monospace` },
+  inconsolata: { label: 'Inconsolata', family: `"Inconsolata", ${NERD_FONT_FALLBACK}, monospace` },
+  'jetbrains-mono': { label: 'JetBrains Mono', family: `"JetBrains Mono", ${NERD_FONT_FALLBACK}, monospace` },
+  'source-code-pro': { label: 'Source Code Pro', family: `"Source Code Pro", ${NERD_FONT_FALLBACK}, monospace` },
+  'ibm-plex-mono': { label: 'IBM Plex Mono', family: `"IBM Plex Mono", ${NERD_FONT_FALLBACK}, monospace` },
 };
 export const DEFAULT_TERMINAL_FONT = 'roboto-mono';
 export const PANEL_ROLES = ['shell', 'editor', 'agent'];

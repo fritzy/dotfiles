@@ -75,3 +75,39 @@ export function createScratchpadSession(body) {
     body: JSON.stringify(body),
   });
 }
+
+export function listNotesFiles(signal) {
+  return request('/notes/files', { signal });
+}
+
+export function readNotesFile(path, signal) {
+  return request(`/notes/file?path=${encodeURIComponent(path)}`, { signal });
+}
+
+export function writeNotesFile({ path, content, version }) {
+  return request('/notes/file', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content, version }),
+  });
+}
+
+export function openWeeklyNote(kind) {
+  return request('/notes/weekly', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind }),
+  });
+}
+
+export function readEditorTabs(scope = 'global', signal) {
+  return request(`/notes/tabs?scope=${encodeURIComponent(scope)}`, { signal });
+}
+
+export function writeEditorTabs(scope, tabs, activePath) {
+  return request('/notes/tabs', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope, tabs, activePath }),
+  });
+}

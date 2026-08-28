@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -494,138 +494,15 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(health.revision, /^[a-f0-9]{16}$/);
   const index = await fetch(`${base}/`);
   assert.equal(index.status, 200);
-  const indexHtml = await index.text();
-  assert.match(indexHtml, /id="session-modal"/);
-  assert.match(indexHtml, /<title>FritzWorks<\/title>/);
-  assert.match(indexHtml, /<h1>FritzWorks<\/h1>/);
-  assert.doesNotMatch(indexHtml, /Placeholder client/);
-  assert.match(indexHtml, /class="status-pill"/);
-  assert.match(indexHtml, /data-command="close"/);
-  assert.match(indexHtml, /data-command="pause"/);
-  assert.match(indexHtml, /data-command="resume"/);
-  assert.match(indexHtml, /data-panel="shell"/);
-  assert.match(indexHtml, /data-panel="editor"/);
-  assert.match(indexHtml, /data-panel="agent"/);
-  assert.doesNotMatch(indexHtml, /<th>Path<\/th>/);
-  assert.doesNotMatch(indexHtml, /<th>Type<\/th>/);
-  assert.doesNotMatch(indexHtml, /<thead/);
-  assert.match(indexHtml, /<select name="type" aria-label="Type">/);
-  assert.match(indexHtml, /value="active_paused">Active &amp; Paused/);
-  assert.doesNotMatch(indexHtml, />Refresh<\/button>/);
-  assert.match(indexHtml, /id="pagination"/);
-  assert.match(indexHtml, /id="page-numbers"/);
-  assert.match(indexHtml, /id="perpage"/);
-  assert.match(indexHtml, /<option value="25" selected>25 Per Page<\/option>/);
-  assert.match(indexHtml, /class="modal-status-bar"/);
-  assert.match(indexHtml, /class="modal-dismiss" aria-label="Close session details"/);
-  assert.match(indexHtml, /<svg viewBox="0 0 24 24"/);
-  assert.doesNotMatch(indexHtml, />Dismiss<\/button>/);
-  assert.ok(indexHtml.indexOf('class="modal-actions"') < indexHtml.indexOf('<dl class="detail-grid">'));
-  assert.doesNotMatch(indexHtml, /id="modal-id"/);
-  assert.doesNotMatch(indexHtml, /id="modal-type"/);
-  assert.doesNotMatch(indexHtml, /<dt>Worktree<\/dt>/);
-  assert.match(indexHtml, /id="modal-path-presence"/);
-  assert.match(indexHtml, /id="modal-path" class="path-action"/);
-  assert.match(indexHtml, /<dt>Repository \/ Branch<\/dt>/);
-  assert.match(indexHtml, /class="modal-repo-branch"/);
-  assert.doesNotMatch(indexHtml, /id="modal-source"/);
-  assert.match(indexHtml, /id="modal-agent-select"/);
-  assert.match(indexHtml, /id="modal-scratchpad-name-row" hidden/);
-  assert.match(indexHtml, /id="modal-scratchpad-name" type="text"/);
-  assert.doesNotMatch(indexHtml, /<option value="claude">Claude<\/option>/);
-  assert.doesNotMatch(indexHtml, /<option value="codex">Codex<\/option>/);
-  assert.match(indexHtml, /class="agent-type-toggle"/);
-  assert.match(indexHtml, /class="agent-type-selection"/);
-  assert.match(indexHtml, /class="agent-type-option agent-type-option-claude"/);
-  assert.match(indexHtml, /class="agent-type-option agent-type-option-codex"/);
-  assert.match(indexHtml, /agent-type-toggle\[data-agent="codex"\] \.agent-type-selection/);
-  assert.match(indexHtml, /id="modal-link"[^>]+data-link-kind="link"/);
-  assert.match(indexHtml, /id="modal-linear-link"[^>]+data-provider="linear"/);
-  assert.match(indexHtml, /id="modal-github-link"[^>]+data-provider="github"/);
-  assert.match(indexHtml, /id="modal-link-values" class="link-entry-values issue-pills"/);
-  assert.ok(indexHtml.indexOf('id="modal-links-title"') < indexHtml.indexOf('id="modal-path"'));
-  assert.match(indexHtml, /id="theme-select"/);
-  assert.match(indexHtml, /id="theme-select" aria-label="Theme"/);
-  assert.ok(indexHtml.indexOf('id="theme-credit"') > indexHtml.indexOf('id="theme-select"'));
-  assert.match(indexHtml, /id="panel-mode-toggle"/);
-  assert.match(indexHtml, /class="panel-mode-selection"/);
-  assert.match(indexHtml, /class="panel-mode-option panel-mode-option-three"/);
-  assert.match(indexHtml, /class="panel-mode-option panel-mode-option-two"/);
-  assert.match(indexHtml, /panel-mode-toggle\[data-mode="two"\] \.panel-mode-selection/);
-  assert.match(indexHtml, /id="new-repo-button"/);
-  assert.match(indexHtml, /id="new-repo-modal"/);
-  assert.match(indexHtml, /id="new-repo-repository"/);
-  assert.match(indexHtml, /id="new-repo-combobox" class="repo-combobox"/);
-  assert.match(indexHtml, /id="new-repo-repository-toggle" class="repo-combobox-toggle"/);
-  assert.match(indexHtml, /id="new-repo-repositories" class="repo-combobox-list" role="listbox"/);
-  assert.doesNotMatch(indexHtml, /<datalist/);
-  assert.match(indexHtml, /id="new-repo-selector"/);
-  assert.match(indexHtml, /id="new-repo-source"/);
-  assert.match(indexHtml, /id="new-repo-agent"/);
-  assert.match(indexHtml, /id="new-repo-path"/);
-  assert.match(indexHtml, /id="new-repo-links"/);
-  assert.match(indexHtml, /id="new-repo-linear-link"[^>]+data-provider="linear"/);
-  assert.match(indexHtml, /id="new-repo-github-link"[^>]+data-provider="github"/);
-  assert.match(indexHtml, /id="new-repo-linear-suggestions"[^>]+role="listbox"/);
-  assert.match(indexHtml, /id="new-repo-github-suggestions"[^>]+role="listbox"/);
-  assert.match(indexHtml, /class="link-add-button"[^>]+data-input="new-repo-linear-link"/);
-  assert.match(indexHtml, /id="new-repo-link-values" class="link-entry-values issue-pills"/);
-  assert.match(indexHtml, /class="new-panel-toggle panel-icon-toggle" data-panel="agent"/);
-  assert.match(indexHtml, /id="new-repo-submit"/);
-  assert.match(indexHtml, /id="new-repo-submitting" class="new-session-submit-overlay"/);
-  const newRepoModalHtml = indexHtml.slice(indexHtml.indexOf('<dialog id="new-repo-modal"'));
-  assert.match(newRepoModalHtml, /class="modal-status-bar modal-config-bar"/);
-  assert.ok(newRepoModalHtml.indexOf('id="new-repo-agent"') < newRepoModalHtml.indexOf('<dl class="detail-grid'));
-  assert.ok(newRepoModalHtml.indexOf('id="new-repo-link-values"') > newRepoModalHtml.indexOf('id="new-repo-github-link"'));
-  assert.ok(newRepoModalHtml.indexOf('id="new-repo-links-title"') < newRepoModalHtml.indexOf('id="new-repo-source"'));
-  assert.ok(newRepoModalHtml.indexOf('id="new-repo-links-title"') < newRepoModalHtml.indexOf('id="new-repo-path"'));
-  assert.doesNotMatch(newRepoModalHtml, />Created</);
-  assert.doesNotMatch(newRepoModalHtml, />Last joined</);
-  assert.doesNotMatch(newRepoModalHtml, />Stack</);
-  assert.match(indexHtml, /id="new-scratchpad-button"/);
-  assert.ok(indexHtml.indexOf('id="new-repo-button"') < indexHtml.indexOf('class="header-controls"'));
-  assert.ok(indexHtml.indexOf('id="new-scratchpad-button"') < indexHtml.indexOf('class="header-controls"'));
-  assert.ok(indexHtml.indexOf('id="connection"') > indexHtml.indexOf('id="theme-credit"'));
-  assert.match(indexHtml, /id="new-scratchpad-modal"/);
-  assert.match(indexHtml, /id="new-scratchpad-name"/);
-  assert.match(indexHtml, /id="new-scratchpad-agent"/);
-  assert.match(indexHtml, /id="new-scratchpad-path"/);
-  assert.match(indexHtml, /id="new-scratchpad-links"/);
-  assert.match(indexHtml, /id="new-scratchpad-linear-link"[^>]+data-provider="linear"/);
-  assert.match(indexHtml, /id="new-scratchpad-github-link"[^>]+data-provider="github"/);
-  assert.match(indexHtml, /class="link-add-button"[^>]+data-input="new-scratchpad-github-link"/);
-  assert.match(indexHtml, /id="new-scratchpad-link-values" class="link-entry-values issue-pills"/);
-  assert.match(indexHtml, /class="new-scratchpad-panel-toggle panel-icon-toggle" data-panel="agent"/);
-  assert.match(indexHtml, /id="new-scratchpad-submit"/);
-  assert.match(indexHtml, /id="new-scratchpad-submitting" class="new-session-submit-overlay"/);
-  const newScratchpadModalHtml = indexHtml.slice(indexHtml.indexOf('<dialog id="new-scratchpad-modal"'));
-  assert.match(newScratchpadModalHtml, /class="modal-status-bar modal-config-bar"/);
-  assert.ok(newScratchpadModalHtml.indexOf('id="new-scratchpad-agent"') < newScratchpadModalHtml.indexOf('<dl class="detail-grid'));
-  assert.ok(newScratchpadModalHtml.indexOf('id="new-scratchpad-link-values"') > newScratchpadModalHtml.indexOf('id="new-scratchpad-github-link"'));
-  assert.ok(newScratchpadModalHtml.indexOf('id="new-scratchpad-links-title"') < newScratchpadModalHtml.indexOf('id="new-scratchpad-path"'));
-  assert.equal((indexHtml.match(/class="link-add-button"/g) || []).length, 9);
-  assert.doesNotMatch(newScratchpadModalHtml, />Created</);
-  assert.doesNotMatch(newScratchpadModalHtml, />Last joined</);
-  assert.doesNotMatch(newScratchpadModalHtml, />Stack</);
-  assert.match(indexHtml, /value="curiosities">Curiosities/);
-  assert.match(indexHtml, /value="clement-8">Clément 8/);
-  assert.match(indexHtml, /value="oil-6">Oil 6/);
-  assert.match(indexHtml, /value="slso8">SLSO8/);
-  assert.match(indexHtml, /value="endesga-8">Endesga 8/);
-  assert.match(indexHtml, /value="funkyfuture-8">FunkyFuture 8/);
-  assert.match(indexHtml, /value="dracula">Dracula/);
-  assert.match(indexHtml, /value="nord">Nord/);
-  assert.match(indexHtml, /#000871/);
-  assert.match(indexHtml, /#63ffba/);
-  assert.match(indexHtml, /#ff8c5c/);
-  assert.match(indexHtml, /#fbf5ef/);
-  assert.match(indexHtml, /#0d2b45/);
-  assert.match(indexHtml, /#1b1c33/);
-  assert.match(indexHtml, /#2b0f54/);
-  assert.match(indexHtml, /#282a36/);
-  assert.match(indexHtml, /#2e3440/);
-  assert.match(indexHtml, /--row-highlight-fg: #282a36/);
-  assert.match(indexHtml, /--row-highlight-fg: #2e3440/);
+  // Markdown previews load images a note links to; everything else stays same-origin.
+  const csp = index.headers.get('content-security-policy');
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /script-src 'self'/);
+  assert.match(csp, /img-src 'self' data: blob: https:/);
+  assert.match(index.headers.get('content-type'), /^text\/html/);
+  const rootHtml = await index.text();
+  assert.match(rootHtml, /<title>FritzWorks<\/title>/);
+  assert.match(rootHtml, /<div id="root"><\/div>/);
   const v2Response = await fetch(`${base}/v2/`);
   assert.equal(v2Response.status, 200);
   assert.match(v2Response.headers.get('content-type'), /^text\/html/);
@@ -661,7 +538,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(fontLicenseResponse.status, 200);
   assert.match(fontLicenseResponse.headers.get('content-type'), /^text\/plain/);
   assert.match(await fontLicenseResponse.text(), /SIL OPEN FONT LICENSE/);
-  const webClient = await (await fetch(`${base}/webclient.js`)).text();
   for (const icon of ['check.svg', 'claude.svg', 'folder.svg', 'notes.svg', 'openai.svg']) {
     const response = await fetch(`${base}/icons/${icon}`);
     assert.equal(response.status, 200);
@@ -670,162 +546,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     assert.match(svg, /<svg/);
     if (icon === 'claude.svg') assert.match(svg, /fill="#000000"/);
   }
-  assert.match(webClient, /message\.type/);
-  assert.match(webClient, /agent_status/);
-  assert.match(webClient, /className = 'issue-pill'/);
-  assert.match(webClient, /className = `issue-pill-icon issue-pill-icon-\$\{issue\.icon\}`/);
-  assert.match(webClient, /icon: 'github'/);
-  assert.match(webClient, /icon: 'linear'/);
-  assert.match(webClient, /label: url\.hostname/);
-  assert.match(webClient, /favicon: `\$\{url\.origin\}\/favicon\.ico`/);
-  assert.match(webClient, /function issuePillIcon\(issue\)/);
-  assert.match(webClient, /issue-pill-link-icon/);
-  assert.match(webClient, /slot\.classList\.add\('favicon-loaded'\)/);
-  assert.match(webClient, /favicon\.addEventListener\('error', \(\) => favicon\.remove\(\)\)/);
-  assert.doesNotMatch(webClient, /favicon\.loading = 'lazy'/);
-  assert.match(webClient, /issue\.provider === 'custom' \? issue\.href/);
-  assert.match(indexHtml, /\.issue-pill-favicon/);
-  assert.match(webClient, /function updateThemeContrast/);
-  assert.match(webClient, /function contrastRatio/);
-  assert.match(webClient, /const PANEL_MODE_KEY = 'ai-workstream-panel-mode'/);
-  assert.match(webClient, /function selectedLayoutPanels/);
-  assert.match(webClient, /function commandRequestBody/);
-  assert.match(webClient, /command === 'resume' \? \{ panels: selectedLayoutPanels\(\) \} : \{\}/);
-  assert.match(webClient, /function branchCell/);
-  assert.match(webClient, /function githubBranchUrl\(item\)/);
-  assert.match(webClient, /`\$\{repositoryPath\}\/tree\/\$\{branchPath\}`/);
-  assert.match(webClient, /document\.createElement\(branchUrl \? 'a' : 'span'\)/);
-  assert.match(webClient, /branch\.addEventListener\('click', \(event\) => event\.stopPropagation\(\)\)/);
-  assert.match(webClient, /function repoCell/);
-  assert.match(webClient, /function renameScratchpad/);
-  assert.match(webClient, /postWorkstreamCommand\(id, 'rename', \{ name \}\)/);
-  const renameScratchpadClient = webClient.slice(
-    webClient.indexOf('async function renameScratchpad'),
-    webClient.indexOf('function visiblePages'),
-  );
-  assert.doesNotMatch(renameScratchpadClient, /openSession\(/);
-  assert.match(renameScratchpadClient, /if \(modal\.open && selectedSession/);
-  assert.match(webClient, /item\.type === 'scratchpad' \? item\.name : item\.branch/);
-  assert.doesNotMatch(webClient, /const branch = document\.createElement\('code'\)/);
-  assert.match(indexHtml, /<a id="modal-branch" target="_blank" rel="noreferrer"><\/a>/);
-  assert.doesNotMatch(webClient, /detail\.source/);
-  assert.doesNotMatch(webClient, /cell\(row, item\.id\)/);
-  assert.match(webClient, /newRepoSubmitting\.hidden = !busy/);
-  assert.match(webClient, /newScratchpadSubmitting\.hidden = !busy/);
-  assert.match(webClient, /item\.type === 'scratchpad' \? '' : item\.repo/);
-  assert.match(webClient, /branch-icon-folder/);
-  assert.match(webClient, /item\.gitClean === true/);
-  assert.match(webClient, /item\.gitClean === false/);
-  assert.match(webClient, /item\.prDone === true/);
-  assert.match(webClient, /branch-icon-pr-done/);
-  assert.match(webClient, /target = '_blank'/);
-  assert.match(webClient, /github\.com/);
-  assert.match(webClient, /linear\.app/);
-  assert.match(webClient, /openSession\(message\.id\)/);
-  assert.match(webClient, /panel-toggle/);
-  assert.match(indexHtml, /class="panel-toggle panel-icon-toggle" data-panel="shell"/);
-  assert.match(indexHtml, /class="panel-toggle panel-icon-toggle" data-panel="editor"/);
-  assert.match(indexHtml, /class="panel-toggle panel-icon-toggle" data-panel="agent"/);
-  assert.doesNotMatch(indexHtml, />Shell: off<\/button>/);
-  assert.doesNotMatch(indexHtml, />Editor: off<\/button>/);
-  assert.match(webClient, /function updatePanelIconButton\(button, enabled\)/);
-  assert.doesNotMatch(webClient, /button\.textContent = `\$\{panel\[0\]\.toUpperCase\(\)\}/);
-  assert.match(webClient, /status-action/);
-  assert.match(webClient, /const actionable = item\.status === 'active' \|\| item\.status === 'paused'/);
-  assert.match(webClient, /runStatusAction/);
-  assert.match(webClient, /lastUsedCell\(row, item\.lastJoined\)/);
-  assert.match(webClient, /function calendarIcon\(\)/);
-  assert.match(webClient, /Math\.floor\(Math\.max\(0, Date\.now\(\) - date\.valueOf\(\)\) \/ 86_400_000\)/);
-  assert.match(webClient, /count\.textContent = `\$\{days\}d`/);
-  assert.match(webClient, /actions\.append\(shellAction\(item\)\)/);
-  assert.doesNotMatch(webClient, /shellCell\(row, item\)/);
-  assert.match(webClient, /item\.shellStatus === 'working'/);
-  assert.match(webClient, /function shellPromptIcon/);
-  assert.match(webClient, /focusShell\(item, indicator\)/);
-  assert.match(webClient, /focus-\$\{panel\}/);
-  assert.match(webClient, /'shell_status'/);
-  assert.match(webClient, /actions\.append\(agentAction\(item\)\)/);
-  assert.doesNotMatch(webClient, /agentCell\(row, item\)/);
-  assert.match(webClient, /item\.agentStatus === 'working'/);
-  assert.match(webClient, /item\.agentStatus === 'ready'/);
-  assert.doesNotMatch(webClient, /item\.type !== 'misc' && item\.status === 'active' && item\.agentStatus/);
-  assert.match(webClient, /className = 'panel-action agent-action'/);
-  assert.match(webClient, /indicator\.disabled = item\.status !== 'active'/);
-  assert.match(webClient, /const indicator = document\.createElement\('button'\)/);
-  assert.doesNotMatch(webClient, /createElement\(focusable \? 'button' : 'span'\)/);
-  assert.doesNotMatch(webClient, /label\.textContent = (?:provider|'shell')/);
-  assert.match(webClient, /\/icons\/openai\.svg/);
-  assert.match(webClient, /\/icons\/claude\.svg/);
-  assert.match(webClient, /agent-icon-\$\{provider\}/);
-  assert.match(indexHtml, /\.agent-icon-claude \{ transform: scale\(1\.25\); \}/);
-  assert.match(indexHtml, /\.agent-icon-codex \{ transform: scale\(2\); \}/);
-  assert.match(webClient, /focusAgent\(item, indicator\)/);
-  assert.match(webClient, /focus-\$\{panel\}/);
-  assert.match(webClient, /'agent-set', \{ agent: selected \}/);
-  assert.match(webClient, /function agentToggleValue\(toggle\)/);
-  assert.match(webClient, /function updateAgentToggle\(toggle, agent, busy = false\)/);
-  assert.match(webClient, /agent: agentToggleValue\(newRepoAgent\)/);
-  assert.match(webClient, /agent: agentToggleValue\(newScratchpadAgent\)/);
-  assert.match(webClient, /function renderRecentRepositories\(repositories = recentRepositoryValues\)/);
-  assert.match(webClient, /renderRecentRepositories\(body\.recentRepositories\)/);
-  assert.match(webClient, /function setRecentRepositoryMenu\(open\)/);
-  assert.match(webClient, /function selectRecentRepository\(repository\)/);
-  assert.match(webClient, /newRepoRepositoryToggle\.addEventListener\('click'/);
-  assert.match(webClient, /No repositories used in the last three months/);
-  assert.match(webClient, /\/ws\/link-suggestions\/\$\{encodeURIComponent\(provider\)\}/);
-  assert.match(webClient, /function creationLinkRefs\(inputs, addedLinks\)/);
-  assert.match(webClient, /function stageCreationLink\(input\)/);
-  assert.match(webClient, /function submitCreationLink\(input\)/);
-  assert.match(webClient, /function stagePendingCreationLinks\(inputs\)/);
-  assert.match(webClient, /links: creationLinkRefs\(newRepoLinkInputs, newRepoAddedLinks\)/);
-  assert.match(webClient, /links: creationLinkRefs\(newScratchpadLinkInputs, newScratchpadAddedLinks\)/);
-  assert.match(webClient, /function renderLinkSuggestions\(input, suggestions\)/);
-  assert.match(webClient, /pill\.className = 'issue-pill link-entry-value'/);
-  assert.match(webClient, /issue-pill-icon issue-pill-icon-\$\{iconName\}/);
-  assert.match(webClient, /function scheduleLinkSuggestionSearch\(input\)/);
-  assert.match(webClient, /`\?q=\$\{encodeURIComponent\(query\)\}`/);
-  assert.match(webClient, /setTimeout\(\(\) => openLinkSuggestionMenu\(input\), 200\)/);
-  assert.match(webClient, /the API daemon is out of date; run ws web start to restart it/);
-  assert.match(webClient, /date\.toLocaleString\(\)/);
-  assert.match(webClient, /filters\.addEventListener\('change', \(\) =>/);
-  assert.match(webClient, /location\.search/);
-  assert.match(webClient, /history\.pushState/);
-  assert.match(webClient, /url\.searchParams\.set\('session', session\)/);
-  assert.match(webClient, /history\.back\(\)/);
-  assert.match(webClient, /function syncModalFromUrl/);
-  assert.match(webClient, /openSession\(session, \{ expectedSession: session \}\)/);
-  assert.match(webClient, /popstate/);
-  assert.match(webClient, /function renderPagination/);
-  assert.match(webClient, /function goToPage/);
-  assert.match(webClient, /query\.set\('page', String\(currentPage\)\)/);
-  assert.match(webClient, /query\.set\('perpage', perpageSelect\.value\)/);
-  assert.match(webClient, /function submitDetailLink\(input\)/);
-  assert.match(webClient, /function removeDetailLink\(ref\)/);
-  assert.match(webClient, /function openSelectedPath/);
-  assert.match(webClient, /postWorkstreamCommand\(id, 'open-path', \{\}\)/);
-  assert.match(webClient, /'issue-add', \{ refs: \[ref\] \}/);
-  assert.match(webClient, /'issue-remove', \{ ref \}/);
-  assert.match(webClient, /submitLinkInput\(document\.querySelector/);
-  assert.match(webClient, /row-action/);
-  assert.match(webClient, /item\.notesPath/);
-  assert.match(webClient, /item\.worktreePresent/);
-  assert.match(webClient, /\/icons\/folder\.svg/);
-  assert.match(webClient, /\/icons\/notes\.svg/);
-  assert.match(webClient, /'open-notes'/);
-  assert.match(webClient, /Re-Open/);
-  assert.match(webClient, /function refreshActionIcon/);
-  assert.match(webClient, /classList\.add\('refresh-action-icon'\)/);
-  assert.match(webClient, /ai-workstream-theme/);
-  assert.match(webClient, /socket\.addEventListener\('error',.*scheduleReconnect/s);
-  assert.match(webClient, /fetch\('\/ws\/new'\)/);
-  assert.match(webClient, /fetch\('\/ws', \{/);
-  assert.match(webClient, /createNewRepoSession/);
-  assert.match(webClient, /newRepoModal\.showModal\(\)/);
-  assert.match(webClient, /openSession\(id, \{ pushHistory: true \}\)/);
-  assert.match(webClient, /fetch\('\/ws\/scratchpad', \{/);
-  assert.match(webClient, /createNewScratchpadSession/);
-  assert.match(webClient, /newScratchpadModal\.showModal\(\)/);
-  assert.match(webClient, /scratchpadSlug/);
   const listing = await fetch(`${base}/ws/all/?type=repo&status=all&page=0&perpage=25`);
   assert.equal(listing.status, 200);
   const listingBody = await listing.json();
@@ -1319,4 +1039,98 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(prChecks.filter(
     (check) => check.id === createdFromWeb.workstream.id
   ).length, checksBeforeClose + 1);
+});
+
+test('notes editor endpoints read, write, and remember markdown files', async (t) => {
+  const { db, dir, config } = fixture(t);
+  const service = createApiService({
+    db,
+    config,
+    cwd: '/outside',
+    pollInterval: 0,
+    // A Thursday, so "this week" is the 2026-06-22 week.
+    clock: () => '2026-06-25T16:30:00.000Z',
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      service.server.once('error', reject);
+      service.server.listen(0, '127.0.0.1', resolve);
+    });
+  } catch (error) {
+    if (error.code === 'EPERM' || error.code === 'EACCES') {
+      t.skip(`local sockets unavailable: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+  t.after(() => service.close());
+  const base = `http://127.0.0.1:${service.server.address().port}`;
+  const today = `## ${new Date('2026-06-25T16:30:00.000Z').toLocaleDateString('en-US', { weekday: 'long' })}`;
+
+  const empty = await (await fetch(`${base}/notes/files`)).json();
+  assert.equal(empty.root, join(dir, 'notes'));
+  // Only the work tree is offered: no journal, and no per-session `ws note` files.
+  assert.deepEqual(empty.weekly.map((entry) => [entry.kind, entry.exists]), [['work', false]]);
+  assert.deepEqual(empty.files, []);
+
+  const weekly = await fetch(`${base}/notes/weekly`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'work' }),
+  });
+  assert.equal(weekly.status, 200);
+  const note = await weekly.json();
+  assert.equal(note.created, true);
+  assert.equal(note.path, join('work', '2026', '2026-06-22-week.md'));
+  assert.match(note.todayHeading, new RegExp(`^${today}`));
+  assert.equal(note.todayLine > 0, true);
+
+  mkdirSync(join(dir, 'notes', 'journal', '2026'), { recursive: true });
+  writeFileSync(join(dir, 'notes', 'journal', '2026', '2026-06-22-week.md'), '# private');
+  mkdirSync(join(dir, 'notes', 'work', '2026', 'workstream', '7-example'), { recursive: true });
+  writeFileSync(join(dir, 'notes', 'work', '2026', 'workstream', '7-example', 'note.md'), '# session note');
+
+  const listed = await (await fetch(`${base}/notes/files`)).json();
+  assert.deepEqual(listed.files.map((file) => file.path), [note.path]);
+  assert.equal(listed.weekly.length, 1);
+  assert.equal(listed.weekly[0].exists, true);
+
+  const saved = await fetch(`${base}/notes/file`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: note.path, content: `${note.content}- [x] wrote the editor`, version: note.version }),
+  });
+  assert.equal(saved.status, 200);
+  const reread = await (await fetch(`${base}/notes/file?path=${encodeURIComponent(note.path)}`)).json();
+  assert.match(reread.content, /- \[x\] wrote the editor\n$/);
+
+  const stale = await fetch(`${base}/notes/file`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: note.path, content: 'clobbered', version: note.version }),
+  });
+  assert.equal(stale.status, 409);
+
+  const escape = await fetch(`${base}/notes/file?path=${encodeURIComponent('../../etc/passwd')}`);
+  assert.equal(escape.status, 400);
+  assert.equal((await fetch(`${base}/notes/file?path=work/2026/absent.md`)).status, 404);
+  assert.equal((await fetch(`${base}/notes/nope`)).status, 404);
+
+  const tabs = await fetch(`${base}/notes/tabs`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope: 'global', tabs: [{ path: note.path }], activePath: note.path }),
+  });
+  assert.equal(tabs.status, 200);
+  const remembered = await (await fetch(`${base}/notes/tabs?scope=global`)).json();
+  assert.deepEqual(remembered.tabs.map((tab) => tab.path), [note.path]);
+  assert.equal(remembered.activePath, note.path);
+  assert.deepEqual((await (await fetch(`${base}/notes/tabs?scope=other`)).json()).tabs, []);
+
+  const rejected = await fetch(`${base}/notes/tabs`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tabs: [{ path: '../escape.md' }] }),
+  });
+  assert.equal(rejected.status, 400);
 });

@@ -48,6 +48,17 @@
   font-display: swap;
 }
 
+/* Nerd Fonts symbol coverage (Powerline, Devicons, Font Awesome, Octicons,
+   Codicons, Material Design, box drawing, braille) as a fallback face, so every
+   terminal font below renders them without shipping a patched build of each. */
+@font-face {
+  font-family: "Symbols Nerd Font Mono";
+  src: url("/v2/fonts/symbols-nerd-font-mono.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 @theme inline {
   --color-page: var(--page);
   --color-ink: var(--ink);
