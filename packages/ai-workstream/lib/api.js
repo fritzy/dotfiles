@@ -61,6 +61,8 @@ import {
   killBrowserTerminalSession,
   panelStatesInSession,
   replaceAgentInSession,
+  resetAllBrowserTerminalSessions,
+  resetBrowserTerminalSession,
   renameTabInSession,
   togglePanelInSession,
 } from './zellij.js';
@@ -107,7 +109,7 @@ const BROWSER_UI_SCOPES = new Set(['workspaces', 'bottom-terminals']);
 const BROWSER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 export const API_COMMANDS = [
   'pause', 'resume', 'archive', 'close', 'rename', 'log', 'issue-add', 'issue-remove', 'panel-toggle', 'open-path',
-  'open-notes', 'focus-agent', 'focus-shell', 'agent-set',
+  'open-notes', 'focus-agent', 'focus-shell', 'agent-set', 'terminal-reset',
 ];
 
 export class ApiError extends Error {
@@ -478,8 +480,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
     if (command === 'archive' || command === 'close') {
       throw new ApiError(400, `configured location "${id}" cannot be archived; pause its tab instead`);
     }
-    if (!['pause', 'resume', 'focus-agent', 'focus-shell', 'panel-toggle', 'agent-set'].includes(command)) {
-      throw new ApiError(400, `configured location "${id}" only supports pause, resume, open-path, focus-agent, focus-shell, panel-toggle, and agent-set`);
+    if (!['pause', 'resume', 'focus-agent', 'focus-shell', 'panel-toggle', 'agent-set', 'terminal-reset'].includes(command)) {
+      throw new ApiError(400, `configured location "${id}" only supports pause, resume, open-path, focus-agent, focus-shell, panel-toggle, agent-set, and terminal-reset`);
     }
     let result = {};
     try {
@@ -513,6 +515,10 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
         if (panel === 'shell' && result.open === false) {
           setConfiguredLocationShellStatus(db, id, null);
         }
+      } else if (command === 'terminal-reset') {
+        setSelectedAgent(db, id, selectedAgent(db, id, defaultAgent));
+        setConfiguredLocationShellStatus(db, id, null);
+        result = { browserTerminals: 'reset_requested' };
       } else {
         const agent = requiredAgent(body.agent);
         const previous = selectedAgent(db, id, defaultAgent);
@@ -534,6 +540,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
             ? `focus ${command === 'focus-shell' ? 'shell' : 'agent'} panel`
             : command === 'panel-toggle'
               ? 'toggle Zellij panel'
+              : command === 'terminal-reset'
+                ? 'reset browser terminals'
               : 'change agent';
       throw new ApiError(502, `could not ${action}: ${error.message}`);
     }
@@ -567,6 +575,11 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
       result = { browserTerminals: 'resume_requested', panels };
       break;
     }
+    case 'terminal-reset':
+      setSelectedAgent(db, row.id, selectedAgent(db, row.id, defaultAgent));
+      setShellStatus(db, row.id, null);
+      result = { browserTerminals: 'reset_requested' };
+      break;
     case 'archive':
     case 'close': {
       const remove = body.remove === true;
@@ -840,6 +853,8 @@ export function createApiService({
   spawnTerminalAttach = spawnZellijAttachTerminal,
   ensureTerminalSession = ensureBrowserTerminalSession,
   killTerminalSession = killBrowserTerminalSession,
+  resetTerminalSession = resetBrowserTerminalSession,
+  resetAllTerminalSessions = resetAllBrowserTerminalSessions,
   terminalSessionConfigFile = browserTerminalConfigFile,
   notesRoot = config.paths.notes,
   dataDir = config.paths.data,
@@ -998,6 +1013,13 @@ export function createApiService({
     }
   };
 
+  const closeAllBrowserTerminals = () => {
+    for (const [socket] of [...terminalClients]) {
+      disposeTerminalClient(socket, { claim: false });
+      if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
+    }
+  };
+
   // Disconnecting a websocket only detaches its Zellij client. Deliberate
   // workstream lifecycle actions stop every persistent role session; changing
   // agents stops only the agent role. Best-effort cleanup must not make the
@@ -1011,6 +1033,10 @@ export function createApiService({
       }
     }
   };
+
+  const resetPersistentTerminalSessions = (sessionId) => PANEL_ROLES.map((role) => (
+    resetTerminalSession({ sessionId: String(sessionId), role })
+  ));
 
   const terminateBrowserTerminal = (terminalSession, identity) => {
     for (const [clientSocket, current] of [...terminalClients]) {
@@ -1369,6 +1395,19 @@ export function createApiService({
           })),
         });
       }
+      if (req.method === 'POST' && url.pathname === '/ws/terminal-reset') {
+        await jsonBody(req);
+        closeAllBrowserTerminals();
+        let result;
+        try {
+          result = resetAllTerminalSessions();
+        } catch (error) {
+          throw new ApiError(502, `could not reset browser terminals: ${error.message}`);
+        }
+        broadcastChanges();
+        broadcastMiscChanges();
+        return json(res, 200, { ok: true, result });
+      }
 
       if (url.pathname.startsWith('/notes/')) {
         return await notesRoute(req, res, url);
@@ -1490,6 +1529,14 @@ export function createApiService({
         if (parts[2] === 'agent-set' && result.result.changed) {
           closeBrowserTerminals(parts[1], 'agent');
           stopPersistentTerminalSessions(parts[1], 'agent');
+        }
+        if (parts[2] === 'terminal-reset') {
+          closeBrowserTerminals(parts[1]);
+          try {
+            result.result.terminals = resetPersistentTerminalSessions(parts[1]);
+          } catch (error) {
+            throw new ApiError(502, `could not reset browser terminals: ${error.message}`);
+          }
         }
         broadcastChanges();
         if (result.workstream.type === 'misc') broadcastMiscChanges();

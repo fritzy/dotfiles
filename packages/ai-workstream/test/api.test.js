@@ -247,6 +247,8 @@ test('POST command model mutates only supported workstream state', (t) => {
     config,
   });
   assert.equal(response.workstream.status, 'paused');
+  response = executeWorkstreamCommand(db, 'dotfiles', 'terminal-reset', {}, { config });
+  assert.deepEqual(response.result, { browserTerminals: 'reset_requested' });
   response = executeWorkstreamCommand(db, 'savefiles', 'resume', { panels: ['shell', 'agent'] }, {
     config,
   });
@@ -296,6 +298,8 @@ test('POST command model mutates only supported workstream state', (t) => {
   assert.deepEqual(replacements, [[repo.id, 'codex'], ['dotfiles', 'codex']]);
   assert.equal(selectedAgent(db, repo.id, 'claude'), 'codex');
   assert.equal(selectedAgent(db, 'dotfiles', 'claude'), 'codex');
+  response = executeWorkstreamCommand(db, String(repo.id), 'terminal-reset');
+  assert.deepEqual(response.result, { browserTerminals: 'reset_requested' });
   assert.throws(
     () => executeWorkstreamCommand(db, String(closed.id), 'open-path', {}, { openPath: () => ({}) }),
     (error) => error instanceof ApiError && error.status === 404,
@@ -363,6 +367,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const terminalPtys = [];
   const ensuredTerminalSessions = [];
   const killedTerminalSessions = [];
+  const resetTerminalSessions = [];
+  let resetAllCalls = 0;
   const killedTerminalNames = () => killedTerminalSessions.map(browserTerminalSessionName);
   const fakeTerminal = (options) => {
     let dataListener = null;
@@ -514,6 +520,14 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     killTerminalSession: (identity) => {
       killedTerminalSessions.push(identity);
       return true;
+    },
+    resetTerminalSession: (identity) => {
+      resetTerminalSessions.push(identity);
+      return { session: browserTerminalSessionName(identity), reset: true };
+    },
+    resetAllTerminalSessions: () => {
+      resetAllCalls += 1;
+      return { count: 2, sessions: ['ws-browser-shell-7', 'ws-browser-agent-7'] };
     },
   });
   try {
@@ -1258,6 +1272,43 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   returningSocket.send(JSON.stringify({ type: 'terminate' }));
   await Promise.all([earlyClosed, returningClosed]);
   assert.equal(killedTerminalNames().at(-1), browserTerminalSessionName({ terminalId: 'recovery' }));
+
+  const resetSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?session=${repo.id}&role=shell&client=reset-test`);
+  const resetClaimed = nextTerminalMessage(resetSocket, 'claimed');
+  await new Promise((resolve, reject) => {
+    resetSocket.addEventListener('open', resolve, { once: true });
+    resetSocket.addEventListener('error', () => reject(new Error('reset terminal websocket failed')), { once: true });
+  });
+  await resetClaimed;
+  const resetPty = terminalPtys.at(-1);
+  const resetSocketClosed = new Promise((resolve) => resetSocket.addEventListener('close', resolve, { once: true }));
+  const resetOne = await fetch(`${base}/ws/${repo.id}/terminal-reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(resetOne.status, 200);
+  await resetSocketClosed;
+  assert.equal(resetPty.killed, true);
+  assert.deepEqual((await resetOne.json()).result.terminals, ['shell', 'editor', 'agent'].map((role) => ({
+    session: browserTerminalSessionName({ sessionId: String(repo.id), role }),
+    reset: true,
+  })));
+  assert.deepEqual(resetTerminalSessions.slice(-3), ['shell', 'editor', 'agent'].map((role) => ({
+    sessionId: String(repo.id), role,
+  })));
+
+  const resetAll = await fetch(`${base}/ws/terminal-reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(resetAll.status, 200);
+  assert.deepEqual(await resetAll.json(), {
+    ok: true,
+    result: { count: 2, sessions: ['ws-browser-shell-7', 'ws-browser-agent-7'] },
+  });
+  assert.equal(resetAllCalls, 1);
 });
 
 test('notes editor endpoints read, write, and remember markdown files', async (t) => {

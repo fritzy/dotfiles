@@ -3,7 +3,7 @@ import {
 } from 'react';
 
 import {
-  ArchiveIcon, AssetIcon, EditorIcon, RobotIcon, ShellIcon, Spinner, XIcon,
+  ArchiveIcon, AssetIcon, EditorIcon, RefreshIcon, RobotIcon, ShellIcon, Spinner, XIcon,
 } from './icons.jsx';
 import { LinkPill } from './LinkEditor.jsx';
 import { panelsForMode } from './constants.js';
@@ -163,7 +163,7 @@ function SplitHandle({
 }
 
 export default function SessionWorkspace({
-  session, target, visible, focusedPanel, onPanelFocus, onDetails, onArchive, onClose, onAgentChange,
+  session, target, visible, focusedPanel, onPanelFocus, onDetails, onArchive, onClose, onAgentChange, onReset,
   panelMode = 'two', onPanelModeChange, onOpenNotes, terminalMode, fontFamily, onSidebarFocus, onBottomTerminalFocus,
   onFullscreenChange, fullscreenExitRevision, onToggleSidebar, onNewTerminal,
 }) {
@@ -177,6 +177,8 @@ export default function SessionWorkspace({
   const [notesError, setNotesError] = useState('');
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState('');
+  const [terminalsResetting, setTerminalsResetting] = useState(false);
+  const [terminalResetError, setTerminalResetError] = useState('');
   const [fontSizes, setFontSizes] = useState(() => readFontSizes(session.id));
   const [fullscreenRole, setFullscreenRole] = useState(null);
   const fullscreenReportedRef = useRef(false);
@@ -303,6 +305,20 @@ export default function SessionWorkspace({
     }
   }
 
+  async function resetTerminals() {
+    if (terminalsResetting) return;
+    if (!window.confirm(`Reset every terminal for ${displayName}? Running shell, editor, and agent processes will be stopped and recreated.`)) return;
+    setTerminalsResetting(true);
+    setTerminalResetError('');
+    try {
+      await onReset(session);
+    } catch (cause) {
+      setTerminalResetError(cause.message);
+    } finally {
+      setTerminalsResetting(false);
+    }
+  }
+
   function changeFontSize(role, delta) {
     setFontSizes((current) => ({
       ...current,
@@ -354,12 +370,15 @@ export default function SessionWorkspace({
             {notesError && <span className="max-w-48 truncate text-xs text-danger" role="alert" title={notesError}>{notesError}</span>}
           </nav>
         )}
-        {archiveError && <span className="max-w-48 truncate text-xs text-danger" role="alert" title={archiveError}>{archiveError}</span>}
+        {(archiveError || terminalResetError) && <span className="max-w-48 truncate text-xs text-danger" role="alert" title={archiveError || terminalResetError}>{archiveError || terminalResetError}</span>}
         {canArchiveSession(session) && (
           <IconButton compact label="Archive session" title="Archive session" disabled={archiving} onClick={archiveSession}>
             {archiving ? <Spinner /> : <ArchiveIcon />}
           </IconButton>
         )}
+        <IconButton compact label="Reset terminal sessions" title="Stop and recreate shell, editor, and agent terminals" disabled={terminalsResetting} onClick={resetTerminals}>
+          {terminalsResetting ? <Spinner /> : <RefreshIcon />}
+        </IconButton>
         <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={() => onDetails(session.id)}>Details</Button>
         <IconButton compact label="Close terminal workspace" title="Close terminal workspace" onClick={onClose}><XIcon /></IconButton>
       </header>}

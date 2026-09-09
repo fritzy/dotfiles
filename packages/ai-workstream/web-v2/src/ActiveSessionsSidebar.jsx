@@ -181,6 +181,7 @@ export default function ActiveSessionsSidebar({
   theme, onThemeChange,
   terminalMode, onTerminalModeChange,
   terminalFont, onTerminalFontChange,
+  onResetTerminals,
   syncWindowFullscreen, onSyncWindowFullscreenChange,
   onWorkspaceFocus,
   focusedPanel, onPanelFocus, keyboardEnabled, sidebarWidth, sidebarWidthPixels, sidebarResizing,
@@ -191,6 +192,8 @@ export default function ActiveSessionsSidebar({
   const groups = useMemo(() => groupActiveSessionsByRepo(items), [items]);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [view, setView] = useState('sessions');
+  const [terminalsResetting, setTerminalsResetting] = useState(false);
+  const [terminalResetError, setTerminalResetError] = useState('');
   const [highlightedNavigationKey, setHighlightedNavigationKey] = useState(null);
   const navigationRows = useRef(new Map());
   const panelRef = useRef(null);
@@ -320,6 +323,21 @@ export default function ActiveSessionsSidebar({
     onPanelFocus(panelName(nextView));
   }
 
+  async function resetTerminals() {
+    if (terminalsResetting) return;
+    const daemonName = target?.name || target?.id || 'this machine';
+    if (!window.confirm(`Reset every FritzWorks terminal on ${daemonName}? All running shell, editor, and agent processes on this daemon will be stopped; open views will reconnect fresh.`)) return;
+    setTerminalsResetting(true);
+    setTerminalResetError('');
+    try {
+      await onResetTerminals();
+    } catch (cause) {
+      setTerminalResetError(cause.message);
+    } finally {
+      setTerminalsResetting(false);
+    }
+  }
+
   return (
     <aside className="relative min-h-screen min-w-0 self-stretch" aria-label="FritzWorks sidebar">
       <div
@@ -443,6 +461,14 @@ export default function ActiveSessionsSidebar({
                     <span className="text-xs opacity-75">Fullscreen the browser window with the focused terminal.</span>
                   </span>
                 </label>
+              </section>
+              <section className="grid gap-2 border-t border-primary/30 pt-4">
+                <h2 className="text-sm font-bold text-primary">Terminal recovery</h2>
+                <p className="text-xs text-muted">Delete every FritzWorks Zellij session on this daemon and recreate open terminal views from their configured layouts.</p>
+                <Button variant="danger" disabled={terminalsResetting} onClick={resetTerminals}>
+                  {terminalsResetting ? <><Spinner /> Resetting…</> : 'Reset all terminal sessions'}
+                </Button>
+                {terminalResetError && <p className="text-xs text-danger" role="alert">{terminalResetError}</p>}
               </section>
             </div>
           )}

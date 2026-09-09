@@ -182,6 +182,10 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(daemonPane, /key=\{workspaceSession\.id\}/);
   assert.match(daemonPane, /visible=\{String\(workspaceSession\.id\) === activeWorkspaceId\}/);
   assert.match(daemonPane, /onArchive=\{archiveWorkspace\}/);
+  assert.match(daemonPane, /mutate\(item, 'terminal-reset'\)/);
+  assert.match(daemonPane, /resetAllTerminalSessions\(target\)/);
+  assert.match(daemonPane, /onReset=\{resetWorkspaceTerminals\}/);
+  assert.match(daemonPane, /onResetTerminals=\{resetDaemonTerminals\}/);
   assert.match(daemonPane, /onClose=\{\(\) => closeWorkspace\(workspaceSession\.id\)\}/);
   assert.match(daemonPane, /command === 'resume' && result\.workstream/);
   assert.match(daemonPane, /command === 'pause' \|\| command === 'archive' \|\| command === 'close'/);
@@ -316,6 +320,8 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(activeSidebar, /id="sidebar-terminal-mode"/);
   assert.match(activeSidebar, /id="sidebar-terminal-font"/);
   assert.match(activeSidebar, /Object\.entries\(TERMINAL_FONTS\)/);
+  assert.match(activeSidebar, /Reset all terminal sessions/);
+  assert.match(activeSidebar, /Delete every FritzWorks Zellij session/);
   assert.match(activeSidebar, /<option value="dark">Dark<\/option>/);
   assert.match(activeSidebar, /<option value="light">Light<\/option>/);
   assert.doesNotMatch(app, /<PanelModeToggle/);
@@ -329,6 +335,8 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(utils, /!\/\[gjpqy\]\//);
   assert.match(utils, /pt-\[5px\] pb-\[3px\]/);
   assert.match(daemonPane, /<SessionDetailModal/);
+  assert.match(detail, /run\('terminal-reset'\)/);
+  assert.match(detail, /Reset terminals/);
   assert.match(daemonPane, /<NewSessionModal/);
   assert.match(daemonPane, /<BottomTabs/);
   assert.match(bottomTabs, /aria-label="Terminals and Markdown files"/);
@@ -515,6 +523,8 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(sessionWorkspace, /className="ml-auto flex min-w-0 items-center gap-1\.5"/);
   assert.match(sessionWorkspace, /compact/);
   assert.match(sessionWorkspace, /onAgentChange\(session, agent\)/);
+  assert.match(sessionWorkspace, /onReset\(session\)/);
+  assert.match(sessionWorkspace, /label="Reset terminal sessions"/);
   assert.match(daemonPane, /onAgentChange=\{changeWorkspaceAgent\}/);
   assert.match(daemonPane, /mutate\(item, 'agent-set', \{ agent \}\)/);
   assert.match(sessionWorkspace, /role=\{role\}/);

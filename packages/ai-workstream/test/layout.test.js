@@ -16,6 +16,8 @@ import {
   panelStatesInSession,
   renameTabInSession,
   replaceAgentInSession,
+  resetAllBrowserTerminalSessions,
+  resetBrowserTerminalSession,
   renderLayout,
   togglePanelInSession,
 } from '../lib/zellij.js';
@@ -114,6 +116,43 @@ test('browser terminals discard an exited snapshot, recreate the session, and re
   assert.equal(calls.filter((args) => args.includes('--create-background')).length, 1);
   assert.equal(killBrowserTerminalSession(identity, { run }), true);
   assert.equal(live, false);
+});
+
+test('browser terminal resets force-delete one identity or every FritzWorks session', () => {
+  const oneCalls = [];
+  const one = resetBrowserTerminalSession({ sessionId: 'dotfiles', role: 'agent' }, {
+    run: (args) => { oneCalls.push(args); return { status: 0, stdout: '', stderr: '' }; },
+  });
+  assert.deepEqual(one, { session: 'ws-browser-agent-dotfiles', reset: true });
+  assert.deepEqual(oneCalls, [['delete-session', '--force', 'ws-browser-agent-dotfiles']]);
+
+  const allCalls = [];
+  const all = resetAllBrowserTerminalSessions({
+    run: (args) => {
+      allCalls.push(args);
+      if (args[0] === 'list-sessions') {
+        return {
+          status: 0,
+          stdout: [
+            'ws-browser-shell-7 [Created 1m ago] (current)',
+            'ordinary-zellij [Created 2m ago]',
+            'ws-browser-agent-7 [Created 3m ago] (EXITED - attach to resurrect)',
+          ].join('\n'),
+          stderr: '',
+        };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+  assert.deepEqual(all, {
+    count: 2,
+    sessions: ['ws-browser-shell-7', 'ws-browser-agent-7'],
+  });
+  assert.deepEqual(allCalls.slice(1), [
+    ['delete-session', '--force', 'ws-browser-shell-7'],
+    ['delete-session', '--force', 'ws-browser-agent-7'],
+  ]);
+  assert.equal(allCalls.flat().includes('ordinary-zellij'), false);
 });
 
 test('startup layout contains only the first panel outside a nested pane container', () => {

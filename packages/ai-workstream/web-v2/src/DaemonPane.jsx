@@ -4,7 +4,7 @@ import {
 
 import {
   getWorkstream, listActivePausedWorkstreams, postCommand, readBrowserState,
-  writeBrowserState, wsUrl,
+  resetAllTerminalSessions, writeBrowserState, wsUrl,
 } from './api.js';
 import {
   DEFAULT_WORKSPACE_ROLES, SOCKET_MESSAGE_TYPES,
@@ -331,6 +331,12 @@ export default function DaemonPane({
 
   const openWorkspaceNotes = useCallback((item) => mutate(item, 'open-notes'), [mutate]);
   const archiveWorkspace = useCallback((item) => mutate(item, 'archive'), [mutate]);
+  const resetWorkspaceTerminals = useCallback((item) => mutate(item, 'terminal-reset'), [mutate]);
+  const resetDaemonTerminals = useCallback(async () => {
+    const result = await resetAllTerminalSessions(target);
+    setRevision((value) => value + 1);
+    return result;
+  }, [target]);
 
   const focusSessionsSidebar = useCallback(() => {
     onShowSidebar();
@@ -400,6 +406,7 @@ export default function DaemonPane({
             onTerminalModeChange={onTerminalModeChange}
             terminalFont={terminalFont}
             onTerminalFontChange={onTerminalFontChange}
+            onResetTerminals={resetDaemonTerminals}
             syncWindowFullscreen={syncWindowFullscreen}
             onSyncWindowFullscreenChange={onSyncWindowFullscreenChange}
             onWorkspaceFocus={focusActiveWorkspace}
@@ -426,6 +433,7 @@ export default function DaemonPane({
                 onArchive={archiveWorkspace}
                 onClose={() => closeWorkspace(workspaceSession.id)}
                 onAgentChange={changeWorkspaceAgent}
+                onReset={resetWorkspaceTerminals}
                 panelMode={workspaceSession.panelMode}
                 onPanelModeChange={(panelMode) => changeWorkspacePanelMode(workspaceSession, panelMode)}
                 onOpenNotes={openWorkspaceNotes}

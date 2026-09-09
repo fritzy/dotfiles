@@ -59,6 +59,12 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
     if (!result) setName(item.name);
   }
 
+  function resetTerminals() {
+    const name = item?.name || item?.branch || item?.id;
+    if (!window.confirm(`Reset every terminal for ${name}? Running shell, editor, and agent processes will be stopped and recreated.`)) return;
+    run('terminal-reset');
+  }
+
   const title = item ? `${item.id}: ${item.name || item.branch}` : `Session ${sessionId}`;
   const branch = item ? branchState(item) : null;
   const branchHref = item ? githubBranchUrl(item) : null;
@@ -86,6 +92,7 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
               onToggle={(panel) => run('panel-toggle', { panel })}
             />
             <div className="ml-auto flex flex-wrap gap-2">
+              <Button variant="danger" disabled={busy} onClick={resetTerminals}><RefreshIcon /> Reset terminals</Button>
               {canArchiveSession(item) && (
                 <IconButton
                   label="Archive session"

@@ -93,6 +93,14 @@ export function postCommand(id, command, body = {}, target) {
   }, target);
 }
 
+export function resetAllTerminalSessions(target) {
+  return request('/ws/terminal-reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }, target);
+}
+
 export function createRepoSession(body, target) {
   return request('/ws', {
     method: 'POST',

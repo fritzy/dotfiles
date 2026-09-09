@@ -52,6 +52,16 @@ function activeSessions(run = zellij) {
     .filter(Boolean);
 }
 
+function deleteSessionSnapshot(session, run) {
+  const result = run(['delete-session', '--force', session]);
+  if (result.error) throw new Error(`cannot reset Zellij session "${session}": ${result.error.message}`);
+  const output = zellijOutput(result);
+  if (result.status !== 0 && !/not found|no active .*sessions?/i.test(output)) {
+    throw new Error(`cannot reset Zellij session "${session}"${output ? `: ${output}` : ''}`);
+  }
+  return result.status === 0;
+}
+
 function sessionHasClients(session, run) {
   const result = run(['--session', session, 'action', 'list-clients']);
   if (result.error) return false;
@@ -742,6 +752,29 @@ export function killBrowserTerminalSession(identity, { run = detachedZellij } = 
     throw new Error(`failed to kill browser terminal session "${session}"${output ? `: ${output}` : ''}`);
   }
   return true;
+}
+
+// Force-delete both a live browser terminal and any serialized resurrection
+// snapshot. The API detaches websocket clients first so they reconnect through
+// ensureBrowserTerminalSession() and rebuild from the current command layout.
+export function resetBrowserTerminalSession(identity, { run = detachedZellij } = {}) {
+  const session = browserTerminalSessionName(identity);
+  return { session, reset: deleteSessionSnapshot(session, run) };
+}
+
+export function resetAllBrowserTerminalSessions({ run = detachedZellij } = {}) {
+  const result = run(['list-sessions', '--no-formatting']);
+  if (result.error) throw new Error(`cannot query Zellij sessions: ${result.error.message}`);
+  if (result.status !== 0) {
+    const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+    if (/no active .*sessions?/i.test(output)) return { count: 0, sessions: [] };
+    throw new Error(`cannot query Zellij sessions${output.trim() ? `: ${output.trim()}` : ''}`);
+  }
+  const sessions = lines(result.stdout)
+    .map((line) => line.replace(/\s+\[Created\b.*$/, '').trim())
+    .filter((session) => session.startsWith('ws-browser-'));
+  const reset = sessions.filter((session) => deleteSessionSnapshot(session, run));
+  return { count: reset.length, sessions: reset };
 }
 
 export function killBrowserAgentSession(id, options = {}) {
