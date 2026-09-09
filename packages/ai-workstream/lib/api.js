@@ -76,9 +76,11 @@ import {
   notesRelativePath,
   openWeeklyNote,
   readEditorTabs,
+  readMarkdownFile,
   readNotesFile,
   weeklyNotePath,
   writeEditorTabs,
+  writeMarkdownFile,
   writeNotesFile,
 } from './notes-files.js';
 import { DAEMON_REVISION } from './daemon.js';
@@ -1181,7 +1183,16 @@ export function createApiService({
     if (closing) return Promise.resolve(null);
     const key = String(id);
     if (pendingPrRefreshes.has(key)) return pendingPrRefreshes.get(key);
-    const row = prRefreshTarget(id);
+    let row;
+    try {
+      row = prRefreshTarget(id);
+    } catch (error) {
+      // This lookup runs synchronously from terminal output callbacks. Never let
+      // an exhausted SQLite busy timeout escape through node-pty and terminate
+      // the daemon; the next input/output event can retry the best-effort check.
+      if (!closing) process.stderr.write(`ai-workstream API PR status: ${error.message}\n`);
+      return Promise.resolve(null);
+    }
     if (!row || (!force && !prCheckDue(row, {
       reference: clock(), intervalMs: prCheckIntervalMs,
     }))) return Promise.resolve(null);
@@ -1248,7 +1259,31 @@ export function createApiService({
       }
       if (req.method === 'PUT' && segment === 'tabs') {
         const body = await jsonBody(req);
-        return json(res, 200, writeEditorTabs(dataDir, body.scope || 'global', body, { root: notesRoot }));
+        return json(res, 200, writeEditorTabs(dataDir, body.scope || 'global', body, {
+          root: notesRoot, cwd,
+        }));
+      }
+    } catch (error) {
+      if (error instanceof NotesFileError) throw new ApiError(error.status, error.message);
+      throw error;
+    }
+    throw new ApiError(404, 'not found');
+  };
+
+  // General Markdown files use a separate route so the long-standing notes API
+  // remains confined to notesRoot. Paths returned here are normalized absolute
+  // paths and can therefore be restored without depending on the launch cwd.
+  const markdownRoute = async (req, res, url) => {
+    const segment = url.pathname.slice('/markdown/'.length);
+    try {
+      if (req.method === 'GET' && segment === 'file') {
+        return json(res, 200, readMarkdownFile(url.searchParams.get('path'), { cwd }));
+      }
+      if (req.method === 'PUT' && segment === 'file') {
+        const body = await jsonBody(req);
+        return json(res, 200, writeMarkdownFile(body.path, body.content, {
+          version: body.version ?? null, cwd,
+        }));
       }
     } catch (error) {
       if (error instanceof NotesFileError) throw new ApiError(error.status, error.message);
@@ -1337,6 +1372,9 @@ export function createApiService({
 
       if (url.pathname.startsWith('/notes/')) {
         return await notesRoute(req, res, url);
+      }
+      if (url.pathname.startsWith('/markdown/')) {
+        return await markdownRoute(req, res, url);
       }
 
       const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
@@ -1538,9 +1576,19 @@ export function createApiService({
         }
         const launch = browserTerminalLaunch(terminalRole, workstream, config);
         const identity = { sessionId: terminalSessionId, role: terminalRole, terminalId };
-        const command = terminalSessionId && terminalRole !== 'agent'
-          ? ['env', `AI_WORKSTREAM_ID=${terminalSessionId}`, launch.command, ...launch.args]
-          : [launch.command, ...launch.args];
+        // The daemon is commonly launched from a desktop entry, where TERM is
+        // either absent or "dumb". These commands run in a real xterm.js-backed
+        // PTY, so give shells and terminal UIs the capabilities they actually
+        // have instead of inheriting the graphical launcher's environment.
+        const command = [
+          'env',
+          'TERM=xterm-256color',
+          'COLORTERM=truecolor',
+          ...(terminalSessionId && terminalRole !== 'agent'
+            ? [`AI_WORKSTREAM_ID=${terminalSessionId}`] : []),
+          launch.command,
+          ...launch.args,
+        ];
         terminalDescriptor = {
           clientId,
           command,

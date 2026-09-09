@@ -125,6 +125,18 @@ export function writeNotesFile({ path, content, version }, target) {
   }, target);
 }
 
+export function readMarkdownFile(path, signal, target) {
+  return request(`/markdown/file?path=${encodeURIComponent(path)}`, { signal }, target);
+}
+
+export function writeMarkdownFile({ path, content, version }, target) {
+  return request('/markdown/file', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content, version }),
+  }, target);
+}
+
 export function openWeeklyNote(kind, target) {
   return request('/notes/weekly', {
     method: 'POST',

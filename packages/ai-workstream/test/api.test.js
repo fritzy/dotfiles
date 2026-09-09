@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -768,7 +770,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(terminalPtys[0].options.session, browserTerminalSessionName({ terminalId: 'default' }));
   assert.deepEqual(ensuredTerminalSessions[0], {
     identity: { sessionId: null, role: 'shell', terminalId: 'default' },
-    command: ['zsh', '-l'],
+    command: ['env', 'TERM=xterm-256color', 'COLORTERM=truecolor', 'zsh', '-l'],
     cwd: process.env.HOME || '/outside',
   });
   const terminalClosed = new Promise((resolve) => terminalSocket.addEventListener('close', resolve, { once: true }));
@@ -791,7 +793,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     sessionId: String(repo.id), role: 'shell', terminalId: 'default',
   }));
   assert.deepEqual(ensuredTerminalSessions[1].command, [
-    'env', `AI_WORKSTREAM_ID=${repo.id}`, 'zsh', '-l',
+    'env', 'TERM=xterm-256color', 'COLORTERM=truecolor',
+    `AI_WORKSTREAM_ID=${repo.id}`, 'zsh', '-l',
   ]);
   const activeBrowserTerminal = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(activeBrowserTerminal.items[0].status, 'active');
@@ -829,7 +832,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     sessionId: String(repo.id), role: 'editor', terminalId: 'default',
   }));
   assert.deepEqual(ensuredTerminalSessions[2].command, [
-    'env', `AI_WORKSTREAM_ID=${repo.id}`, 'nvim', '--clean',
+    'env', 'TERM=xterm-256color', 'COLORTERM=truecolor',
+    `AI_WORKSTREAM_ID=${repo.id}`, 'nvim', '--clean',
   ]);
   const pausedTerminalPromise = nextMessage('browser terminal paused');
   const sessionTerminalClosed = new Promise((resolve) => sessionTerminalSocket.addEventListener('close', resolve, { once: true }));
@@ -859,8 +863,10 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.deepEqual(ensuredTerminalSessions[3].identity, {
     sessionId: 'dotfiles', role: 'agent', terminalId: 'default',
   });
-  assert.equal(ensuredTerminalSessions[3].command[0], 'sh');
-  assert.match(ensuredTerminalSessions[3].command[2], /'claude' '--model' 'sonnet' '--continue'/);
+  assert.deepEqual(ensuredTerminalSessions[3].command.slice(0, 4), [
+    'env', 'TERM=xterm-256color', 'COLORTERM=truecolor', 'sh',
+  ]);
+  assert.match(ensuredTerminalSessions[3].command[5], /'claude' '--model' 'sonnet' '--continue'/);
   assert.equal(terminalPtys[3].options.session, browserTerminalSessionName({
     sessionId: 'dotfiles', role: 'agent', terminalId: 'default',
   }));
@@ -1118,9 +1124,11 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     dotfilesTerminalSocket.addEventListener('open', resolve, { once: true });
     dotfilesTerminalSocket.addEventListener('error', () => reject(new Error('replacement configured terminal websocket failed')), { once: true });
   });
-  assert.equal(ensuredTerminalSessions.at(-1).command[0], 'sh');
-  assert.match(ensuredTerminalSessions.at(-1).command[2], /codex/);
-  assert.match(ensuredTerminalSessions.at(-1).command[2], /resume/);
+  assert.deepEqual(ensuredTerminalSessions.at(-1).command.slice(0, 4), [
+    'env', 'TERM=xterm-256color', 'COLORTERM=truecolor', 'sh',
+  ]);
+  assert.match(ensuredTerminalSessions.at(-1).command[5], /codex/);
+  assert.match(ensuredTerminalSessions.at(-1).command[5], /resume/);
 
   const dotfilesPausePromise = nextMessage('configured browser terminal paused');
   const dotfilesTerminalClosed = new Promise((resolve) => dotfilesTerminalSocket.addEventListener('close', resolve, { once: true }));
@@ -1327,15 +1335,44 @@ test('notes editor endpoints read, write, and remember markdown files', async (t
   assert.equal((await fetch(`${base}/notes/file?path=work/2026/absent.md`)).status, 404);
   assert.equal((await fetch(`${base}/notes/nope`)).status, 404);
 
+  const markdownPath = join(dir, 'standalone.md');
+  writeFileSync(markdownPath, '# Standalone');
+  const markdown = await (await fetch(`${base}/markdown/file?path=${encodeURIComponent(markdownPath)}`)).json();
+  assert.equal(markdown.path, markdownPath);
+  assert.equal(markdown.content, '# Standalone');
+  assert.equal(markdown.todayHeading, undefined);
+  const markdownSaved = await fetch(`${base}/markdown/file`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: markdownPath, content: '# Edited', version: markdown.version }),
+  });
+  assert.equal(markdownSaved.status, 200);
+  assert.equal(readFileSync(markdownPath, 'utf8'), '# Edited\n');
+  const markdownStale = await fetch(`${base}/markdown/file`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: markdownPath, content: '# Stale', version: markdown.version }),
+  });
+  assert.equal(markdownStale.status, 409);
+  assert.equal((await fetch(`${base}/markdown/file?path=${encodeURIComponent(join(dir, 'plain.txt'))}`)).status, 400);
+  assert.equal((await fetch(`${base}/markdown/file?path=${encodeURIComponent(join(dir, 'absent.md'))}`)).status, 404);
+  assert.equal((await fetch(`${base}/markdown/nope`)).status, 404);
+
   const tabs = await fetch(`${base}/notes/tabs`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scope: 'global', tabs: [{ path: note.path }], activePath: note.path }),
+    body: JSON.stringify({
+      scope: 'global',
+      tabs: [{ path: note.path }, { source: 'file', path: markdownPath }],
+      activePath: markdownPath,
+    }),
   });
   assert.equal(tabs.status, 200);
   const remembered = await (await fetch(`${base}/notes/tabs?scope=global`)).json();
-  assert.deepEqual(remembered.tabs.map((tab) => tab.path), [note.path]);
-  assert.equal(remembered.activePath, note.path);
+  assert.deepEqual(remembered.tabs.map((tab) => [tab.source, tab.path]), [
+    ['notes', note.path], ['file', markdownPath],
+  ]);
+  assert.equal(remembered.activePath, markdownPath);
   assert.deepEqual((await (await fetch(`${base}/notes/tabs?scope=other`)).json()).tabs, []);
 
   const rejected = await fetch(`${base}/notes/tabs`, {

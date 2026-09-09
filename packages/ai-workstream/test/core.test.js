@@ -48,6 +48,7 @@ test('recent repositories are unique, ordered by use, and limited to three month
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const db = openDb(join(dir, 'workstreams.db'));
   t.after(() => db.close());
+  assert.equal(Object.values(db.prepare('PRAGMA busy_timeout').get())[0], 5000);
   const add = (org, repo, branch, lastJoined) => upsertWorkstream(db, {
     org, repo, branch, source: org === 'scratch' ? 'scratch' : 'origin',
     path: join(dir, `${org}-${repo}-${branch}`),

@@ -79,7 +79,7 @@ test('browser terminal session names are stable per role and standalone terminal
   );
 });
 
-test('browser terminals recreate a missing Zellij session and reuse a live one', () => {
+test('browser terminals discard an exited snapshot, recreate the session, and reuse a live one', () => {
   const identity = { terminalId: 'terminal-restart' };
   const session = browserTerminalSessionName(identity);
   const calls = [];
@@ -106,6 +106,7 @@ test('browser terminals recreate a missing Zellij session and reuse a live one',
     ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
     { session, created: true },
   );
+  assert.deepEqual(calls[1], ['delete-session', session]);
   assert.deepEqual(
     ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
     { session, created: false },

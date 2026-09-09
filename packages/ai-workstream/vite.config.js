@@ -18,6 +18,7 @@ export default defineConfig({
         ws: true,
       },
       '/notes': 'http://127.0.0.1:7337',
+      '/markdown': 'http://127.0.0.1:7337',
       '/icons': 'http://127.0.0.1:7337',
     },
   },

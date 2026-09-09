@@ -11,11 +11,14 @@ import {
   listNotesFiles,
   openWeeklyNote,
   readEditorTabs,
+  readMarkdownFile,
   readNotesFile,
+  resolveMarkdownFile,
   resolveNotesFile,
   weekTemplate,
   weeklyNotePath,
   writeEditorTabs,
+  writeMarkdownFile,
   writeNotesFile,
 } from '../lib/notes-files.js';
 
@@ -119,6 +122,36 @@ test('writes detect a file that changed on disk since it was opened', (t) => {
   assert.throws(() => writeNotesFile(notes, 'work/2026/fresh.md', 42), (error) => error.status === 400);
 });
 
+test('general markdown files resolve anywhere and retain conflict protection', (t) => {
+  const { notes, dir } = roots(t);
+  mkdirSync(notes, { recursive: true });
+  const project = join(dir, 'project');
+  mkdirSync(project);
+  const path = join(project, 'README.md');
+  writeFileSync(path, '# First');
+
+  assert.equal(resolveMarkdownFile(path), path);
+  assert.equal(resolveMarkdownFile('README.md', { cwd: project }), path);
+  assert.equal(resolveMarkdownFile('~/README.md', { home: project }), path);
+  assert.equal(resolveMarkdownFile('${HOME}/README.md', { home: project }), path);
+  assert.equal(resolveMarkdownFile(join(project, 'README.txt')), null);
+
+  const opened = readMarkdownFile('README.md', { cwd: project });
+  assert.equal(opened.path, path);
+  assert.equal(opened.name, 'README.md');
+  assert.equal(opened.content, '# First');
+
+  const saved = writeMarkdownFile(path, '# Second', { version: opened.version });
+  assert.match(readFileSync(path, 'utf8'), /^# Second\n$/);
+  assert.throws(
+    () => writeMarkdownFile(path, '# Stale', { version: opened.version }),
+    (error) => error.status === 409,
+  );
+  assert.equal(saved.version, readMarkdownFile(path).version);
+  assert.throws(() => readMarkdownFile(join(project, 'missing.md')), (error) => error.status === 404);
+  assert.throws(() => writeMarkdownFile(join(project, 'missing.md'), '# New'), (error) => error.status === 404);
+});
+
 test('markdown files are listed newest first, skipping dot and vendor directories', (t) => {
   const { notes } = roots(t);
   mkdirSync(join(notes, 'work', '2026'), { recursive: true });
@@ -146,26 +179,36 @@ test('markdown files are listed newest first, skipping dot and vendor directorie
 });
 
 test('open editor tabs round-trip through the data directory', (t) => {
-  const { notes, data } = roots(t);
+  const { notes, data, dir } = roots(t);
   mkdirSync(join(notes, 'work'), { recursive: true });
   writeFileSync(join(notes, 'work', 'one.md'), '1');
   writeFileSync(join(notes, 'work', 'two.md'), '2');
 
   assert.deepEqual(readEditorTabs(data), { scope: 'global', tabs: [], activePath: null });
   const written = writeEditorTabs(data, 'global', {
-    tabs: [{ path: 'work/one.md' }, { path: 'work/two.md' }, { path: 'work/one.md' }],
-    activePath: 'work/two.md',
+    tabs: [
+      { path: 'work/one.md' },
+      { path: 'work/two.md' },
+      { path: 'work/one.md' },
+      { source: 'file', path: join(dir, 'outside.md') },
+    ],
+    activePath: join(dir, 'outside.md'),
   }, { root: notes });
-  assert.deepEqual(written.tabs.map((tab) => tab.path), [join('work', 'one.md'), join('work', 'two.md')]);
-  assert.equal(written.activePath, join('work', 'two.md'));
+  assert.deepEqual(written.tabs.map((tab) => [tab.source, tab.path]), [
+    ['notes', join('work', 'one.md')],
+    ['notes', join('work', 'two.md')],
+    ['file', join(dir, 'outside.md')],
+  ]);
+  assert.equal(written.activePath, join(dir, 'outside.md'));
 
   const restored = readEditorTabs(data);
-  assert.deepEqual(restored.tabs.map((tab) => tab.name), ['one.md', 'two.md']);
-  assert.equal(restored.activePath, join('work', 'two.md'));
+  assert.deepEqual(restored.tabs.map((tab) => tab.name), ['one.md', 'two.md', 'outside.md']);
+  assert.equal(restored.activePath, join(dir, 'outside.md'));
 
   // An active path that is not open is dropped rather than trusted.
   writeEditorTabs(data, 'global', { tabs: [{ path: 'work/one.md' }], activePath: 'work/two.md' }, { root: notes });
   assert.equal(readEditorTabs(data).activePath, null);
   assert.throws(() => writeEditorTabs(data, 'global', { tabs: [{ path: '../escape.md' }] }, { root: notes }), NotesFileError);
+  assert.throws(() => writeEditorTabs(data, 'global', { tabs: [{ source: 'other', path: 'bad.md' }] }, { root: notes }), NotesFileError);
   assert.throws(() => writeEditorTabs(data, '', { tabs: [] }, { root: notes }), NotesFileError);
 });

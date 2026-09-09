@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { listNotesFiles, openWeeklyNote } from './api.js';
+import { listNotesFiles, openWeeklyNote, readMarkdownFile } from './api.js';
 import { CalendarIcon, EditorIcon, Spinner, XIcon } from './icons.jsx';
 import { useTarget } from './target-context.js';
 import { inputClass } from './ui.jsx';
@@ -13,7 +13,8 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [query, setQuery] = useState('');
-  const searchRef = useRef(null);
+  const [markdownPath, setMarkdownPath] = useState('');
+  const pathRef = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -22,7 +23,7 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
     listNotesFiles(controller.signal, target)
       .then((body) => { if (!controller.signal.aborted) setData(body); })
       .catch((cause) => { if (!controller.signal.aborted) setError(cause.message); });
-    searchRef.current?.focus();
+    pathRef.current?.focus();
     return () => controller.abort();
   }, [open, target]);
 
@@ -44,7 +45,29 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
     setError('');
     try {
       const file = await openWeeklyNote(kind, target);
-      onOpenFile({ path: file.path, name: file.name });
+      onOpenFile({ source: 'notes', path: file.path, name: file.name });
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function chooseMarkdown(event) {
+    event.preventDefault();
+    const requested = markdownPath.trim();
+    if (!requested) {
+      setError('Enter a Markdown file path.');
+      pathRef.current?.focus();
+      return;
+    }
+    setBusy('file');
+    setError('');
+    try {
+      // Reading once validates and normalizes the server-side path. The editor
+      // then owns subsequent loads, saves, and conflict handling.
+      const file = await readMarkdownFile(requested, undefined, target);
+      onOpenFile({ source: 'file', path: file.path, name: file.name });
     } catch (cause) {
       setError(cause.message);
     } finally {
@@ -65,12 +88,36 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
         className="fixed bottom-12 z-[60] ml-2 flex max-h-[60vh] w-[min(28rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-primary bg-page text-ink shadow-2xl"
         style={{ left: leftOffset }}
         role="dialog"
-        aria-label="Open a note"
+        aria-label="Open Markdown"
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-primary/30 px-3 py-2">
-          <h2 className="text-sm font-bold text-primary">Open a work note</h2>
+          <h2 className="text-sm font-bold text-primary">Open Markdown</h2>
           <button type="button" aria-label="Close" title="Close" className="ml-auto flex size-6 items-center justify-center rounded text-primary transition-colors hover:bg-soft hover:text-on-soft" onClick={onClose}><XIcon className="size-3.5" /></button>
         </div>
+
+        <form className="shrink-0 space-y-1.5 border-b border-primary/30 p-2" onSubmit={chooseMarkdown}>
+          <label htmlFor="markdown-file-path" className="block text-xs font-bold text-primary">Any Markdown file</label>
+          <div className="flex gap-2">
+            <input
+              id="markdown-file-path"
+              ref={pathRef}
+              type="text"
+              className={inputClass}
+              placeholder="/path/to/file.md or ~/file.md"
+              value={markdownPath}
+              aria-label="Markdown file path"
+              onChange={(event) => setMarkdownPath(event.target.value)}
+            />
+            <button
+              type="submit"
+              className="inline-flex min-w-16 items-center justify-center gap-1.5 rounded-md border border-primary bg-accent px-3 text-xs font-bold text-on-accent transition-colors hover:bg-soft hover:text-on-soft disabled:opacity-50"
+              disabled={busy === 'file'}
+            >{busy === 'file' ? <Spinner className="size-3.5" /> : 'Open'}</button>
+          </div>
+          <p className="text-[0.68rem] text-muted">Paths are resolved on the selected FritzWorks machine.</p>
+        </form>
+
+        <div className="shrink-0 px-3 pt-2 text-xs font-bold text-primary">Work notes</div>
 
         {missingWeekly.length > 0 && (
           <div className="shrink-0 space-y-1 border-b border-primary/30 p-2">
@@ -92,7 +139,6 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
 
         <div className="shrink-0 p-2">
           <input
-            ref={searchRef}
             type="search"
             className={inputClass}
             placeholder="Filter work notes by path…"
@@ -112,7 +158,7 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
               <button
                 type="button"
                 className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-soft hover:text-on-soft ${openPaths.has(file.path) ? 'text-muted' : 'text-ink'}`}
-                onClick={() => onOpenFile({ path: file.path, name: file.name })}
+                onClick={() => onOpenFile({ source: 'notes', path: file.path, name: file.name })}
               >
                 <EditorIcon className="size-3.5 shrink-0" />
                 <span className="min-w-0 flex-1 truncate font-mono text-xs" title={file.path}>{file.path}</span>

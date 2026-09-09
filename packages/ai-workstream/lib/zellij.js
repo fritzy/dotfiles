@@ -712,6 +712,11 @@ function writeBrowserTerminalLayout(session, command, cwd) {
 export function ensureBrowserTerminalSession(identity, { command, cwd, run = detachedZellij } = {}) {
   const session = browserTerminalSessionName(identity);
   if (activeSessions(run).includes(session)) return { session, created: false };
+  // `kill-session` leaves a resurrectable snapshot behind. Attaching to that
+  // name would restore the old/default layout and ignore the current command
+  // (notably after changing agent providers). Remove only the inactive snapshot
+  // before creating the session from the authoritative FritzWorks layout.
+  run(['delete-session', session]);
   const layout = writeBrowserTerminalLayout(session, command, cwd);
   requireZellij(
     run(['--config', browserTerminalConfigFile(), '--layout', layout, 'attach', '--create-background', session]),

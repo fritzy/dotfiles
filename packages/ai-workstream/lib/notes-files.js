@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync,
 } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { dayHeading, weekMonday } from './core.js';
@@ -15,7 +16,7 @@ import { dayHeading, weekMonday } from './core.js';
 export const NOTE_KINDS = ['work', 'journal'];
 const MAX_LISTED_FILES = 400;
 const MAX_LIST_DEPTH = 5;
-const MAX_NOTE_BYTES = 1024 * 1024;
+const MAX_MARKDOWN_BYTES = 1024 * 1024;
 const MAX_OPEN_TABS = 24;
 // `workstream` holds the per-session notes `ws note` writes; those are not what the
 // editor is for, so they stay out of the picker.
@@ -58,6 +59,26 @@ export function resolveNotesFile(root, requested) {
   const realTarget = existingRealPath(target);
   if (!realBase || !realTarget) return null;
   return contains(realBase, realTarget) ? target : null;
+}
+
+// Resolve a Markdown path anywhere on the daemon's filesystem. General editor
+// tabs use absolute paths after their first load, but accepting ~/ and paths
+// relative to the daemon's working directory makes the picker convenient to use.
+// Unlike resolveNotesFile, this deliberately has no root containment rule: the
+// explicit purpose of a general editor tab is to open a file outside notesRoot.
+export function resolveMarkdownFile(requested, {
+  cwd = process.cwd(), home = homedir(),
+} = {}) {
+  if (typeof requested !== 'string' || requested.trim() === '' || requested.includes('\0')) return null;
+  let expanded = requested.trim();
+  for (const prefix of ['${HOME}', '$HOME']) {
+    if (expanded === prefix) expanded = home;
+    else if (expanded.startsWith(`${prefix}/`)) expanded = join(home, expanded.slice(prefix.length + 1));
+  }
+  if (expanded === '~') expanded = home;
+  else if (expanded.startsWith('~/')) expanded = join(home, expanded.slice(2));
+  const target = isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
+  return target.toLowerCase().endsWith('.md') ? target : null;
 }
 
 export const notesRelativePath = (root, path) => relative(resolve(root), path) || basename(path);
@@ -155,7 +176,7 @@ export function readNotesFile(root, requested, { date = new Date() } = {}) {
   if (!existsSync(path)) throw new NotesFileError(404, `no such notes file: ${notesRelativePath(root, path)}`);
   const stats = statSync(path);
   if (!stats.isFile()) throw new NotesFileError(400, 'path is not a file');
-  if (stats.size > MAX_NOTE_BYTES) throw new NotesFileError(413, 'notes file exceeds 1 MiB');
+  if (stats.size > MAX_MARKDOWN_BYTES) throw new NotesFileError(413, 'notes file exceeds 1 MiB');
   const content = readFileSync(path, 'utf8');
   return {
     path: notesRelativePath(root, path),
@@ -174,7 +195,7 @@ export function writeNotesFile(root, requested, content, { version = null } = {}
   const path = resolveNotesFile(root, requested);
   if (!path) throw new NotesFileError(400, 'path must be a markdown file inside the notes root');
   if (typeof content !== 'string') throw new NotesFileError(400, 'content must be a string');
-  if (Buffer.byteLength(content) > MAX_NOTE_BYTES) throw new NotesFileError(413, 'notes file exceeds 1 MiB');
+  if (Buffer.byteLength(content) > MAX_MARKDOWN_BYTES) throw new NotesFileError(413, 'notes file exceeds 1 MiB');
   if (existsSync(path)) {
     if (version && fileVersion(readFileSync(path, 'utf8')) !== version) {
       throw new NotesFileError(409, 'notes file changed on disk since it was opened');
@@ -186,6 +207,48 @@ export function writeNotesFile(root, requested, content, { version = null } = {}
   writeFileSync(path, written);
   return {
     path: notesRelativePath(root, path),
+    version: fileVersion(written),
+    mtime: Math.round(statSync(path).mtimeMs),
+  };
+}
+
+// Read and write an existing Markdown file outside the configured notes tree.
+// These mirror the notes operations, including the 1 MiB limit, newline
+// normalization, and optimistic concurrency hash used by MarkdownEditor.
+export function readMarkdownFile(requested, options = {}) {
+  const path = resolveMarkdownFile(requested, options);
+  if (!path) throw new NotesFileError(400, 'path must be a markdown file');
+  if (!existsSync(path)) throw new NotesFileError(404, `no such markdown file: ${path}`);
+  const stats = statSync(path);
+  if (!stats.isFile()) throw new NotesFileError(400, 'path is not a file');
+  if (stats.size > MAX_MARKDOWN_BYTES) throw new NotesFileError(413, 'markdown file exceeds 1 MiB');
+  const content = readFileSync(path, 'utf8');
+  return {
+    path,
+    name: basename(path),
+    content,
+    version: fileVersion(content),
+    mtime: Math.round(stats.mtimeMs),
+  };
+}
+
+export function writeMarkdownFile(requested, content, { version = null, ...options } = {}) {
+  const path = resolveMarkdownFile(requested, options);
+  if (!path) throw new NotesFileError(400, 'path must be a markdown file');
+  if (typeof content !== 'string') throw new NotesFileError(400, 'content must be a string');
+  if (Buffer.byteLength(content) > MAX_MARKDOWN_BYTES) {
+    throw new NotesFileError(413, 'markdown file exceeds 1 MiB');
+  }
+  if (!existsSync(path)) throw new NotesFileError(404, `no such markdown file: ${path}`);
+  const stats = statSync(path);
+  if (!stats.isFile()) throw new NotesFileError(400, 'path is not a file');
+  if (version && fileVersion(readFileSync(path, 'utf8')) !== version) {
+    throw new NotesFileError(409, 'markdown file changed on disk since it was opened');
+  }
+  const written = content.endsWith('\n') ? content : `${content}\n`;
+  writeFileSync(path, written);
+  return {
+    path,
     version: fileVersion(written),
     mtime: Math.round(statSync(path).mtimeMs),
   };
@@ -234,7 +297,9 @@ export function readEditorTabs(dataDir, scope = 'global') {
   };
 }
 
-export function writeEditorTabs(dataDir, scope, { tabs = [], activePath = null } = {}, { root } = {}) {
+export function writeEditorTabs(dataDir, scope, { tabs = [], activePath = null } = {}, {
+  root, cwd = process.cwd(), home = homedir(),
+} = {}) {
   if (typeof scope !== 'string' || scope.trim() === '') throw new NotesFileError(400, 'scope must be a non-empty string');
   if (!Array.isArray(tabs)) throw new NotesFileError(400, 'tabs must be an array');
   if (tabs.length > MAX_OPEN_TABS) throw new NotesFileError(400, `at most ${MAX_OPEN_TABS} tabs can be remembered`);
@@ -242,18 +307,37 @@ export function writeEditorTabs(dataDir, scope, { tabs = [], activePath = null }
   const cleaned = [];
   for (const tab of tabs) {
     const requested = typeof tab === 'string' ? tab : tab?.path;
-    const resolved = root ? resolveNotesFile(root, requested) : requested;
-    if (!resolved) throw new NotesFileError(400, `tab path is outside the notes root: ${requested}`);
-    const path = root ? notesRelativePath(root, resolved) : String(requested);
+    const source = typeof tab === 'object' && tab?.source !== undefined ? tab.source : 'notes';
+    if (source !== 'notes' && source !== 'file') {
+      throw new NotesFileError(400, `tab source must be notes or file: ${source}`);
+    }
+    const resolved = source === 'file'
+      ? resolveMarkdownFile(requested, { cwd, home })
+      : root ? resolveNotesFile(root, requested) : requested;
+    if (!resolved) {
+      const message = source === 'file'
+        ? `tab path must be a markdown file: ${requested}`
+        : `tab path is outside the notes root: ${requested}`;
+      throw new NotesFileError(400, message);
+    }
+    const path = source === 'notes' && root ? notesRelativePath(root, resolved) : String(resolved);
     if (seen.has(path)) continue;
     seen.add(path);
-    cleaned.push({ path, name: basename(path) });
+    cleaned.push({ source, path, name: basename(path) });
   }
-  const active = typeof activePath === 'string' && root ? resolveNotesFile(root, activePath) : null;
-  const activeRelative = active ? notesRelativePath(root, active) : null;
+  const active = typeof activePath === 'string'
+    ? cleaned.find((tab) => {
+      const resolved = tab.source === 'file'
+        ? resolveMarkdownFile(activePath, { cwd, home })
+        : root ? resolveNotesFile(root, activePath) : activePath;
+      const normalized = tab.source === 'notes' && root && resolved
+        ? notesRelativePath(root, resolved) : resolved;
+      return normalized === tab.path;
+    })?.path || null
+    : null;
   const state = {
     tabs: cleaned,
-    activePath: cleaned.some((tab) => tab.path === activeRelative) ? activeRelative : null,
+    activePath: active,
     updatedAt: new Date().toISOString(),
   };
   const store = readTabStore(dataDir);

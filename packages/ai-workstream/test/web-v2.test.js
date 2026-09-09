@@ -331,7 +331,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(daemonPane, /<SessionDetailModal/);
   assert.match(daemonPane, /<NewSessionModal/);
   assert.match(daemonPane, /<BottomTabs/);
-  assert.match(bottomTabs, /aria-label="Terminals and notes"/);
+  assert.match(bottomTabs, /aria-label="Terminals and Markdown files"/);
   assert.match(bottomTabs, /forwardRef\(function BottomTabs/);
   assert.match(bottomTabs, /useImperativeHandle\(ref/);
   assert.match(bottomTabs, /focusLastUsed/);
@@ -348,7 +348,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(bottomTabs, /function AddButton/);
   assert.match(bottomTabs, /label="New terminal"/);
   assert.match(bottomTabs, /relative z-10 flex h-10[\s\S]*<AddButton label="New terminal" Icon=\{ShellIcon\} onClick=\{createTerminal\} \/>/);
-  assert.match(bottomTabs, /<AddButton label="Open a note" Icon=\{EditorIcon\}/);
+  assert.match(bottomTabs, /<AddButton label="Open Markdown" Icon=\{EditorIcon\}/);
   // One strip, inside the sliding container: every tab rides up and down with the
   // panel instead of the unselected ones staying pinned to the viewport.
   assert.match(bottomTabs, /const TAB_WIDTH = 'w-40'/);
@@ -648,7 +648,7 @@ test('v2 markdown editing helpers continue lists, indent, and log the day', asyn
   assert.equal(appendUnderHeading('# no day headings', heading), null);
 });
 
-test('v2 bottom drawer hosts markdown tabs backed by the notes endpoints', () => {
+test('v2 bottom drawer hosts Markdown tabs backed by notes and general-file endpoints', () => {
   const bottomTabs = read('web-v2/src/BottomTabs.jsx');
   const editor = read('web-v2/src/MarkdownEditor.jsx');
   const picker = read('web-v2/src/NotePicker.jsx');
@@ -657,6 +657,7 @@ test('v2 bottom drawer hosts markdown tabs backed by the notes endpoints', () =>
   assert.match(api, /'\/notes\/files'/);
   assert.match(api, /`\/notes\/file\?path=\$\{encodeURIComponent\(path\)\}`/);
   assert.match(api, /'\/notes\/weekly'/);
+  assert.match(api, /`\/markdown\/file\?path=\$\{encodeURIComponent\(path\)\}`/);
   assert.match(api, /`\/notes\/tabs\?scope=\$\{encodeURIComponent\(scope\)\}`/);
   // Open tabs live server-side so the strip survives a reload.
   assert.match(bottomTabs, /readEditorTabs\(EDITOR_TAB_SCOPE/);
@@ -669,9 +670,13 @@ test('v2 bottom drawer hosts markdown tabs backed by the notes endpoints', () =>
   assert.match(bottomTabs, /<MarkdownEditor/);
   assert.match(editor, /parseMarkdown/);
   assert.match(editor, /writeNotesFile/);
+  assert.match(editor, /writeMarkdownFile/);
   assert.match(editor, /span\.type === 'image'/);
   assert.match(editor, /<img[\s\S]*src=\{span\.href\}[\s\S]*alt=\{span\.text\}/);
   assert.match(picker, /openWeeklyNote/);
+  assert.match(picker, /readMarkdownFile/);
+  assert.match(picker, /source: 'file'/);
+  assert.match(picker, /source: 'notes'/);
   // The scaffold action disappears once the week's file exists, because it is then
   // listed like any other work note.
   assert.match(picker, /const missingWeekly = \(data\?\.weekly \|\| \[\]\)\.filter\(\(entry\) => !entry\.exists\);/);
@@ -683,7 +688,7 @@ test('v2 bottom drawer hosts markdown tabs backed by the notes endpoints', () =>
   // keep creating terminals.
   assert.match(bottomTabs, /const id = tabs\.some\(\(tab\) => tab\.id === remembered\) \? remembered : tabs\.at\(-1\)\?\.id;/);
   assert.equal(bottomTabs.match(/createTerminal\(\)/g).length, 1);
-  assert.match(bottomTabs, /if \(remembered\) lastUsedRef\.current = editorTabId\(remembered\)/);
+  assert.match(bottomTabs, /if \(remembered\) lastUsedRef\.current = remembered\.id/);
   assert.match(bottomTabs, /if \(key !== 'h' && key !== 'l' && key !== 'k'\) return;/);
   assert.match(bottomTabs, /event\.defaultPrevented \|\| !event\.ctrlKey/);
   // Neither the textarea nor the preview pane exists until the file has loaded,

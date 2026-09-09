@@ -35,14 +35,21 @@ function newTerminalId() {
 const TAB_WIDTH = 'w-40';
 const ADD_BUTTON_WIDTH = 'w-14';
 
-const editorTabId = (path) => `editor:${path}`;
+const editorTabId = (path, source = 'notes') => `editor:${source}:${path}`;
 
-function editorTab({ path, name }) {
+const editorPathFromId = (id) => {
+  if (!id?.startsWith('editor:')) return null;
+  const pathAt = id.indexOf(':', 'editor:'.length);
+  return pathAt === -1 ? null : id.slice(pathAt + 1);
+};
+
+function editorTab({ path, name, source = 'notes' }) {
   return {
-    id: editorTabId(path),
+    id: editorTabId(path, source),
     kind: 'editor',
     label: name || path.split('/').pop(),
     path,
+    source,
     fontSize: DEFAULT_FONT_SIZE,
     fullscreen: false,
   };
@@ -239,8 +246,8 @@ const BottomTabs = forwardRef(function BottomTabs({
         if (state.activePath) setLastEditorPath(state.activePath);
         // Seed the last-used tab too, so navigating down into the drawer returns to
         // the remembered note rather than treating the strip as empty.
-        const remembered = state.activePath || restored.at(-1)?.path;
-        if (remembered) lastUsedRef.current = editorTabId(remembered);
+        const remembered = restored.find((tab) => tab.path === state.activePath) || restored.at(-1);
+        if (remembered) lastUsedRef.current = remembered.id;
       })
       .catch(() => { /* the editor still works without remembered tabs */ })
       .finally(() => { if (!controller.signal.aborted) setTabsRestored(true); });
@@ -249,7 +256,8 @@ const BottomTabs = forwardRef(function BottomTabs({
 
   useEffect(() => {
     if (!tabsRestored) return undefined;
-    const openPaths = tabs.filter((tab) => tab.kind === 'editor').map((tab) => ({ path: tab.path }));
+    const openPaths = tabs.filter((tab) => tab.kind === 'editor')
+      .map((tab) => ({ source: tab.source, path: tab.path }));
     const timer = setTimeout(() => {
       writeEditorTabs(EDITOR_TAB_SCOPE, openPaths, lastEditorPath, target)
         .catch(() => { /* remembering tabs is best-effort */ });
@@ -297,7 +305,8 @@ const BottomTabs = forwardRef(function BottomTabs({
 
   const remember = useCallback((id) => {
     lastUsedRef.current = id;
-    if (id?.startsWith('editor:')) setLastEditorPath(id.slice('editor:'.length));
+    const path = editorPathFromId(id);
+    if (path) setLastEditorPath(path);
   }, []);
 
   const focusTab = useCallback((id) => {
@@ -360,7 +369,7 @@ const BottomTabs = forwardRef(function BottomTabs({
 
   const openNote = useCallback((file) => {
     setPickerOpen(false);
-    const id = editorTabId(file.path);
+    const id = editorTabId(file.path, file.source);
     setTabs((current) => (current.some((tab) => tab.id === id) ? current : [...current, editorTab(file)]));
     return chooseTab(id);
   }, [chooseTab]);
@@ -526,7 +535,7 @@ const BottomTabs = forwardRef(function BottomTabs({
   const openEditorPaths = new Set(tabs.filter((tab) => tab.kind === 'editor').map((tab) => tab.path));
 
   return (
-    <div className={visible ? 'contents' : 'hidden'} role="tablist" aria-label="Terminals and notes" inert={!visible}>
+    <div className={visible ? 'contents' : 'hidden'} role="tablist" aria-label="Terminals and Markdown files" inert={!visible}>
       {drawerOpen && activeTab && (
         <button
           type="button"
@@ -544,7 +553,7 @@ const BottomTabs = forwardRef(function BottomTabs({
       >
         <div className={`pointer-events-none relative z-10 flex h-10 shrink-0 items-end gap-1 px-2 transition-opacity duration-200 motion-reduce:transition-none ${tabOpacity}`}>
           <AddButton label="New terminal" Icon={ShellIcon} onClick={createTerminal} />
-          <AddButton label="Open a note" Icon={EditorIcon} onClick={() => setPickerOpen((open) => !open)} />
+          <AddButton label="Open Markdown" Icon={EditorIcon} onClick={() => setPickerOpen((open) => !open)} />
           {tabs.map((tab) => (
             <TabButton
               key={tab.id}
@@ -588,6 +597,7 @@ const BottomTabs = forwardRef(function BottomTabs({
                           <MarkdownEditor
                             path={tab.path}
                             name={tab.label}
+                            source={tab.source}
                             focused={tabVisible && focusedPanel === panelId(tab.id)}
                             fontFamily={fontFamily}
                             fontSize={tab.fontSize}

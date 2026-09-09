@@ -53,6 +53,10 @@ export function gitTry(args, opts = {}) {
 export function openDb(path = DB_PATH) {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  // Agent and shell hooks update this database from short-lived processes while
+  // the daemon is reading it. Wait out those brief writer locks instead of
+  // failing an API request (or a terminal output callback) immediately.
+  db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(`
     CREATE TABLE IF NOT EXISTS workstreams (

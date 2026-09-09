@@ -2,7 +2,9 @@ import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 
-import { readNotesFile, writeNotesFile } from './api.js';
+import {
+  readMarkdownFile, readNotesFile, writeMarkdownFile, writeNotesFile,
+} from './api.js';
 import {
   CalendarIcon, CollapseIcon, ExpandIcon, Spinner,
 } from './icons.jsx';
@@ -84,7 +86,7 @@ function Blocks({ blocks }) {
 }
 
 export default function MarkdownEditor({
-  path, name, focused, fontFamily, fontSize = 14, fullscreen = false,
+  path, name, source = 'notes', focused, fontFamily, fontSize = 14, fullscreen = false,
   onDirtyChange, onFocusRequest, onFontSizeChange,
   onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar, onNewTerminal,
 }) {
@@ -111,7 +113,9 @@ export default function MarkdownEditor({
   const load = useCallback(async (signal) => {
     setLoading(true);
     try {
-      const file = await readNotesFile(path, signal, target);
+      const file = source === 'file'
+        ? await readMarkdownFile(path, signal, target)
+        : await readNotesFile(path, signal, target);
       if (signal?.aborted) return;
       setContent(file.content);
       setSaved(file.content);
@@ -124,7 +128,7 @@ export default function MarkdownEditor({
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [path, target]);
+  }, [path, source, target]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -137,7 +141,10 @@ export default function MarkdownEditor({
     if (saving) return false;
     setSaving(true);
     try {
-      const result = await writeNotesFile({ path, content: current, version: force ? null : known }, target);
+      const payload = { path, content: current, version: force ? null : known };
+      const result = source === 'file'
+        ? await writeMarkdownFile(payload, target)
+        : await writeNotesFile(payload, target);
       setVersion(result.version);
       setSaved(current);
       setError('');
@@ -150,7 +157,7 @@ export default function MarkdownEditor({
     } finally {
       setSaving(false);
     }
-  }, [path, saving, target]);
+  }, [path, saving, source, target]);
 
   // Autosave once typing settles; explicit Ctrl/Cmd+S and blur still save eagerly.
   useEffect(() => {
