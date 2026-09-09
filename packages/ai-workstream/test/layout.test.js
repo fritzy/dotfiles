@@ -86,8 +86,8 @@ test('browser terminals discard an exited snapshot, recreate the session, and re
   const session = browserTerminalSessionName(identity);
   const calls = [];
   let live = false;
-  const run = (args) => {
-    calls.push(args);
+  const run = (args, options) => {
+    calls.push({ args, options });
     if (args[0] === 'list-sessions') {
       return live
         ? { status: 0, stdout: `${session}\n`, stderr: '' }
@@ -108,14 +108,47 @@ test('browser terminals discard an exited snapshot, recreate the session, and re
     ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
     { session, created: true },
   );
-  assert.deepEqual(calls[1], ['delete-session', session]);
+  assert.deepEqual(calls[1], { args: ['delete-session', session], options: undefined });
+  assert.deepEqual(calls[2], {
+    args: ['--config', '/tmp/ws-browser-terminal-config.kdl', 'attach', '--create-background', session],
+    options: { cwd: '/tmp' },
+  });
+  assert.deepEqual(calls[3].args, ['--session', session, 'action', 'override-layout', calls[3].args[4]]);
+  assert.match(calls[3].args[4], new RegExp(`ws-browser-terminal-layout-\\d+-${session}\\.kdl$`));
   assert.deepEqual(
     ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
     { session, created: false },
   );
-  assert.equal(calls.filter((args) => args.includes('--create-background')).length, 1);
+  assert.equal(calls.filter(({ args }) => args.includes('--create-background')).length, 1);
   assert.equal(killBrowserTerminalSession(identity, { run }), true);
   assert.equal(live, false);
+});
+
+test('browser terminal creation deletes the stock session when layout override fails', () => {
+  const identity = { sessionId: 'broken', role: 'agent' };
+  const session = browserTerminalSessionName(identity);
+  const calls = [];
+  assert.throws(
+    () => ensureBrowserTerminalSession(identity, {
+      command: ['claude'],
+      cwd: '/tmp/broken',
+      run: (args, options) => {
+        calls.push({ args, options });
+        if (args[0] === 'list-sessions') {
+          return { status: 1, stdout: '', stderr: 'No active zellij sessions found.' };
+        }
+        if (args.includes('override-layout')) {
+          return { status: 1, stdout: '', stderr: 'layout rejected' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    }),
+    /failed to lay out browser terminal session.*layout rejected/,
+  );
+  assert.deepEqual(calls.at(-1), {
+    args: ['delete-session', '--force', session],
+    options: undefined,
+  });
 });
 
 test('browser terminal resets force-delete one identity or every FritzWorks session', () => {

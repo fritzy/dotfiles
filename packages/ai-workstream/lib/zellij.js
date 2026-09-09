@@ -728,10 +728,26 @@ export function ensureBrowserTerminalSession(identity, { command, cwd, run = det
   // before creating the session from the authoritative FritzWorks layout.
   run(['delete-session', session]);
   const layout = writeBrowserTerminalLayout(session, command, cwd);
+  const configFile = browserTerminalConfigFile();
   requireZellij(
-    run(['--config', browserTerminalConfigFile(), '--layout', layout, 'attach', '--create-background', session]),
+    run(['--config', configFile, 'attach', '--create-background', session], { cwd }),
     `failed to start browser terminal session "${session}"`,
   );
+  // Zellij 0.45 accepts a global --layout alongside `attach --create-background`
+  // but silently creates its stock Bash tab instead. Create the server first,
+  // then replace that placeholder tab through the action API. This is the same
+  // sequence used by openTabInSession() and works with headless sessions.
+  try {
+    requireZellij(
+      run(['--session', session, 'action', 'override-layout', layout]),
+      `failed to lay out browser terminal session "${session}"`,
+    );
+  } catch (error) {
+    // Do not preserve the stock fallback tab: a later reconnect must retry the
+    // authoritative layout instead of treating this broken session as healthy.
+    try { deleteSessionSnapshot(session, run); } catch { /* retain the original error */ }
+    throw error;
+  }
   return { session, created: true };
 }
 
