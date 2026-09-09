@@ -9,7 +9,10 @@ This is a [stow](https://www.gnu.org/software/stow/) based dotfiles repo with bo
 - Installs the latest `kitty.app` on macos
 - Supports Linux & MacOS on Arm and x86
 - Adds aliases/env to `.bashrc` or `.zshrc`
+- Uses a guarded interactive Bash-to-Zsh handoff, so a persistent home can keep
+  Zsh as the user shell when an ephemeral host resets its passwd entry to Bash
 - Syncs dotfiles with `stow` (primarily `~/.config/nvim/...`)
+- Links the shell startup files directly when `stow` is temporarily unavailable
 - Bootstraps NeoVim Lazy plugins
 
 ## About

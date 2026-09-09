@@ -1,4 +1,7 @@
-source ~/.zprofile
+# Login Zsh already read .zprofile. Load the same persistent user environment
+# for directly launched interactive shells (including FritzWorks) without
+# duplicating PATH entries in login shells.
+[[ -o login ]] || source ~/.zprofile
 # Lines configured by zsh-newuser-install
 HISTFILE=~/.histfile
 HISTSIZE=1000
@@ -17,7 +20,9 @@ compinit -d ~/.zcompdump
 # interactive completion menu (arrow key navigation)
 zstyle ':completion:*' menu select
 # End of lines added by compinstall
-eval "$(starship init zsh)"
+if (( $+commands[starship] )); then
+  eval "$(starship init zsh)"
+fi
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm

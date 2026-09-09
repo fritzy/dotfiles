@@ -258,6 +258,29 @@ if [[ $have_stow = true ]]; then
   # ~/.claude) end up writing straight into this git repo.
   stow -v --no-folding -t ~ home
 else
+  # A workstation can lose its system packages while retaining $HOME. Restore
+  # the login-shell chain even when stow itself is temporarily unavailable;
+  # otherwise `ws hooks install` would create a hook-only .zshrc and hide the
+  # actual prompt configuration in this repo.
+  echo "stow not available. Linking persistent shell config directly..."
+  for rel in .bash_profile .bashrc .zprofile .zshrc; do
+    source_file="$dotfiles_root/home/$rel"
+    target="$HOME/$rel"
+    if [[ -L "$target" && $(readlink -f "$target") == "$source_file" ]]; then
+      continue
+    fi
+    if [[ -e "$target" || -L "$target" ]]; then
+      backup="$target.bak"
+      backup_index=1
+      while [[ -e "$backup" || -L "$backup" ]]; do
+        backup="$target.bak.$backup_index"
+        ((backup_index++))
+      done
+      echo "Backing up conflicting file: $target -> $backup"
+      mv "$target" "$backup"
+    fi
+    ln -s "$source_file" "$target"
+  done
   echo "stow not available. Forcing replacement of $nvim_config ..."
   rm -rf $nvim_config
   cp -R ./home/.config/nvim/* $nvim_config/
