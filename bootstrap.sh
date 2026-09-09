@@ -251,8 +251,12 @@ if [[ $have_stow = true ]]; then
       echo "Backing up conflicting file: $target -> $target.bak"
       mv "$target" "$target.bak"
     fi
-  done < <(stow -n -v -t ~ home 2>&1 | grep "existing target")
-  stow -v -t ~ home
+  done < <(stow -n -v --no-folding -t ~ home 2>&1 | grep "existing target")
+  # --no-folding: always create real directories and symlink individual files,
+  # rather than symlinking a whole directory when the target doesn't exist yet.
+  # Otherwise apps that write runtime state into a stowed directory (e.g.
+  # ~/.claude) end up writing straight into this git repo.
+  stow -v --no-folding -t ~ home
 else
   echo "stow not available. Forcing replacement of $nvim_config ..."
   rm -rf $nvim_config

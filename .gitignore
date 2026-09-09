@@ -2,3 +2,14 @@
 *.tar.gz
 *.appimage
 .DS_Store
+
+# Claude Code config: only track intentional, hand-authored config here.
+# Everything else under ~/.claude is runtime/session state and must never
+# be committed (it has held API keys and full conversation history before).
+# Whitelist approach so new Claude-managed files are ignored by default.
+home/.claude/*
+!home/.claude/settings.json
+!home/.claude/skills/
+!home/.claude/plugins/
+home/.claude/plugins/*
+!home/.claude/plugins/known_marketplaces.json
