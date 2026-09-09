@@ -12,7 +12,7 @@ nvim_bin=$HOME/.local/bin/nvim
 eget_bin=$HOME/.local/bin/eget
 
 # Packages to install via the system package manager
-packages=(stow fzf zsh-autosuggestions nc)
+packages=(stow fzf zsh-autosuggestions nc zellij)
 
 # Maps "command:package_manager" -> actual package name, for commands whose
 # package name differs from the command itself.
@@ -268,6 +268,34 @@ if [[ -f "$ws_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
     && echo "  installed ws dependencies" || echo "  warning: ws npm install failed"
   ln -sfn "$ws_pkg/cli.js" "$HOME/.local/bin/ws" && echo "  linked ws -> $ws_pkg/cli.js"
   ln -sfn "$ws_pkg/mcp.js" "$HOME/.local/bin/ws-mcp" && echo "  linked ws-mcp -> $ws_pkg/mcp.js"
+  ln -sfn "$ws_pkg/app.js" "$HOME/.local/bin/fritzworks" && echo "  linked fritzworks -> $ws_pkg/app.js"
+  if "$HOME/.local/bin/ws" hooks install >/dev/null 2>&1; then
+    echo "  installed ws activity hooks"
+  else
+    echo "  warning: ws activity hook installation failed"
+  fi
+  if [[ $(uname -s) == "Linux" && -f "$ws_pkg/desktop/fritzworks.desktop" ]]; then
+    applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    icon_theme_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
+    icons_dir="$icon_theme_dir/scalable/apps"
+    mkdir -p "$applications_dir" "$icons_dir"
+    ln -sfn "$ws_pkg/desktop/fritzworks.desktop" "$applications_dir/fritzworks.desktop"
+    ln -sfn "$ws_pkg/desktop/fritzworks.svg" "$icons_dir/fritzworks.svg"
+    desktop_dir=$(xdg-user-dir DESKTOP 2>/dev/null || true)
+    if [[ -n "$desktop_dir" && -d "$desktop_dir" ]]; then
+      ln -sfn "$ws_pkg/desktop/fritzworks.desktop" "$desktop_dir/FritzWorks.desktop"
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database "$applications_dir" >/dev/null 2>&1
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache --force --ignore-theme-index "$icon_theme_dir" >/dev/null 2>&1
+    fi
+    if command -v kbuildsycoca6 >/dev/null 2>&1; then
+      kbuildsycoca6 --noincremental >/dev/null 2>&1
+    fi
+    echo "  installed FritzWorks KDE launcher"
+  fi
   if command -v claude >/dev/null 2>&1 && ! claude mcp get ws >/dev/null 2>&1; then
     claude mcp add --scope user ws -- node --no-warnings "$ws_pkg/mcp.js" >/dev/null 2>&1 \
       && echo "  registered ws MCP server with Claude Code (user scope)"

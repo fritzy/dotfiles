@@ -4,15 +4,16 @@ import {
 
 import { getLinkSuggestions } from './api.js';
 import { AssetIcon, ChevronIcon, LinkIcon, XIcon } from './icons.jsx';
+import { useTarget } from './target-context.js';
 import { Button, inputClass } from './ui.jsx';
 import { issueLink, linkFor, opticalPillPadding } from './utils.js';
 
 const suggestionCache = new Map();
 
-async function loadSuggestions(provider, query, signal) {
-  const key = `${provider}:${query.toLowerCase()}`;
+async function loadSuggestions(provider, query, signal, target) {
+  const key = `${target?.id || 'local'}:${provider}:${query.toLowerCase()}`;
   if (!suggestionCache.has(key)) {
-    const pending = getLinkSuggestions(provider, query, signal)
+    const pending = getLinkSuggestions(provider, query, signal, target)
       .then((body) => body.items || [])
       .catch((error) => {
         suggestionCache.delete(key);
@@ -79,6 +80,7 @@ export function LinkPill({ entry, removable = false, disabled = false, onRemove 
 }
 
 const LinkInput = forwardRef(function LinkInput({ provider, label, placeholder, disabled, onCommit }, ref) {
+  const target = useTarget();
   const [value, setValue] = useState('');
   const [selected, setSelected] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -92,7 +94,7 @@ const LinkInput = forwardRef(function LinkInput({ provider, label, placeholder, 
     setLoading(true);
     setError('');
     try {
-      const items = await loadSuggestions(provider, query, signal);
+      const items = await loadSuggestions(provider, query, signal, target);
       setSuggestions(items);
       return items;
     } catch (cause) {
@@ -101,7 +103,7 @@ const LinkInput = forwardRef(function LinkInput({ provider, label, placeholder, 
     } finally {
       setLoading(false);
     }
-  }, [provider]);
+  }, [provider, target]);
 
   useEffect(() => {
     if (!provider || !open || selected) return undefined;

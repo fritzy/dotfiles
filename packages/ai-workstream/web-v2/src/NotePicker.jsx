@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 
 import { listNotesFiles, openWeeklyNote } from './api.js';
 import { CalendarIcon, EditorIcon, Spinner, XIcon } from './icons.jsx';
+import { useTarget } from './target-context.js';
 import { inputClass } from './ui.jsx';
 
 const KIND_LABELS = { work: "Create this week's work note" };
 
 export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftOffset = '0rem' }) {
+  const target = useTarget();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -17,12 +19,12 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
     if (!open) return undefined;
     const controller = new AbortController();
     setError('');
-    listNotesFiles(controller.signal)
+    listNotesFiles(controller.signal, target)
       .then((body) => { if (!controller.signal.aborted) setData(body); })
       .catch((cause) => { if (!controller.signal.aborted) setError(cause.message); });
     searchRef.current?.focus();
     return () => controller.abort();
-  }, [open]);
+  }, [open, target]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -41,7 +43,7 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
     setBusy(kind);
     setError('');
     try {
-      const file = await openWeeklyNote(kind);
+      const file = await openWeeklyNote(kind, target);
       onOpenFile({ path: file.path, name: file.name });
     } catch (cause) {
       setError(cause.message);

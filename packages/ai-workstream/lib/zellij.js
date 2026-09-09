@@ -667,3 +667,78 @@ export function closePane(row, kind, { run = zellij } = {}) {
   const r = run(['action', 'close-pane', '--pane-id', `terminal_${pane.id}`]);
   return r.status === 0;
 }
+
+// Browser terminal persistence -----------------------------------------------
+//
+// Every web terminal runs inside one of these background Zellij sessions, so
+// losing its websocket only detaches the browser client. The shell/editor/agent
+// process keeps running server-side and a later connection sees the same screen.
+// This is unrelated to the WS_SESSION used for desktop tabs above. Browser-only
+// sessions have no tab bar, status bar, or pane frame, making the wrapper
+// indistinguishable in xterm from a bare pty.
+
+const BROWSER_TERMINAL_CONFIG_FILE = join(tmpdir(), 'ws-browser-terminal-config.kdl');
+
+export function browserTerminalSessionName({ sessionId = null, role = 'shell', terminalId = 'default' } = {}) {
+  if (sessionId !== null && sessionId !== undefined) return `ws-browser-${role}-${sessionId}`;
+  return `ws-browser-terminal-${terminalId}`;
+}
+
+export function browserAgentSessionName(id) {
+  return browserTerminalSessionName({ sessionId: id, role: 'agent' });
+}
+
+// Config used only by browser terminal sessions/clients; writing it is cheap and
+// idempotent, so callers can just call this whenever they need the path.
+export function browserTerminalConfigFile() {
+  writeFileSync(BROWSER_TERMINAL_CONFIG_FILE, 'pane_frames false\nshow_startup_tips false\nshow_release_notes false\n');
+  return BROWSER_TERMINAL_CONFIG_FILE;
+}
+
+// Kept as a public alias for callers deployed with the first agent-only version.
+export const browserAgentConfigFile = browserTerminalConfigFile;
+
+function writeBrowserTerminalLayout(session, command, cwd) {
+  const [program, ...args] = command;
+  const argsBlock = args.length ? ` {\n            args ${args.map(kdlString).join(' ')}\n        }` : '';
+  const file = join(tmpdir(), `ws-browser-terminal-layout-${process.pid}-${session}.kdl`);
+  writeFileSync(file, `layout {\n    tab cwd=${kdlString(cwd)} {\n        pane borderless=true command=${kdlString(program)}${argsBlock}\n    }\n}\n`);
+  return file;
+}
+
+// Start the background session backing a browser terminal if one isn't already
+// running. A missing session (including after a reboot) is recreated from its
+// stored terminal definition; a live detached session is left untouched.
+export function ensureBrowserTerminalSession(identity, { command, cwd, run = detachedZellij } = {}) {
+  const session = browserTerminalSessionName(identity);
+  if (activeSessions(run).includes(session)) return { session, created: false };
+  const layout = writeBrowserTerminalLayout(session, command, cwd);
+  requireZellij(
+    run(['--config', browserTerminalConfigFile(), '--layout', layout, 'attach', '--create-background', session]),
+    `failed to start browser terminal session "${session}"`,
+  );
+  return { session, created: true };
+}
+
+export function ensureBrowserAgentSession(id, options = {}) {
+  return ensureBrowserTerminalSession({ sessionId: id, role: 'agent' }, options);
+}
+
+// Stop a browser terminal's backing session and whatever is running inside it.
+// This is reserved for deliberate lifecycle actions; websocket disconnects only
+// kill the attach client and leave the backing session alive.
+export function killBrowserTerminalSession(identity, { run = detachedZellij } = {}) {
+  const session = browserTerminalSessionName(identity);
+  if (!activeSessions(run).includes(session)) return false;
+  const result = run(['kill-session', session]);
+  if (result.error) throw new Error(`cannot kill browser terminal session "${session}": ${result.error.message}`);
+  const output = zellijOutput(result);
+  if (result.status !== 0 && !sessionNotFound(output, session)) {
+    throw new Error(`failed to kill browser terminal session "${session}"${output ? `: ${output}` : ''}`);
+  }
+  return true;
+}
+
+export function killBrowserAgentSession(id, options = {}) {
+  return killBrowserTerminalSession({ sessionId: id, role: 'agent' }, options);
+}

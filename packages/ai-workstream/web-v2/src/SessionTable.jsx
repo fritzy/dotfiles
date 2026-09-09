@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 
-import { AssetIcon, CalendarIcon, MaskIcon, ProviderIcon, RefreshIcon, ShellIcon, Spinner, XIcon } from './icons.jsx';
+import { ArchiveIcon, AssetIcon, CalendarIcon, MaskIcon, ProviderIcon, RefreshIcon, ShellIcon, Spinner } from './icons.jsx';
 import { LinkPill } from './LinkEditor.jsx';
 import { IconButton } from './ui.jsx';
 import {
-  branchState, daysSince, githubBranchUrl, opticalPillPadding,
+  branchState, canArchiveSession, daysSince, githubBranchUrl, opticalPillPadding,
 } from './utils.js';
 
 function StatusPill({ item, pending, onCommand }) {
@@ -14,8 +14,9 @@ function StatusPill({ item, pending, onCommand }) {
     paused: 'border-primary bg-paused text-on-paused',
     closed: 'border-danger bg-closed text-on-closed',
   }[item.status] || 'border-primary bg-page text-ink';
-  const padding = opticalPillPadding(item.status);
-  const content = pending ? <Spinner className="size-3" /> : item.status;
+  const label = item.status === 'closed' ? 'archived' : item.status;
+  const padding = opticalPillPadding(label);
+  const content = pending ? <Spinner className="size-3" /> : label;
   if (!actionable) {
     return <span className={`inline-flex min-h-7 items-center rounded-full border px-2.5 text-xs font-bold lowercase ${padding} ${classes}`}>{content}</span>;
   }
@@ -84,7 +85,7 @@ function LastUsed({ value }) {
 
 function Actions({ item, isPending, onCommand }) {
   const name = item.name || item.branch || item.id;
-  const lifecycle = item.status === 'closed' ? 'resume' : 'close';
+  const lifecycle = item.status === 'closed' ? 'resume' : 'archive';
   return (
     <div className="flex justify-end gap-1">
       <ActivityButton item={item} panel="shell" pending={isPending(`focus-shell:${item.id}`)} onCommand={onCommand} />
@@ -103,14 +104,15 @@ function Actions({ item, isPending, onCommand }) {
         disabled={!item.notesPath || isPending(`open-notes:${item.id}`)}
         onClick={(event) => { event.stopPropagation(); onCommand(item, 'open-notes'); }}
       >{isPending(`open-notes:${item.id}`) ? <Spinner /> : <AssetIcon name="notes" className="size-5" />}</IconButton>
-      <IconButton
-        compact
-        variant={lifecycle === 'close' ? 'danger' : 'primary'}
-        label={item.closeable === false ? `Close unavailable for ${name}` : `${lifecycle === 'close' ? 'Close' : 'Re-open'} ${name}`}
-        title={item.closeable === false ? 'Configured locations cannot be closed' : lifecycle === 'close' ? 'Close' : 'Re-open'}
-        disabled={item.closeable === false || isPending(`${lifecycle}:${item.id}`)}
-        onClick={(event) => { event.stopPropagation(); onCommand(item, lifecycle); }}
-      >{isPending(`${lifecycle}:${item.id}`) ? <Spinner /> : lifecycle === 'close' ? <XIcon /> : <RefreshIcon />}</IconButton>
+      {(lifecycle === 'resume' || canArchiveSession(item)) && (
+        <IconButton
+          compact
+          label={`${lifecycle === 'archive' ? 'Archive' : 'Restore'} ${name}`}
+          title={lifecycle === 'archive' ? 'Archive' : 'Restore'}
+          disabled={isPending(`${lifecycle}:${item.id}`)}
+          onClick={(event) => { event.stopPropagation(); onCommand(item, lifecycle); }}
+        >{isPending(`${lifecycle}:${item.id}`) ? <Spinner /> : lifecycle === 'archive' ? <ArchiveIcon /> : <RefreshIcon />}</IconButton>
+      )}
     </div>
   );
 }

@@ -5,7 +5,10 @@ import {
 import {
   AssetIcon, ChevronIcon, GearIcon, MaskIcon, ProviderIcon, ShellIcon, Spinner,
 } from './icons.jsx';
+import BrandLogo from './BrandLogo.jsx';
+import DaemonTabs from './DaemonTabs.jsx';
 import { TERMINAL_FONTS, THEMES } from './constants.js';
+import { useTarget } from './target-context.js';
 import {
   Button, selectClass,
 } from './ui.jsx';
@@ -64,6 +67,7 @@ function SessionActivity({ item }) {
 
 const groupNavigationKey = (label) => `group:${label}`;
 const sessionNavigationKey = (id) => `session:${id}`;
+const SIDEBAR_VIEWS = ['sessions', 'settings'];
 
 function SessionRow({
   item, selected, highlighted, navigationKey, onHighlight, onActivate, onOpenDetails, rowRef,
@@ -173,6 +177,7 @@ function SidebarResizeHandle({
 
 export default function ActiveSessionsSidebar({
   items, loading, error, open, selectedId, onActivate, onOpenDetails, onToggle, onNewRepo, onNewScratchpad,
+  targets, currentTargetId, connections, onTargetChange,
   theme, onThemeChange,
   terminalMode, onTerminalModeChange,
   terminalFont, onTerminalFontChange,
@@ -181,6 +186,8 @@ export default function ActiveSessionsSidebar({
   focusedPanel, onPanelFocus, keyboardEnabled, sidebarWidth, sidebarWidthPixels, sidebarResizing,
   onSidebarResizeStart, onSidebarResize, onSidebarResizeEnd,
 }) {
+  const target = useTarget();
+  const targetId = target?.id || 'local';
   const groups = useMemo(() => groupActiveSessionsByRepo(items), [items]);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [view, setView] = useState('sessions');
@@ -188,7 +195,9 @@ export default function ActiveSessionsSidebar({
   const navigationRows = useRef(new Map());
   const panelRef = useRef(null);
   const themeCredit = THEMES[theme];
-  const currentPanel = `sidebar-${view}`;
+  const panelName = (forView) => `sidebar-${targetId}-${forView}`;
+  const currentPanel = panelName(view);
+  const sessionsPanel = panelName('sessions');
   const navigationItems = useMemo(() => groups.flatMap((group) => [
     {
       kind: 'group', key: groupNavigationKey(group.label), groupLabel: group.label,
@@ -210,8 +219,8 @@ export default function ActiveSessionsSidebar({
   }, [highlightedNavigationKey]);
 
   useEffect(() => {
-    if (focusedPanel === 'sidebar-sessions' && view !== 'sessions') setView('sessions');
-  }, [focusedPanel, view]);
+    if (focusedPanel === sessionsPanel && view !== 'sessions') setView('sessions');
+  }, [focusedPanel, sessionsPanel, view]);
 
   useEffect(() => {
     if (!open || focusedPanel !== currentPanel) return undefined;
@@ -227,6 +236,7 @@ export default function ActiveSessionsSidebar({
           || event.shiftKey || !['f', 'h', 'j', 'k', 'l'].includes(key)) return;
       event.preventDefault();
       event.stopPropagation();
+      if ((key === 'j' || key === 'k') && !event.repeat) navigateView(key === 'j' ? 1 : -1);
       if (key === 'l' && !event.repeat) onWorkspaceFocus();
     }
     document.addEventListener('keydown', controlNavigation);
@@ -234,7 +244,7 @@ export default function ActiveSessionsSidebar({
   }, [currentPanel, focusedPanel, keyboardEnabled, onWorkspaceFocus, open]);
 
   useEffect(() => {
-    if (!open || view !== 'sessions' || focusedPanel !== 'sidebar-sessions' || !keyboardEnabled) return undefined;
+    if (!open || view !== 'sessions' || focusedPanel !== sessionsPanel || !keyboardEnabled) return undefined;
     function shortcuts(event) {
       if (event.defaultPrevented || event.metaKey || event.altKey) return;
       if (event.ctrlKey) return;
@@ -275,7 +285,7 @@ export default function ActiveSessionsSidebar({
     }
     document.addEventListener('keydown', shortcuts);
     return () => document.removeEventListener('keydown', shortcuts);
-  }, [focusedPanel, highlightedNavigationKey, keyboardEnabled, navigationItems, onActivate, onWorkspaceFocus, open, view]);
+  }, [focusedPanel, highlightedNavigationKey, keyboardEnabled, navigationItems, onActivate, onWorkspaceFocus, open, sessionsPanel, view]);
 
   function setGroupCollapsed(label, collapsed) {
     setCollapsedGroups((current) => {
@@ -297,8 +307,17 @@ export default function ActiveSessionsSidebar({
       return;
     }
     setView(nextView);
-    onPanelFocus(`sidebar-${nextView}`);
+    onPanelFocus(panelName(nextView));
     if (!open) onToggle();
+  }
+
+  function navigateView(direction) {
+    if (SIDEBAR_VIEWS.length < 2) return;
+    const currentIndex = Math.max(0, SIDEBAR_VIEWS.indexOf(view));
+    const nextIndex = (currentIndex + direction + SIDEBAR_VIEWS.length) % SIDEBAR_VIEWS.length;
+    const nextView = SIDEBAR_VIEWS[nextIndex];
+    setView(nextView);
+    onPanelFocus(panelName(nextView));
   }
 
   return (
@@ -317,7 +336,10 @@ export default function ActiveSessionsSidebar({
       >
         <div className="sticky top-0 grid h-screen min-w-60 content-start gap-1 overflow-y-auto pr-1.5">
           <div className="grid gap-2 border-b-4 border-accent px-2 pt-2 pb-2">
-            <h1 className="truncate text-3xl font-black tracking-tight">FritzWorks</h1>
+            <div className="flex min-w-0 items-center gap-2">
+              <BrandLogo className="size-11 shrink-0 drop-shadow-sm" />
+              <h1 className="truncate text-2xl font-black tracking-tight">FritzWorks</h1>
+            </div>
             <div className="flex flex-wrap gap-2">
               <Button className="min-w-10 gap-1 px-2" aria-label="New repository session" title="New repository session" onClick={onNewRepo}>
                 <span className="text-lg leading-none" aria-hidden="true">+</span><AssetIcon name="git-branch" />
@@ -328,7 +350,13 @@ export default function ActiveSessionsSidebar({
             </div>
           </div>
           {view === 'sessions' ? (
-            <div id="sidebar-sessions-view" role="tabpanel" aria-labelledby="sidebar-sessions-tab" className="grid min-w-0 content-start gap-1">
+            <div id={`${sessionsPanel}-view`} role="tabpanel" aria-labelledby={`${sessionsPanel}-tab`} className="grid min-w-0 content-start gap-1">
+              <DaemonTabs
+                targets={targets}
+                currentTargetId={currentTargetId}
+                connections={connections}
+                onChange={onTargetChange}
+              />
               <div className="flex min-h-9 items-center justify-between gap-2 px-2">
                 <h2 className="truncate text-sm font-bold text-primary">Active &amp; Paused</h2>
                 {loading && <Spinner className="size-3.5" />}
@@ -383,7 +411,7 @@ export default function ActiveSessionsSidebar({
               })}
             </div>
           ) : (
-            <div id="sidebar-settings-view" role="tabpanel" aria-labelledby="sidebar-settings-tab" className="grid content-start gap-5 px-2 py-3">
+            <div id={`${panelName('settings')}-view`} role="tabpanel" aria-labelledby={`${panelName('settings')}-tab`} className="grid content-start gap-5 px-2 py-3">
               <section className="grid gap-2">
                 <label className="grid gap-1 text-sm font-bold text-primary" htmlFor="sidebar-theme">Theme</label>
                 <select id="sidebar-theme" className={`${selectClass} w-full`} value={theme} onChange={(event) => onThemeChange(event.target.value)}>
@@ -395,6 +423,7 @@ export default function ActiveSessionsSidebar({
                 <label className="text-sm font-bold text-primary" htmlFor="sidebar-terminal-mode">Terminal colors</label>
                 <select id="sidebar-terminal-mode" className={`${selectClass} w-full`} value={terminalMode} onChange={(event) => onTerminalModeChange(event.target.value)}>
                   <option value="dark">Dark</option>
+                  <option value="black">Black</option>
                   <option value="light">Light</option>
                 </select>
                 <label className="mt-1 text-sm font-bold text-primary" htmlFor="sidebar-terminal-font">Terminal font</label>
@@ -425,18 +454,18 @@ export default function ActiveSessionsSidebar({
         role="tablist"
         aria-label="Sidebar views"
       >
-          {['sessions', 'settings'].map((option) => {
+          {SIDEBAR_VIEWS.map((option) => {
             const selected = view === option;
             const expanded = open && selected;
             return (
               <button
                 key={option}
-                id={`sidebar-${option}-tab`}
+                id={`${panelName(option)}-tab`}
                 type="button"
                 role="tab"
-                className={`flex h-12 w-10 items-center justify-center rounded-r-lg border border-l-0 border-primary shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${selected ? 'bg-accent text-on-accent' : 'bg-page text-primary hover:bg-soft hover:text-on-soft'} ${focusedPanel === `sidebar-${option}` ? 'outline-2 outline-offset-1 outline-accent' : ''}`}
+                className={`flex h-12 w-10 items-center justify-center rounded-r-lg border border-l-0 border-primary shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${selected ? 'bg-accent text-on-accent' : 'bg-page text-primary hover:bg-soft hover:text-on-soft'} ${focusedPanel === panelName(option) ? 'outline-2 outline-offset-1 outline-accent' : ''}`}
                 aria-label={`${expanded ? 'Collapse' : 'Open'} ${option} sidebar view`}
-                aria-controls={`sidebar-${option}-view`}
+                aria-controls={`${panelName(option)}-view`}
                 aria-selected={selected}
                 aria-expanded={expanded}
                 title={`${expanded ? 'Collapse' : 'Open'} ${option} view`}

@@ -4,6 +4,7 @@ import { createRepoSession, createScratchpadSession, getNewSessionDefaults } fro
 import { DEFAULT_WORKSPACE_ROLES } from './constants.js';
 import { ChevronIcon, Spinner } from './icons.jsx';
 import LinkEditor from './LinkEditor.jsx';
+import { useTarget } from './target-context.js';
 import {
   AgentToggle, Button, Definition, DefinitionList, ErrorMessage, Field, inputClass, Modal,
 } from './ui.jsx';
@@ -66,6 +67,7 @@ function RepoCombobox({ value, onChange, repositories, disabled }) {
 }
 
 export default function NewSessionModal({ kind, onClose, onCreated }) {
+  const target = useTarget();
   const repoMode = kind === 'repo';
   const [defaults, setDefaults] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -80,7 +82,7 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    getNewSessionDefaults(controller.signal)
+    getNewSessionDefaults(controller.signal, target)
       .then((body) => {
         setDefaults(body);
         setAgent(body.agent === 'codex' ? 'codex' : 'claude');
@@ -89,7 +91,7 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
       .catch((cause) => { if (cause.name !== 'AbortError') setError(cause.message); })
       .finally(() => setLoading(false));
     return () => controller.abort();
-  }, [kind]);
+  }, [kind, target]);
 
   const repoPreview = useMemo(() => repoSelectorPreview(selector.trim()), [selector]);
   const preview = useMemo(() => {
@@ -118,8 +120,8 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
     setError('');
     try {
       const body = repoMode
-        ? await createRepoSession({ repository: repository.trim(), selector: selector.trim(), agent, panels: [...DEFAULT_WORKSPACE_ROLES], links })
-        : await createScratchpadSession({ name: name.trim(), agent, panels: [...DEFAULT_WORKSPACE_ROLES], links });
+        ? await createRepoSession({ repository: repository.trim(), selector: selector.trim(), agent, panels: [...DEFAULT_WORKSPACE_ROLES], links }, target)
+        : await createScratchpadSession({ name: name.trim(), agent, panels: [...DEFAULT_WORKSPACE_ROLES], links }, target);
       if (body.workstream?.id === undefined || body.workstream?.id === null) {
         throw new Error('The server did not return the new session.');
       }

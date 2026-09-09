@@ -4,6 +4,10 @@ export function XIcon({ className = svgClass }) {
   return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.5" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19" /></svg>;
 }
 
+export function ArchiveIcon({ className = svgClass }) {
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true"><path d="M4 10h16v10H4zM8 10V7h8v3M9 15h6M12 3v9M8.5 8.5 12 12l3.5-3.5" /></svg>;
+}
+
 export function RefreshIcon({ className = svgClass }) {
   return <svg className={className} viewBox="0 0 24 24" aria-hidden="true"><path d="M18.2 17.3A8.5 8.5 0 1 1 18.4 6.4" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="3.25" /><polygon points="23,11.5 12.5,8.7 19.7,1.5" fill="currentColor" stroke="currentColor" strokeLinejoin="round" strokeWidth=".8" /></svg>;
 }

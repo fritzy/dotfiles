@@ -1,0 +1,11 @@
+[Unit]
+Description=Persistent SSH tunnel to the cg workstation (url-open reverse forward + ws daemon LocalForward)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/ssh -N workstation-tunnel
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

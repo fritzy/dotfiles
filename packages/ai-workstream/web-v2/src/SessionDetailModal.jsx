@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { RefreshIcon, Spinner, XIcon } from './icons.jsx';
+import {
+  ArchiveIcon, MaskIcon, RefreshIcon, Spinner,
+} from './icons.jsx';
 import LinkEditor from './LinkEditor.jsx';
 import {
   AgentToggle, Button, Definition, DefinitionList, ErrorMessage, IconButton, inputClass, Modal, PanelToggles,
 } from './ui.jsx';
 import {
-  branchState, githubBranchUrl, opticalPillPadding, stackDescription, timestamp,
+  branchState, canArchiveSession, githubBranchUrl, opticalPillPadding, stackDescription, timestamp,
 } from './utils.js';
-import { MaskIcon } from './icons.jsx';
 
 function Status({ status }) {
   const classes = {
@@ -16,7 +17,8 @@ function Status({ status }) {
     paused: 'border-primary bg-paused text-on-paused',
     closed: 'border-danger bg-closed text-on-closed',
   }[status] || 'border-primary bg-page text-ink';
-  return <span className={`inline-flex min-h-8 items-center rounded-full border px-3 text-xs font-bold lowercase ${opticalPillPadding(status)} ${classes}`}>{status}</span>;
+  const label = status === 'closed' ? 'archived' : status;
+  return <span className={`inline-flex min-h-8 items-center rounded-full border px-3 text-xs font-bold lowercase ${opticalPillPadding(label)} ${classes}`}>{label}</span>;
 }
 
 export default function SessionDetailModal({ sessionId, item, loading, loadError, onClose, mutate }) {
@@ -84,12 +86,13 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
               onToggle={(panel) => run('panel-toggle', { panel })}
             />
             <div className="ml-auto flex flex-wrap gap-2">
-              <IconButton
-                variant="danger"
-                label="Close workstream"
-                disabled={busy || item.closeable === false || item.status === 'closed'}
-                onClick={() => run('close')}
-              ><XIcon /></IconButton>
+              {canArchiveSession(item) && (
+                <IconButton
+                  label="Archive session"
+                  disabled={busy}
+                  onClick={() => run('archive')}
+                ><ArchiveIcon /></IconButton>
+              )}
               <Button variant="soft" disabled={busy || item.status !== 'active'} onClick={() => run('pause')}>Pause</Button>
               <IconButton
                 label="Open or resume workstream"

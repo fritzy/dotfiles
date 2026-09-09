@@ -11,6 +11,8 @@ test('CLI exposes help, version, and resolved configuration without running on i
   assert.match(help, /ws daemon \[start\|stop\|restart\|status\|foreground\|log]/);
   assert.match(help, /ws web start/);
   assert.match(help, /ws refresh/);
+  assert.match(help, /ws archive \[id\|branch\]/);
+  assert.match(help, /aliases: close, rm/);
   assert.match(help, /ws hooks \[install\|status]/);
   assert.equal(VERSION, '1.0.0');
   assert.ok(CONFIG.defaultConfigPath.endsWith('/ai-workstream/config.ini'));

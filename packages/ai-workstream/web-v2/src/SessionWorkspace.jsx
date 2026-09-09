@@ -3,13 +3,14 @@ import {
 } from 'react';
 
 import {
-  AssetIcon, EditorIcon, RobotIcon, ShellIcon, Spinner, XIcon,
+  ArchiveIcon, AssetIcon, EditorIcon, RobotIcon, ShellIcon, Spinner, XIcon,
 } from './icons.jsx';
 import { LinkPill } from './LinkEditor.jsx';
 import { panelsForMode } from './constants.js';
 import {
   AgentToggle, Button, IconButton, PanelModeToggle,
 } from './ui.jsx';
+import { canArchiveSession } from './utils.js';
 
 const LocalTerminal = lazy(() => import('./LocalTerminal.jsx'));
 const MIN_PANEL_PIXELS = 160;
@@ -162,11 +163,10 @@ function SplitHandle({
 }
 
 export default function SessionWorkspace({
-  session, visible, focusedPanel, onPanelFocus, onDetails, onClose, onAgentChange,
-  onOpenNotes, terminalMode, fontFamily, onSidebarFocus, onBottomTerminalFocus,
-  onFullscreenChange, fullscreenExitRevision, onToggleSidebar,
+  session, target, visible, focusedPanel, onPanelFocus, onDetails, onArchive, onClose, onAgentChange,
+  panelMode = 'two', onPanelModeChange, onOpenNotes, terminalMode, fontFamily, onSidebarFocus, onBottomTerminalFocus,
+  onFullscreenChange, fullscreenExitRevision, onToggleSidebar, onNewTerminal,
 }) {
-  const [panelMode, setPanelMode] = useState('two');
   const roles = useMemo(() => panelsForMode(panelMode), [panelMode]);
   const containerRef = useRef(null);
   const boundariesRef = useRef(readBoundaries(roles.length));
@@ -175,10 +175,14 @@ export default function SessionWorkspace({
   const [agentError, setAgentError] = useState('');
   const [notesOpening, setNotesOpening] = useState(false);
   const [notesError, setNotesError] = useState('');
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState('');
   const [fontSizes, setFontSizes] = useState(() => readFontSizes(session.id));
   const [fullscreenRole, setFullscreenRole] = useState(null);
   const fullscreenReportedRef = useRef(false);
-  const fullscreenSource = `workspace-${session.id}`;
+  const targetId = target?.id || 'local';
+  const fullscreenSource = `workspace-${targetId}-${session.id}`;
+  const panelId = (role) => `workspace-${targetId}-${session.id}-${role}`;
   boundariesRef.current = boundaries;
   const columns = useMemo(() => columnsFor(boundaries), [boundaries]);
   const displayName = session.name || session.branch || String(session.id);
@@ -245,7 +249,7 @@ export default function SessionWorkspace({
     const nextRole = roles[index + direction];
     if (!nextRole) return;
     leaveFullscreen();
-    onPanelFocus(`workspace-${session.id}-${nextRole}`);
+    onPanelFocus(panelId(nextRole));
   }
 
   function leaveFullscreen() {
@@ -287,6 +291,18 @@ export default function SessionWorkspace({
     }
   }
 
+  async function archiveSession() {
+    if (archiving || !canArchiveSession(session)) return;
+    setArchiving(true);
+    setArchiveError('');
+    try {
+      await onArchive(session);
+    } catch (cause) {
+      setArchiveError(cause.message);
+      setArchiving(false);
+    }
+  }
+
   function changeFontSize(role, delta) {
     setFontSizes((current) => ({
       ...current,
@@ -297,8 +313,8 @@ export default function SessionWorkspace({
   function changePanelMode(nextMode) {
     if (nextMode === panelMode) return;
     if (nextMode === 'two' && fullscreenRole === 'editor') setFullscreenRole(null);
-    setPanelMode(nextMode);
-    onPanelFocus(`workspace-${session.id}-${nextMode === 'three' ? 'editor' : 'shell'}`);
+    onPanelModeChange(nextMode);
+    onPanelFocus(panelId(nextMode === 'three' ? 'editor' : 'shell'));
   }
 
   function toggleFullscreen(role) {
@@ -306,7 +322,7 @@ export default function SessionWorkspace({
     // Report during the input event so requestFullscreen retains user activation.
     onFullscreenChange?.(fullscreenSource, nextRole !== null);
     setFullscreenRole(nextRole);
-    onPanelFocus(`workspace-${session.id}-${role}`);
+    onPanelFocus(panelId(role));
   }
 
   return (
@@ -338,6 +354,12 @@ export default function SessionWorkspace({
             {notesError && <span className="max-w-48 truncate text-xs text-danger" role="alert" title={notesError}>{notesError}</span>}
           </nav>
         )}
+        {archiveError && <span className="max-w-48 truncate text-xs text-danger" role="alert" title={archiveError}>{archiveError}</span>}
+        {canArchiveSession(session) && (
+          <IconButton compact label="Archive session" title="Archive session" disabled={archiving} onClick={archiveSession}>
+            {archiving ? <Spinner /> : <ArchiveIcon />}
+          </IconButton>
+        )}
         <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={() => onDetails(session.id)}>Details</Button>
         <IconButton compact label="Close terminal workspace" title="Close terminal workspace" onClick={onClose}><XIcon /></IconButton>
       </header>}
@@ -348,7 +370,7 @@ export default function SessionWorkspace({
       >
         {roles.map((role, index) => {
           const { label, Icon } = ROLE_DETAILS[role];
-          const panelName = `workspace-${session.id}-${role}`;
+          const panelName = panelId(role);
           const focused = focusedPanel === panelName;
           const suppressed = Boolean(fullscreenRole && fullscreenRole !== role);
           return (
@@ -386,6 +408,7 @@ export default function SessionWorkspace({
                     key={role === 'agent' ? `${role}-${session.agent}` : role}
                     sessionId={session.id}
                     role={role}
+                    terminalId={`workspace-${role}`}
                     fontSize={fontSizes[role]}
                     fontFamily={fontFamily}
                     themeMode={terminalMode}
@@ -396,6 +419,7 @@ export default function SessionWorkspace({
                     onNavigateDown={focusBottomTerminal}
                     onToggleFullscreen={() => toggleFullscreen(role)}
                     onToggleSidebar={onToggleSidebar}
+                    onNewTerminal={onNewTerminal}
                     label={`${label} terminal for ${displayName}`}
                     className="rounded-none border-0"
                   />
@@ -413,7 +437,7 @@ export default function SessionWorkspace({
             boundaries={boundaries}
             onChange={changeBoundary}
             onCommit={saveBoundaries}
-            onFocus={() => onPanelFocus(`workspace-${session.id}-${roles[index]}`)}
+            onFocus={() => onPanelFocus(panelId(roles[index]))}
             onReset={resetBoundaries}
           />
         ))}

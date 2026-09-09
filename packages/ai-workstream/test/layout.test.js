@@ -3,10 +3,14 @@ import test from 'node:test';
 
 import {
   agentCommand,
+  browserAgentSessionName,
+  browserTerminalSessionName,
   closePane,
   closeTabInSession,
   focusAgentInSession,
   focusShellInSession,
+  ensureBrowserTerminalSession,
+  killBrowserTerminalSession,
   openTabInSession,
   openTabNames,
   panelStatesInSession,
@@ -61,6 +65,54 @@ test('configured locations use the lightweight agent model without hardcoded nam
     agentCommand(configured, {}, baseConfig),
     "AI_WORKSTREAM_ID='savefiles' 'claude' '--model' 'sonnet' '--continue' || AI_WORKSTREAM_ID='savefiles' 'claude' '--model' 'sonnet'",
   );
+});
+
+test('browser terminal session names are stable per role and standalone terminal', () => {
+  assert.equal(
+    browserTerminalSessionName({ sessionId: 7, role: 'shell', terminalId: 'ignored' }),
+    'ws-browser-shell-7',
+  );
+  assert.equal(browserAgentSessionName(7), 'ws-browser-agent-7');
+  assert.equal(
+    browserTerminalSessionName({ terminalId: 'terminal-client-42' }),
+    'ws-browser-terminal-terminal-client-42',
+  );
+});
+
+test('browser terminals recreate a missing Zellij session and reuse a live one', () => {
+  const identity = { terminalId: 'terminal-restart' };
+  const session = browserTerminalSessionName(identity);
+  const calls = [];
+  let live = false;
+  const run = (args) => {
+    calls.push(args);
+    if (args[0] === 'list-sessions') {
+      return live
+        ? { status: 0, stdout: `${session}\n`, stderr: '' }
+        : { status: 1, stdout: '', stderr: 'No active zellij sessions found.' };
+    }
+    if (args.includes('--create-background')) {
+      live = true;
+      return { status: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'kill-session') {
+      live = false;
+      return { status: 0, stdout: '', stderr: '' };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  assert.deepEqual(
+    ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
+    { session, created: true },
+  );
+  assert.deepEqual(
+    ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
+    { session, created: false },
+  );
+  assert.equal(calls.filter((args) => args.includes('--create-background')).length, 1);
+  assert.equal(killBrowserTerminalSession(identity, { run }), true);
+  assert.equal(live, false);
 });
 
 test('startup layout contains only the first panel outside a nested pane container', () => {

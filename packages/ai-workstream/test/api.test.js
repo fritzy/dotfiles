@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -27,6 +28,30 @@ import {
   upsertWorkstream,
   workstreamSlug,
 } from '../lib/core.js';
+import { browserTerminalSessionName } from '../lib/zellij.js';
+
+function rawUpgradeStatus(port, path, origin) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1', () => {
+      socket.write(
+        `GET ${path} HTTP/1.1\r\n`
+        + `Host: 127.0.0.1:${port}\r\n`
+        + 'Connection: Upgrade\r\n'
+        + 'Upgrade: websocket\r\n'
+        + 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+        + 'Sec-WebSocket-Version: 13\r\n'
+        + (origin ? `Origin: ${origin}\r\n` : '')
+        + '\r\n',
+      );
+    });
+    socket.once('data', (chunk) => {
+      const status = Number(chunk.toString('utf8').match(/^HTTP\/1\.1 (\d+)/)?.[1]);
+      socket.destroy();
+      resolve(status);
+    });
+    socket.once('error', reject);
+  });
+}
 
 async function waitUntil(predicate, message, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs;
@@ -207,11 +232,13 @@ test('POST command model mutates only supported workstream state', (t) => {
   });
   assert.deepEqual(openedPaths, [repo.path, notesPath, config.paths.notes]);
   for (const id of Object.keys(config.locations)) {
-    for (const body of [{}, { remove: true, force: true }]) {
-      assert.throws(
-        () => executeWorkstreamCommand(db, id, 'close', body, { config }),
-        (error) => error instanceof ApiError && error.status === 400,
-      );
+    for (const command of ['archive', 'close']) {
+      for (const body of [{}, { remove: true, force: true }]) {
+        assert.throws(
+          () => executeWorkstreamCommand(db, id, command, body, { config }),
+          (error) => error instanceof ApiError && error.status === 400,
+        );
+      }
     }
   }
   response = executeWorkstreamCommand(db, 'dotfiles', 'pause', {}, {
@@ -271,7 +298,8 @@ test('POST command model mutates only supported workstream state', (t) => {
     () => executeWorkstreamCommand(db, String(closed.id), 'open-path', {}, { openPath: () => ({}) }),
     (error) => error instanceof ApiError && error.status === 404,
   );
-  response = executeWorkstreamCommand(db, String(repo.id), 'close', {}, { closeTab: () => false });
+  response = executeWorkstreamCommand(db, String(repo.id), 'archive', {}, { closeTab: () => false });
+  assert.equal(response.command, 'archive');
   assert.equal(response.workstream.status, 'closed');
   assert.deepEqual(response.result, { removed: false });
   executeWorkstreamCommand(db, String(scratch.id), 'pause', {}, { closeTab: () => false });
@@ -331,6 +359,29 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const prChecks = [];
   const seededSessions = [];
   const terminalPtys = [];
+  const ensuredTerminalSessions = [];
+  const killedTerminalSessions = [];
+  const killedTerminalNames = () => killedTerminalSessions.map(browserTerminalSessionName);
+  const fakeTerminal = (options) => {
+    let dataListener = null;
+    const terminal = {
+      options,
+      writes: [],
+      resizes: [],
+      killed: false,
+      onData(listener) {
+        dataListener = listener;
+        setImmediate(() => dataListener?.('\u001b[32mPTY_READY\u001b[0m'));
+        return { dispose: () => { dataListener = null; } };
+      },
+      onExit() { return { dispose() {} }; },
+      write(data) { this.writes.push(data); },
+      resize(cols, rows) { this.resizes.push([cols, rows]); },
+      kill() { this.killed = true; },
+    };
+    terminalPtys.push(terminal);
+    return terminal;
+  };
   const service = createApiService({
     db,
     config,
@@ -453,25 +504,14 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
         },
       ];
     },
-    spawnTerminal: (options) => {
-      let dataListener = null;
-      const terminal = {
-        options,
-        writes: [],
-        resizes: [],
-        killed: false,
-        onData(listener) {
-          dataListener = listener;
-          setImmediate(() => dataListener?.('\u001b[32mPTY_READY\u001b[0m'));
-          return { dispose: () => { dataListener = null; } };
-        },
-        onExit() { return { dispose() {} }; },
-        write(data) { this.writes.push(data); },
-        resize(cols, rows) { this.resizes.push([cols, rows]); },
-        kill() { this.killed = true; },
-      };
-      terminalPtys.push(terminal);
-      return terminal;
+    spawnTerminalAttach: fakeTerminal,
+    terminalSessionConfigFile: () => 'test-terminal-config.kdl',
+    ensureTerminalSession: (identity, options) => {
+      ensuredTerminalSessions.push({ identity, ...options });
+    },
+    killTerminalSession: (identity) => {
+      killedTerminalSessions.push(identity);
+      return true;
     },
   });
   try {
@@ -492,6 +532,47 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
 
   const health = await (await fetch(`${base}/health`)).json();
   assert.match(health.revision, /^[a-f0-9]{16}$/);
+  const daemons = await (await fetch(`${base}/daemons`)).json();
+  assert.deepEqual(daemons.daemons, [
+    { id: 'workstation', name: 'Workstation', url: 'http://127.1.1.2:7337' },
+  ]);
+  const emptyBrowserState = await (await fetch(`${base}/browser/state?scope=workspaces`)).json();
+  assert.deepEqual(emptyBrowserState, {
+    scope: 'workspaces', state: {}, updatedAt: null,
+  });
+  const savedBrowserState = await (await fetch(`${base}/browser/state`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      scope: 'workspaces',
+      state: { workspaces: [{ id: String(repo.id), panelMode: 'three' }], activeWorkspaceId: String(repo.id) },
+    }),
+  })).json();
+  assert.equal(savedBrowserState.scope, 'workspaces');
+  assert.deepEqual(
+    (await (await fetch(`${base}/browser/state?scope=workspaces`)).json()).state,
+    { workspaces: [{ id: String(repo.id), panelMode: 'three' }], activeWorkspaceId: String(repo.id) },
+  );
+  assert.equal((await fetch(`${base}/browser/state?scope=unknown`)).status, 400);
+
+  // The daemon-selector reaches this server cross-origin (e.g. a page on
+  // 127.0.0.1 fetching a daemon at 127.1.1.2); a real remote attacker can
+  // never present a loopback Origin, so it's trusted the same as same-origin.
+  const crossOriginHealth = await fetch(`${base}/health`, { headers: { Origin: 'http://127.1.1.2:9999' } });
+  assert.equal(crossOriginHealth.headers.get('access-control-allow-origin'), 'http://127.1.1.2:9999');
+  const preflight = await fetch(`${base}/ws`, {
+    method: 'OPTIONS', headers: { Origin: 'http://127.1.1.2:9999', 'Access-Control-Request-Method': 'POST' },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-methods'), 'GET, POST, PUT, HEAD, OPTIONS');
+  const untrustedOrigin = await fetch(`${base}/health`, { headers: { Origin: 'https://evil.example.com' } });
+  assert.equal(untrustedOrigin.headers.get('access-control-allow-origin'), null);
+
+  // A mismatched Host is fine for the WS upgrade when the Origin is also
+  // loopback (the daemon-selector's whole point); a real remote page can
+  // never present one, so a non-loopback mismatch is still rejected.
+  assert.equal(await rawUpgradeStatus(port, '/ws/events', 'http://127.1.1.2:9999'), 101);
+  assert.equal(await rawUpgradeStatus(port, '/ws/events', 'https://evil.example.com'), 404);
   const index = await fetch(`${base}/`);
   assert.equal(index.status, 200);
   // Markdown previews load images a note links to; everything else stays same-origin.
@@ -499,6 +580,9 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.match(csp, /default-src 'self'/);
   assert.match(csp, /script-src 'self'/);
   assert.match(csp, /img-src 'self' data: blob: https:/);
+  // The daemon-selector's fetch() calls to another daemon need its origin in
+  // connect-src; WebSocket already gets a free pass from the ws:/wss: schemes.
+  assert.match(csp, /connect-src 'self' ws: wss: http:\/\/127\.1\.1\.2:7337/);
   assert.match(index.headers.get('content-type'), /^text\/html/);
   const rootHtml = await index.text();
   assert.match(rootHtml, /<title>FritzWorks<\/title>/);
@@ -637,18 +721,38 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
       resolve(JSON.parse(event.data));
     }, { once: true });
   });
+  const nextTerminalMessage = (terminalSocket, type) => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`timed out waiting for terminal ${type}`)), 1000);
+    const listener = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type !== type) return;
+      clearTimeout(timeout);
+      terminalSocket.removeEventListener('message', listener);
+      resolve(message);
+    };
+    terminalSocket.addEventListener('message', listener);
+  });
+
+  const browserStateChanged = nextMessage('browser state invalidation');
+  const savedBottomState = await fetch(`${base}/browser/state`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client: 'client-sync-test',
+      scope: 'bottom-terminals',
+      state: { terminals: [{ id: 'terminal-one', kind: 'terminal', label: 'terminal 1' }] },
+    }),
+  });
+  assert.equal(savedBottomState.status, 200);
+  assert.deepEqual(await browserStateChanged, {
+    type: 'browser_state', scope: 'bottom-terminals', clientId: 'client-sync-test',
+  });
 
   const terminalUpgrade = await fetch(`${base}/ws/terminal`);
   assert.equal(terminalUpgrade.status, 426);
   assert.deepEqual(await terminalUpgrade.json(), { error: 'upgrade_required', websocket: '/ws/terminal' });
   const terminalSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal`);
-  const firstTerminalMessage = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('timed out waiting for terminal output')), 1000);
-    terminalSocket.addEventListener('message', (event) => {
-      clearTimeout(timeout);
-      resolve(JSON.parse(event.data));
-    }, { once: true });
-  });
+  const firstTerminalMessage = nextTerminalMessage(terminalSocket, 'output');
   await new Promise((resolve, reject) => {
     terminalSocket.addEventListener('open', resolve, { once: true });
     terminalSocket.addEventListener('error', () => reject(new Error('terminal websocket failed')), { once: true });
@@ -661,6 +765,12 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.deepEqual(terminalPtys[0].resizes, [[132, 41]]);
   assert.equal(terminalPtys[0].options.cols, 80);
   assert.equal(terminalPtys[0].options.rows, 24);
+  assert.equal(terminalPtys[0].options.session, browserTerminalSessionName({ terminalId: 'default' }));
+  assert.deepEqual(ensuredTerminalSessions[0], {
+    identity: { sessionId: null, role: 'shell', terminalId: 'default' },
+    command: ['zsh', '-l'],
+    cwd: process.env.HOME || '/outside',
+  });
   const terminalClosed = new Promise((resolve) => terminalSocket.addEventListener('close', resolve, { once: true }));
   terminalSocket.close();
   await terminalClosed;
@@ -677,9 +787,12 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   });
   assert.deepEqual(await activeTerminalPromise, { id: repo.id, type: 'update_session' });
   assert.equal(terminalPtys[1].options.cwd, repo.path);
-  assert.equal(terminalPtys[1].options.command, 'zsh');
-  assert.deepEqual(terminalPtys[1].options.args, ['-l']);
-  assert.equal(terminalPtys[1].options.env.AI_WORKSTREAM_ID, String(repo.id));
+  assert.equal(terminalPtys[1].options.session, browserTerminalSessionName({
+    sessionId: String(repo.id), role: 'shell', terminalId: 'default',
+  }));
+  assert.deepEqual(ensuredTerminalSessions[1].command, [
+    'env', `AI_WORKSTREAM_ID=${repo.id}`, 'zsh', '-l',
+  ]);
   const activeBrowserTerminal = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(activeBrowserTerminal.items[0].status, 'active');
   await waitUntil(
@@ -712,8 +825,12 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.deepEqual(await (await fetch(`${base}/ws/terminal-sessions`)).json(), {
     sessions: [{ id: repo.id, count: 2 }],
   });
-  assert.equal(terminalPtys[2].options.command, 'nvim');
-  assert.deepEqual(terminalPtys[2].options.args, ['--clean']);
+  assert.equal(terminalPtys[2].options.session, browserTerminalSessionName({
+    sessionId: String(repo.id), role: 'editor', terminalId: 'default',
+  }));
+  assert.deepEqual(ensuredTerminalSessions[2].command, [
+    'env', `AI_WORKSTREAM_ID=${repo.id}`, 'nvim', '--clean',
+  ]);
   const pausedTerminalPromise = nextMessage('browser terminal paused');
   const sessionTerminalClosed = new Promise((resolve) => sessionTerminalSocket.addEventListener('close', resolve, { once: true }));
   sessionTerminalSocket.close();
@@ -739,8 +856,14 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     dotfilesTerminalSocket.addEventListener('error', () => reject(new Error('configured terminal websocket failed')), { once: true });
   });
   assert.deepEqual(await dotfilesActivePromise, { id: 'dotfiles', type: 'update_session' });
-  assert.equal(terminalPtys[3].options.command, 'sh');
-  assert.match(terminalPtys[3].options.args[1], /'claude' '--model' 'sonnet' '--continue'/);
+  assert.deepEqual(ensuredTerminalSessions[3].identity, {
+    sessionId: 'dotfiles', role: 'agent', terminalId: 'default',
+  });
+  assert.equal(ensuredTerminalSessions[3].command[0], 'sh');
+  assert.match(ensuredTerminalSessions[3].command[2], /'claude' '--model' 'sonnet' '--continue'/);
+  assert.equal(terminalPtys[3].options.session, browserTerminalSessionName({
+    sessionId: 'dotfiles', role: 'agent', terminalId: 'default',
+  }));
   const activeDotfiles = await (await fetch(`${base}/ws/dotfiles/?status=all`)).json();
   assert.equal(activeDotfiles.items[0].status, 'active');
 
@@ -859,6 +982,9 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal((await paused.json()).workstream.status, 'paused');
   assert.equal(prChecks.filter((check) => check.id === repo.id).length, checksBeforePause + 1);
   assert.deepEqual(closedTabs, []);
+  assert.deepEqual(killedTerminalNames(), ['shell', 'editor', 'agent'].map((role) => (
+    browserTerminalSessionName({ sessionId: String(repo.id), role })
+  )));
 
   const checksBeforeResume = prChecks.filter((check) => check.id === repo.id).length;
   const resumed = await fetch(`${base}/ws/${repo.id}/resume`, {
@@ -984,14 +1110,17 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.deepEqual(await dotfilesAgentSetPromise, { id: 'dotfiles', type: 'update_session' });
   await previousDotfilesAgentClosed;
   assert.equal(terminalPtys[3].killed, true);
+  assert.deepEqual(killedTerminalNames().slice(-1), [
+    browserTerminalSessionName({ sessionId: 'dotfiles', role: 'agent' }),
+  ]);
   dotfilesTerminalSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?session=dotfiles&role=agent`);
   await new Promise((resolve, reject) => {
     dotfilesTerminalSocket.addEventListener('open', resolve, { once: true });
     dotfilesTerminalSocket.addEventListener('error', () => reject(new Error('replacement configured terminal websocket failed')), { once: true });
   });
-  assert.equal(terminalPtys.at(-1).options.command, 'sh');
-  assert.match(terminalPtys.at(-1).options.args[1], /codex/);
-  assert.match(terminalPtys.at(-1).options.args[1], /resume/);
+  assert.equal(ensuredTerminalSessions.at(-1).command[0], 'sh');
+  assert.match(ensuredTerminalSessions.at(-1).command[2], /codex/);
+  assert.match(ensuredTerminalSessions.at(-1).command[2], /resume/);
 
   const dotfilesPausePromise = nextMessage('configured browser terminal paused');
   const dotfilesTerminalClosed = new Promise((resolve) => dotfilesTerminalSocket.addEventListener('close', resolve, { once: true }));
@@ -1004,6 +1133,9 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal((await dotfilesPaused.json()).workstream.status, 'paused');
   await dotfilesTerminalClosed;
   assert.deepEqual(await dotfilesPausePromise, { id: 'dotfiles', type: 'update_session' });
+  assert.deepEqual(killedTerminalNames().slice(-3), ['shell', 'editor', 'agent'].map((role) => (
+    browserTerminalSessionName({ sessionId: 'dotfiles', role })
+  )));
 
   const notesResumed = await fetch(`${base}/ws/notes/resume`, {
     method: 'POST',
@@ -1016,29 +1148,108 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const notesDetail = await (await fetch(`${base}/ws/notes/?status=all`)).json();
   assert.equal(notesDetail.items[0].status, 'paused');
 
-  for (const body of [{}, { remove: true, force: true }]) {
-    const rejected = await fetch(`${base}/ws/notes/close`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    assert.equal(rejected.status, 400);
+  for (const command of ['archive', 'close']) {
+    for (const body of [{}, { remove: true, force: true }]) {
+      const rejected = await fetch(`${base}/ws/notes/${command}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      assert.equal(rejected.status, 400);
+    }
   }
   assert.equal(openTabSet.has('notes'), false);
 
-  const checksBeforeClose = prChecks.filter(
+  const checksBeforeArchive = prChecks.filter(
     (check) => check.id === createdFromWeb.workstream.id
   ).length;
-  const closedRepo = await fetch(`${base}/ws/${createdFromWeb.workstream.id}/close`, {
+  const archivedRepo = await fetch(`${base}/ws/${createdFromWeb.workstream.id}/archive`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   });
-  assert.equal(closedRepo.status, 200);
-  assert.equal((await closedRepo.json()).workstream.status, 'closed');
+  assert.equal(archivedRepo.status, 200);
+  assert.equal((await archivedRepo.json()).workstream.status, 'closed');
   assert.equal(prChecks.filter(
     (check) => check.id === createdFromWeb.workstream.id
-  ).length, checksBeforeClose + 1);
+  ).length, checksBeforeArchive + 1);
+  assert.deepEqual(killedTerminalNames().slice(-3), ['shell', 'editor', 'agent'].map((role) => (
+    browserTerminalSessionName({ sessionId: String(createdFromWeb.workstream.id), role })
+  )));
+
+  // Only one browser client owns a Zellij attach at a time. A second client is
+  // told who has it, can explicitly take the attachment over, and leaves the
+  // displaced client waiting to reclaim it automatically after a disconnect.
+  const ownerSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?terminal=handoff&client=client-one`);
+  const ownerClaimed = nextTerminalMessage(ownerSocket, 'claimed');
+  await new Promise((resolve, reject) => {
+    ownerSocket.addEventListener('open', resolve, { once: true });
+    ownerSocket.addEventListener('error', () => reject(new Error('owner terminal websocket failed')), { once: true });
+  });
+  await ownerClaimed;
+  const originalOwnerPty = terminalPtys.at(-1);
+  const waitingSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?terminal=handoff&client=client-two`);
+  const waitingBusy = nextTerminalMessage(waitingSocket, 'busy');
+  await new Promise((resolve, reject) => {
+    waitingSocket.addEventListener('open', resolve, { once: true });
+    waitingSocket.addEventListener('error', () => reject(new Error('waiting terminal websocket failed')), { once: true });
+  });
+  assert.deepEqual(await waitingBusy, { type: 'busy', message: 'Active on another client' });
+  const ownerDisplaced = nextTerminalMessage(ownerSocket, 'busy');
+  const waitingClaimed = nextTerminalMessage(waitingSocket, 'claimed');
+  waitingSocket.send(JSON.stringify({ type: 'takeover' }));
+  assert.deepEqual(await ownerDisplaced, { type: 'busy', message: 'Active on another client' });
+  await waitingClaimed;
+  assert.equal(originalOwnerPty.killed, true);
+  assert.equal(terminalPtys.at(-1).options.session, browserTerminalSessionName({ terminalId: 'handoff' }));
+  const ownerReclaimed = nextTerminalMessage(ownerSocket, 'claimed');
+  const waitingClosed = new Promise((resolve) => waitingSocket.addEventListener('close', resolve, { once: true }));
+  waitingSocket.close();
+  await waitingClosed;
+  await ownerReclaimed;
+  const ownerClosed = new Promise((resolve) => ownerSocket.addEventListener('close', resolve, { once: true }));
+  ownerSocket.send(JSON.stringify({ type: 'terminate' }));
+  await ownerClosed;
+  assert.equal(killedTerminalNames().at(-1), browserTerminalSessionName({ terminalId: 'handoff' }));
+
+  // Following a daemon/network interruption, a non-owner may reach the daemon
+  // first. The returning owner gets one recovery handoff, while another stale
+  // owner claim waits instead of starting a takeover loop.
+  const earlySocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?terminal=recovery&client=client-two`);
+  const earlyClaimed = nextTerminalMessage(earlySocket, 'claimed');
+  await new Promise((resolve, reject) => {
+    earlySocket.addEventListener('open', resolve, { once: true });
+    earlySocket.addEventListener('error', () => reject(new Error('early recovery websocket failed')), { once: true });
+  });
+  await earlyClaimed;
+  const earlyPty = terminalPtys.at(-1);
+  const earlyDisplaced = nextTerminalMessage(earlySocket, 'busy');
+  const returningSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?terminal=recovery&client=client-one&owner=1`);
+  const returningClaimed = nextTerminalMessage(returningSocket, 'claimed');
+  await new Promise((resolve, reject) => {
+    returningSocket.addEventListener('open', resolve, { once: true });
+    returningSocket.addEventListener('error', () => reject(new Error('returning owner websocket failed')), { once: true });
+  });
+  assert.deepEqual(await earlyDisplaced, { type: 'busy', message: 'Active on another client' });
+  await returningClaimed;
+  assert.equal(earlyPty.killed, true);
+  const returningPty = terminalPtys.at(-1);
+
+  const rivalSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?terminal=recovery&client=client-three&owner=1`);
+  const rivalBusy = nextTerminalMessage(rivalSocket, 'busy');
+  await new Promise((resolve, reject) => {
+    rivalSocket.addEventListener('open', resolve, { once: true });
+    rivalSocket.addEventListener('error', () => reject(new Error('rival recovery websocket failed')), { once: true });
+  });
+  assert.deepEqual(await rivalBusy, { type: 'busy', message: 'Active on another client' });
+  assert.equal(returningPty.killed, false);
+
+  rivalSocket.close();
+  const earlyClosed = new Promise((resolve) => earlySocket.addEventListener('close', resolve, { once: true }));
+  const returningClosed = new Promise((resolve) => returningSocket.addEventListener('close', resolve, { once: true }));
+  returningSocket.send(JSON.stringify({ type: 'terminate' }));
+  await Promise.all([earlyClosed, returningClosed]);
+  assert.equal(killedTerminalNames().at(-1), browserTerminalSessionName({ terminalId: 'recovery' }));
 });
 
 test('notes editor endpoints read, write, and remember markdown files', async (t) => {

@@ -28,6 +28,7 @@ import {
   openDb,
   parseSelector,
   prCheckDue,
+  readBrowserUiState,
   recentRepositories,
   removeIssue,
   removeWorktree,
@@ -47,12 +48,17 @@ import {
   worktreeCleanAsync,
   workstreamEventsAfter,
   workstreamView,
+  writeBrowserUiState,
   writeSeed,
 } from './core.js';
 import {
   agentCommand,
+  browserTerminalConfigFile,
+  browserTerminalSessionName,
+  ensureBrowserTerminalSession,
   focusAgentInSession,
   focusShellInSession,
+  killBrowserTerminalSession,
   panelStatesInSession,
   replaceAgentInSession,
   renameTabInSession,
@@ -76,7 +82,7 @@ import {
   writeNotesFile,
 } from './notes-files.js';
 import { DAEMON_REVISION } from './daemon.js';
-import { spawnZshTerminal } from './pty.js';
+import { spawnZellijAttachTerminal } from './pty.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
@@ -95,8 +101,10 @@ const V2_FONT_TYPES = new Map([
 const TYPES = ['repo', 'scratchpad', 'misc'];
 const STATUSES = ['active', 'paused', 'closed', 'all', 'active_paused'];
 const MAX_WEBSOCKET_PAYLOAD = 1024 * 1024;
+const BROWSER_UI_SCOPES = new Set(['workspaces', 'bottom-terminals']);
+const BROWSER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 export const API_COMMANDS = [
-  'pause', 'resume', 'close', 'rename', 'log', 'issue-add', 'issue-remove', 'panel-toggle', 'open-path',
+  'pause', 'resume', 'archive', 'close', 'rename', 'log', 'issue-add', 'issue-remove', 'panel-toggle', 'open-path',
   'open-notes', 'focus-agent', 'focus-shell', 'agent-set',
 ];
 
@@ -117,6 +125,22 @@ function browserTerminalLaunch(role, workstream, config) {
   }
   const configured = role === 'editor' ? config.commands.editor : config.commands.shell;
   return { command: configured[0], args: configured.slice(1) };
+}
+
+function browserId(value, name, fallback = null) {
+  const id = value == null || value === '' ? fallback : String(value);
+  if (id === null || !BROWSER_ID_PATTERN.test(id)) {
+    throw new ApiError(400, `${name} must contain only letters, numbers, dots, underscores, and dashes`);
+  }
+  return id;
+}
+
+function browserUiScope(value) {
+  const scope = String(value || '');
+  if (!BROWSER_UI_SCOPES.has(scope)) {
+    throw new ApiError(400, `scope must be one of: ${[...BROWSER_UI_SCOPES].join(', ')}`);
+  }
+  return scope;
 }
 
 function integerQuery(value, name, fallback, { min, max }) {
@@ -449,8 +473,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
   const defaultAgent = config.agent || CONFIG.agent;
   const configuredRow = configuredLocationRow(id, config);
   if (configuredRow) {
-    if (command === 'close') {
-      throw new ApiError(400, `configured location "${id}" cannot be closed; pause its tab instead`);
+    if (command === 'archive' || command === 'close') {
+      throw new ApiError(400, `configured location "${id}" cannot be archived; pause its tab instead`);
     }
     if (!['pause', 'resume', 'focus-agent', 'focus-shell', 'panel-toggle', 'agent-set'].includes(command)) {
       throw new ApiError(400, `configured location "${id}" only supports pause, resume, open-path, focus-agent, focus-shell, panel-toggle, and agent-set`);
@@ -541,6 +565,7 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
       result = { browserTerminals: 'resume_requested', panels };
       break;
     }
+    case 'archive':
     case 'close': {
       const remove = body.remove === true;
       if (remove && existsSync(row.path)) {
@@ -657,6 +682,26 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
   };
 }
 
+// The client may be talking to us cross-origin (the daemon-selector switches
+// a page served by one loopback alias to fetch/WebSocket a different one, e.g.
+// the ws-tunnel's 127.1.1.2). A real remote attacker's page can never present
+// a loopback Origin, so trusting one here is no broader than trusting the
+// same-origin case this server was already built for.
+function loopbackHostname(hostname) {
+  return hostname === 'localhost' || hostname === '::1' || /^127(\.\d{1,3}){3}$/.test(hostname);
+}
+
+function loopbackOrigin(req) {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') return null;
+  try {
+    const parsed = new URL(origin);
+    return loopbackHostname(parsed.hostname) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
 function json(res, status, value, extraHeaders = {}) {
   const body = JSON.stringify(value, null, 2);
   res.writeHead(status, {
@@ -668,6 +713,13 @@ function json(res, status, value, extraHeaders = {}) {
   res.end(body);
 }
 
+// ws:/wss: as bare schemes already allow a WebSocket to any host, which is
+// how /ws/terminal and /ws/events reach another daemon; plain fetch() has no
+// such scheme-source, so each configured daemon's origin is listed here too
+// — otherwise the daemon-selector's switch to it is blocked by CSP before
+// CORS is ever evaluated.
+const DAEMON_CONNECT_SRC = Object.values(CONFIG.daemons).map((daemon) => daemon.url).join(' ');
+
 function staticFile(res, path, contentType, headOnly = false) {
   const body = readFileSync(path);
   res.writeHead(200, {
@@ -675,8 +727,8 @@ function staticFile(res, path, contentType, headOnly = false) {
     'Content-Length': body.length,
     'Cache-Control': 'no-store',
     // img-src is widened so markdown previews can show images a note links to;
-    // everything else stays same-origin.
-    'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:",
+    // everything else stays same-origin (plus the configured daemons above).
+    'Content-Security-Policy': `default-src 'self'; connect-src 'self' ws: wss: ${DAEMON_CONNECT_SRC}; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:`,
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(headOnly ? undefined : body);
@@ -783,7 +835,10 @@ export function createApiService({
   linearSearch = searchLinearSuggestions,
   githubSuggestions = githubWorkSuggestions,
   suggestionCacheMs = 60_000,
-  spawnTerminal = spawnZshTerminal,
+  spawnTerminalAttach = spawnZellijAttachTerminal,
+  ensureTerminalSession = ensureBrowserTerminalSession,
+  killTerminalSession = killBrowserTerminalSession,
+  terminalSessionConfigFile = browserTerminalConfigFile,
   notesRoot = config.paths.notes,
   dataDir = config.paths.data,
 } = {}) {
@@ -791,6 +846,7 @@ export function createApiService({
   const ownsDb = !suppliedDb;
   const clients = new Set();
   const terminalClients = new Map();
+  const terminalOwners = new Map();
   const browserTerminalCounts = new Map();
   const pendingGitRefreshes = new Map();
   const pendingPrRefreshes = new Map();
@@ -891,20 +947,43 @@ export function createApiService({
     broadcastChanges();
   };
 
-  const disposeTerminalClient = (socket, { kill = true } = {}) => {
+  const disposeTerminalClient = (socket, { kill = true, claim = true } = {}) => {
     const current = terminalClients.get(socket);
     if (!current) return;
     terminalClients.delete(socket);
-    unregisterBrowserTerminal(current.sessionId);
-    if (kill) {
+    if (current.terminal) unregisterBrowserTerminal(current.sessionId);
+    if (terminalOwners.get(current.terminalSession)?.socket === socket) {
+      terminalOwners.delete(current.terminalSession);
+    }
+    if (kill && current.terminal) {
       try { current.terminal.kill(); } catch { /* already exited */ }
     }
+    if (claim) queueMicrotask(() => claimWaitingTerminal(current.terminalSession));
+  };
+
+  // A manual takeover moves only the live Zellij attachment. The displaced
+  // websocket remains registered as a waiter, so its UI can explain what
+  // happened and offer the same takeover action without touching the backing
+  // Zellij session.
+  const detachTerminalClient = (socket, { preserveRegistration = false } = {}) => {
+    const current = terminalClients.get(socket);
+    if (!current?.terminal) return false;
+    const terminal = current.terminal;
+    current.terminal = null;
+    current.waiting = true;
+    if (terminalOwners.get(current.terminalSession)?.socket === socket) {
+      terminalOwners.delete(current.terminalSession);
+    }
+    if (!preserveRegistration) unregisterBrowserTerminal(current.sessionId);
+    send(socket, { type: 'busy', message: 'Active on another client' });
+    try { terminal.kill(); } catch { /* already exited */ }
+    return true;
   };
 
   const browserTerminalConnected = (sessionId, role = null) => {
     const id = String(sessionId);
     return [...terminalClients.values()].some((current) => (
-      current.sessionId === id && (role === null || current.role === role)
+      current.terminal && current.sessionId === id && (role === null || current.role === role)
     ));
   };
 
@@ -912,9 +991,123 @@ export function createApiService({
     const id = String(sessionId);
     for (const [socket, current] of [...terminalClients]) {
       if (current.sessionId !== id || (role !== null && current.role !== role)) continue;
-      disposeTerminalClient(socket);
+      disposeTerminalClient(socket, { claim: false });
       if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
     }
+  };
+
+  // Disconnecting a websocket only detaches its Zellij client. Deliberate
+  // workstream lifecycle actions stop every persistent role session; changing
+  // agents stops only the agent role. Best-effort cleanup must not make the
+  // original command fail.
+  const stopPersistentTerminalSessions = (sessionId, role = null) => {
+    const roles = role ? [role] : PANEL_ROLES;
+    for (const terminalRole of roles) {
+      try { killTerminalSession({ sessionId: String(sessionId), role: terminalRole }); }
+      catch (error) {
+        process.stderr.write(`ai-workstream: could not stop ${terminalRole} terminal session for "${sessionId}": ${error.message}\n`);
+      }
+    }
+  };
+
+  const terminateBrowserTerminal = (terminalSession, identity) => {
+    for (const [clientSocket, current] of [...terminalClients]) {
+      if (current.terminalSession !== terminalSession) continue;
+      disposeTerminalClient(clientSocket, { claim: false });
+      if (!clientSocket.destroyed) clientSocket.end(encodeWebSocketFrame('', 0x8));
+    }
+    try { killTerminalSession(identity); }
+    catch (error) {
+      process.stderr.write(`ai-workstream: could not terminate browser terminal "${terminalSession}": ${error.message}\n`);
+    }
+  };
+
+  const attachTerminalClient = (socket, { registrationAlreadyHeld = false } = {}) => {
+    const current = terminalClients.get(socket);
+    if (!current || current.terminal || socket.destroyed) return false;
+    const owner = terminalOwners.get(current.terminalSession);
+    if (owner && terminalClients.has(owner.socket) && !owner.socket.destroyed) {
+      // After a dropped connection (especially across a daemon restart), every
+      // browser races to reconnect. The browser that actually held this terminal
+      // marks that fact. Let it displace an opportunistic reconnect exactly once;
+      // once a returning owner holds the terminal, other stale ownership claims
+      // wait normally instead of bouncing the attachment back and forth.
+      if (current.reconnectOwner && !owner.reconnectOwner) {
+        const transferred = detachTerminalClient(owner.socket, { preserveRegistration: true });
+        return attachTerminalClient(socket, { registrationAlreadyHeld: transferred });
+      }
+      current.waiting = true;
+      send(socket, {
+        type: 'busy',
+        message: owner.clientId === current.clientId
+          ? 'Waiting for this terminal’s previous view to detach…'
+          : 'Active on another client',
+      });
+      return false;
+    }
+    if (owner) terminalOwners.delete(current.terminalSession);
+    try {
+      ensureTerminalSession(current.identity, {
+        command: current.command,
+        cwd: current.cwd,
+      });
+      const terminal = spawnTerminalAttach({
+        session: current.terminalSession,
+        configFile: terminalSessionConfigFile(),
+        cwd: current.cwd,
+        cols: 80,
+        rows: 24,
+      });
+      current.terminal = terminal;
+      current.waiting = false;
+      terminalOwners.set(current.terminalSession, {
+        socket,
+        clientId: current.clientId,
+        reconnectOwner: current.reconnectOwner,
+      });
+      if (!registrationAlreadyHeld) registerBrowserTerminal(current.sessionId);
+      terminal.onData((data) => {
+        schedulePrRefresh(current.sessionId);
+        send(socket, { type: 'output', data });
+      });
+      terminal.onExit(({ exitCode, signal }) => {
+        // Ignore the exit of an attachment deliberately displaced by a manual
+        // takeover. That websocket is still alive and waiting for ownership.
+        if (terminalClients.get(socket)?.terminal !== terminal) return;
+        disposeTerminalClient(socket, { kill: false, claim: false });
+        send(socket, { type: 'exit', exitCode, signal: signal ?? null });
+        if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
+      });
+      send(socket, { type: 'claimed' });
+      return true;
+    } catch (error) {
+      if (registrationAlreadyHeld) unregisterBrowserTerminal(current.sessionId);
+      send(socket, { type: 'error', message: error.message });
+      disposeTerminalClient(socket, { claim: false });
+      if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
+      process.stderr.write(`ai-workstream terminal: ${error.message}\n`);
+      return false;
+    }
+  };
+
+  const claimWaitingTerminal = (terminalSession) => {
+    if (terminalOwners.has(terminalSession)) return false;
+    const waiting = [...terminalClients].find(([socket, current]) => (
+      current.terminalSession === terminalSession && !current.terminal && !socket.destroyed
+    ));
+    return waiting ? attachTerminalClient(waiting[0]) : false;
+  };
+
+  const takeOverTerminal = (socket) => {
+    const current = terminalClients.get(socket);
+    if (!current || current.terminal || socket.destroyed) return false;
+    const owner = terminalOwners.get(current.terminalSession);
+    let registrationAlreadyHeld = false;
+    if (owner && owner.socket !== socket
+        && terminalClients.has(owner.socket) && !owner.socket.destroyed) {
+      registrationAlreadyHeld = detachTerminalClient(owner.socket, { preserveRegistration: true });
+    }
+    return attachTerminalClient(socket, { registrationAlreadyHeld });
   };
 
   const gitRefreshTarget = (id) => {
@@ -1066,6 +1259,20 @@ export function createApiService({
 
   const server = createServer((req, res) => {
     Promise.resolve().then(async () => {
+      const corsOrigin = loopbackOrigin(req);
+      if (corsOrigin) {
+        res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+        res.setHeader('Vary', 'Origin');
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, HEAD, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '600',
+        });
+        res.end();
+        return;
+      }
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
       const headOnly = req.method === 'HEAD';
       if ((req.method === 'GET' || headOnly) && (url.pathname === '/' || url.pathname === '/v2' || url.pathname === '/v2/')) {
@@ -1092,6 +1299,26 @@ export function createApiService({
           revision: DAEMON_REVISION,
           websocket: '/ws/events',
         });
+      }
+      if (req.method === 'GET' && url.pathname === '/daemons') {
+        return json(res, 200, { daemons: Object.values(CONFIG.daemons) });
+      }
+      if (req.method === 'GET' && url.pathname === '/browser/state') {
+        return json(res, 200, readBrowserUiState(db, browserUiScope(url.searchParams.get('scope'))));
+      }
+      if (req.method === 'PUT' && url.pathname === '/browser/state') {
+        const body = await jsonBody(req);
+        const scope = browserUiScope(body.scope);
+        const clientId = browserId(body.client, 'client', 'legacy-ui');
+        if (!body.state || typeof body.state !== 'object' || Array.isArray(body.state)) {
+          throw new ApiError(400, 'state must be an object');
+        }
+        if (JSON.stringify(body.state).length > 64 * 1024) {
+          throw new ApiError(400, 'browser state must be at most 64 KiB');
+        }
+        const result = writeBrowserUiState(db, scope, body.state);
+        broadcast({ type: 'browser_state', scope, clientId });
+        return json(res, 200, result);
       }
       if (req.method === 'GET' && url.pathname === '/ws/events') {
         return json(res, 426, { error: 'upgrade_required', websocket: '/ws/events' }, { Upgrade: 'websocket' });
@@ -1212,14 +1439,20 @@ export function createApiService({
             : replaceAgent,
           renameTab, focusAgent, focusShell, focusTerminal, openPath,
         });
-        if (result.workstream.type === 'repo' && ['pause', 'resume', 'close'].includes(parts[2])) {
+        if (result.workstream.type === 'repo' && ['pause', 'resume', 'archive', 'close'].includes(parts[2])) {
           await refreshPr(result.workstream.id, { force: true });
           result.workstream = queryWorkstreams(db, {
             id: result.workstream.id, status: 'all',
           }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
         }
-        if (parts[2] === 'pause' || parts[2] === 'close') closeBrowserTerminals(parts[1]);
-        if (parts[2] === 'agent-set' && result.result.changed) closeBrowserTerminals(parts[1], 'agent');
+        if (parts[2] === 'pause' || parts[2] === 'archive' || parts[2] === 'close') {
+          closeBrowserTerminals(parts[1]);
+          stopPersistentTerminalSessions(parts[1]);
+        }
+        if (parts[2] === 'agent-set' && result.result.changed) {
+          closeBrowserTerminals(parts[1], 'agent');
+          stopPersistentTerminalSessions(parts[1], 'agent');
+        }
         broadcastChanges();
         if (result.workstream.type === 'misc') broadcastMiscChanges();
         if (parts[2] === 'panel-toggle') {
@@ -1249,8 +1482,10 @@ export function createApiService({
     const origin = req.headers.origin;
     let originAllowed = true;
     if (typeof origin === 'string') {
-      try { originAllowed = new URL(origin).host === req.headers.host; }
-      catch { originAllowed = false; }
+      try {
+        const originUrl = new URL(origin);
+        originAllowed = originUrl.host === req.headers.host || loopbackHostname(originUrl.hostname);
+      } catch { originAllowed = false; }
     }
     const terminalUpgrade = requestUrl.pathname === '/ws/terminal';
     const eventUpgrade = requestUrl.pathname === '/ws/events';
@@ -1269,9 +1504,7 @@ export function createApiService({
       return;
     }
 
-    let terminal = null;
-    let terminalSessionId = null;
-    let terminalRole = null;
+    let terminalDescriptor = null;
     if (terminalUpgrade) {
       try {
         const requestedSessionId = requestUrl.searchParams.get('session');
@@ -1282,8 +1515,13 @@ export function createApiService({
         if (requestedRole && !requestedSessionId) {
           throw new ApiError(400, 'role requires a workstream session');
         }
+        const clientId = browserId(requestUrl.searchParams.get('client'), 'client', 'legacy');
+        const terminalId = browserId(requestUrl.searchParams.get('terminal'), 'terminal', 'default');
+        const reconnectOwner = requestUrl.searchParams.get('owner') === '1';
         let terminalCwd = process.env.HOME || cwd;
         let workstream = null;
+        let terminalSessionId = null;
+        const terminalRole = requestedRole || 'shell';
         if (requestedSessionId) {
           workstream = queryWorkstreams(db, { id: requestedSessionId, status: 'all' }, {
             cwd, config, terminalSessionIds: terminalSessionIds(),
@@ -1297,18 +1535,22 @@ export function createApiService({
           }
           terminalSessionId = String(workstream.id);
           terminalCwd = workstream.path;
-          terminalRole = requestedRole || 'shell';
         }
-        const launch = workstream ? browserTerminalLaunch(terminalRole, workstream, config) : {};
-        terminal = spawnTerminal({
-          ...launch,
+        const launch = browserTerminalLaunch(terminalRole, workstream, config);
+        const identity = { sessionId: terminalSessionId, role: terminalRole, terminalId };
+        const command = terminalSessionId && terminalRole !== 'agent'
+          ? ['env', `AI_WORKSTREAM_ID=${terminalSessionId}`, launch.command, ...launch.args]
+          : [launch.command, ...launch.args];
+        terminalDescriptor = {
+          clientId,
+          command,
           cwd: terminalCwd,
-          env: terminalSessionId
-            ? { ...process.env, AI_WORKSTREAM_ID: terminalSessionId }
-            : process.env,
-          cols: 80,
-          rows: 24,
-        });
+          identity,
+          role: terminalRole,
+          reconnectOwner,
+          sessionId: terminalSessionId,
+          terminalSession: browserTerminalSessionName(identity),
+        };
       } catch (error) {
         const status = error instanceof ApiError ? error.status : 500;
         const reason = status === 400 ? 'Bad Request'
@@ -1339,41 +1581,47 @@ export function createApiService({
       return;
     }
 
-    terminalClients.set(socket, { terminal, sessionId: terminalSessionId, role: terminalRole });
-    registerBrowserTerminal(terminalSessionId);
+    terminalClients.set(socket, { ...terminalDescriptor, terminal: null, waiting: false });
     const disposeTerminal = () => {
       disposeTerminalClient(socket);
     };
     socket.on('close', disposeTerminal);
     socket.on('error', disposeTerminal);
-    terminal.onData((data) => {
-      schedulePrRefresh(terminalSessionId);
-      send(socket, { type: 'output', data });
-    });
-    terminal.onExit(({ exitCode, signal }) => {
-      disposeTerminalClient(socket, { kill: false });
-      send(socket, { type: 'exit', exitCode, signal: signal ?? null });
-      if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
-    });
     consumeWebSocketFrames(socket, head, (payload, opcode) => {
       if (opcode !== 0x1) return;
       let message;
       try { message = JSON.parse(payload.toString('utf8')); }
       catch { send(socket, { type: 'error', message: 'invalid terminal message' }); return; }
+      const current = terminalClients.get(socket);
+      if (message?.type === 'claim') {
+        attachTerminalClient(socket);
+        return;
+      }
+      if (message?.type === 'takeover') {
+        takeOverTerminal(socket);
+        return;
+      }
+      if (message?.type === 'terminate' && current) {
+        terminateBrowserTerminal(current.terminalSession, current.identity);
+        return;
+      }
       if (message?.type === 'input' && typeof message.data === 'string') {
-        schedulePrRefresh(terminalSessionId);
-        terminal.write(message.data);
+        if (!current?.terminal) return;
+        schedulePrRefresh(current.sessionId);
+        current.terminal.write(message.data);
         return;
       }
       if (message?.type === 'resize'
           && Number.isInteger(message.cols) && message.cols >= 2 && message.cols <= 500
           && Number.isInteger(message.rows) && message.rows >= 1 && message.rows <= 300) {
-        try { terminal.resize(message.cols, message.rows); }
+        if (!current?.terminal) return;
+        try { current.terminal.resize(message.cols, message.rows); }
         catch (error) { send(socket, { type: 'error', message: error.message }); }
         return;
       }
       send(socket, { type: 'error', message: 'unsupported terminal message' });
     });
+    attachTerminalClient(socket);
   });
 
   const timer = pollInterval > 0 ? setInterval(() => {
@@ -1407,10 +1655,11 @@ export function createApiService({
       for (const socket of clients) socket.destroy();
       clients.clear();
       for (const [socket] of [...terminalClients]) {
-        disposeTerminalClient(socket);
+        disposeTerminalClient(socket, { claim: false });
         socket.destroy();
       }
       terminalClients.clear();
+      terminalOwners.clear();
       if (server.listening) await new Promise((resolve) => server.close(resolve));
       await Promise.allSettled([...pendingGitRefreshes.values()].map(({ promise }) => promise));
       await Promise.allSettled([...pendingPrRefreshes.values()]);

@@ -179,7 +179,7 @@ function cmdList(args) {
     const repoLabel = isScratch(r) ? 'scratch' : `${r.org}/${r.repo}`;
     const line = [
       fmt(r.id, 4), fmt(mark, 3), fmt(repoLabel, 28),
-      fmt(r.branch, 24), fmt(r.status, 8), last,
+      fmt(r.branch, 24), fmt(r.status === 'closed' ? 'archived' : r.status, 8), last,
     ].join(' ');
     console.log(i % 2 === 1 ? dim(line) : line);
     const parent = parentOf(db, r);
@@ -514,12 +514,12 @@ async function cmdRename(args) {
   console.log(`Renamed #${updated.id}: tab is now "${newTabName}"`);
 }
 
-async function cmdClose(args) {
+async function cmdArchive(args) {
   const keep = args.includes('--keep');
   const discard = args.includes('--delete') || args.includes('--discard');
   const positional = positionals(args);
   const db = openDb();
-  const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), 'close');
+  const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), 'archive');
   const scratch = isScratch(row);
   const noun = scratch ? 'directory' : 'worktree';
 
@@ -550,7 +550,7 @@ async function cmdClose(args) {
     console.log(`Kept scratchpad directory at ${row.path} (resume with: ws resume ${row.id}; --delete to remove).`);
   }
   setStatus(db, row.id, 'closed');
-  console.log(`Closed workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
+  console.log(`Archived workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
 }
 
 // ws stack [show|on|off|link|rebase] — the parent/child chain and its GitHub stack.
@@ -577,7 +577,7 @@ function printStackTree(node, focusId, depth = 0) {
   const indent = '  '.repeat(depth);
   const mark = r.id === focusId ? '▸' : ' ';
   const where = isScratch(r) ? 'scratchpad' : `${r.repo}:${r.branch}`;
-  console.log(`  ${mark} ${indent}#${r.id} ${where}  [${r.status}]`);
+  console.log(`  ${mark} ${indent}#${r.id} ${where}  [${r.status === 'closed' ? 'archived' : r.status}]`);
   for (const c of node.children) printStackTree(c, focusId, depth + 1);
 }
 
@@ -783,7 +783,7 @@ export function usageText() {
   return `ws — AI workstream manager (git worktrees + Zellij + Claude Code or Codex)
 
 Usage:
-  ws list [--all]                  List active workstreams (--all includes closed)
+  ws list [--all]                  List active workstreams (--all includes archived)
   ws new <org/repo> <ref>          Create/open a workstream (alias: create)
                                    (--parent <id|branch>: branch off that workstream and stack on it)
   ws scratch [name]                Create a scratchpad under the configured root (alias: sp)
@@ -796,8 +796,9 @@ Usage:
   ws open-claude|open-codex [id|branch]              Add an agent panel using that provider
   ws close-shell|close-editor|close-agent [id|branch] Close that panel if it is open
   ws resume [id|branch]             Reopen a paused workstream's tab (reconstitutes if needed)
-  ws close [id|branch] [--keep]    Close the tab; remove worktree unless --keep
+  ws archive [id|branch] [--keep]  Archive the session; remove worktree unless --keep
                                    (scratchpads keep their dir by default; --delete removes it)
+                                   (aliases: close, rm)
   ws rename [id|branch] <name>     Rename the tab (scratchpad: renames its dir/name too)
   ws issue add <link...> [--ws X]       Link Linear/GitHub issues to a workstream
   ws issue remove <link> [--ws X]       Unlink an issue (by link or issue id)
@@ -870,7 +871,7 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'close-editor': case 'close-nvim': return cmdClosePane('editor', rest);
     case 'close-agent': case 'close-claude': case 'close-codex': return cmdClosePane('agent', rest);
     case 'rename': return cmdRename(rest);
-    case 'close': case 'rm': return cmdClose(rest);
+    case 'archive': case 'close': case 'rm': return cmdArchive(rest);
     case 'issue': case 'issues': return cmdIssue(rest);
     case 'stack': return cmdStack(rest);
     case 'log': return cmdLog(rest);

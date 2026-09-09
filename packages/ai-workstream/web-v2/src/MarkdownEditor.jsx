@@ -9,6 +9,7 @@ import {
 import {
   appendUnderHeading, continueList, parseMarkdown, shiftIndent,
 } from './markdown.js';
+import { useTarget } from './target-context.js';
 import { Button } from './ui.jsx';
 
 const AUTOSAVE_MS = 1200;
@@ -85,8 +86,9 @@ function Blocks({ blocks }) {
 export default function MarkdownEditor({
   path, name, focused, fontFamily, fontSize = 14, fullscreen = false,
   onDirtyChange, onFocusRequest, onFontSizeChange,
-  onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar,
+  onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar, onNewTerminal,
 }) {
+  const target = useTarget();
   const [content, setContent] = useState('');
   const [saved, setSaved] = useState('');
   const [version, setVersion] = useState(null);
@@ -97,6 +99,7 @@ export default function MarkdownEditor({
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(false);
   const textareaRef = useRef(null);
+  const previewRef = useRef(null);
   const stateRef = useRef({ content: '', version: null });
   const dirty = content !== saved;
   const blocks = useMemo(() => (preview ? parseMarkdown(content) : []), [content, preview]);
@@ -108,7 +111,7 @@ export default function MarkdownEditor({
   const load = useCallback(async (signal) => {
     setLoading(true);
     try {
-      const file = await readNotesFile(path, signal);
+      const file = await readNotesFile(path, signal, target);
       if (signal?.aborted) return;
       setContent(file.content);
       setSaved(file.content);
@@ -121,7 +124,7 @@ export default function MarkdownEditor({
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [path]);
+  }, [path, target]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -134,7 +137,7 @@ export default function MarkdownEditor({
     if (saving) return false;
     setSaving(true);
     try {
-      const result = await writeNotesFile({ path, content: current, version: force ? null : known });
+      const result = await writeNotesFile({ path, content: current, version: force ? null : known }, target);
       setVersion(result.version);
       setSaved(current);
       setError('');
@@ -147,7 +150,7 @@ export default function MarkdownEditor({
     } finally {
       setSaving(false);
     }
-  }, [path, saving]);
+  }, [path, saving, target]);
 
   // Autosave once typing settles; explicit Ctrl/Cmd+S and blur still save eagerly.
   useEffect(() => {
@@ -156,12 +159,15 @@ export default function MarkdownEditor({
     return () => clearTimeout(timer);
   }, [conflict, content, dirty, loading, save]);
 
-  // The textarea does not exist while the file is loading, so this has to run again
+  // Neither element exists while the file is loading, so this has to run again
   // once the content lands — otherwise focus stays wherever it was (usually a
-  // workspace terminal) and the note swallows none of the navigation keys.
+  // workspace terminal or another bottom tab) and the note swallows none of the
+  // navigation keys. Preview mode swaps the textarea for a read-only div, which
+  // must be focused instead — a note left in Preview from an earlier visit must
+  // still be reachable by keyboard navigation, not just visually "brought up".
   useEffect(() => {
-    if (!focused || preview || loading) return;
-    textareaRef.current?.focus();
+    if (!focused || loading) return;
+    (preview ? previewRef : textareaRef).current?.focus();
   }, [focused, loading, preview]);
 
   // A dirty tab warns on unload even while it is hidden behind another tab.
@@ -190,6 +196,7 @@ export default function MarkdownEditor({
     const handlers = {
       f: onToggleFullscreen,
       p: onToggleSidebar,
+      t: onNewTerminal,
       k: onNavigateUp,
       h: () => onPanelNavigate?.(-1),
       l: () => onPanelNavigate?.(1),
@@ -328,7 +335,14 @@ export default function MarkdownEditor({
       {loading ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-sm text-primary"><Spinner className="size-4" /> Loading {name}…</div>
       ) : preview ? (
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm text-ink" style={{ fontFamily }}>
+        <div
+          ref={previewRef}
+          tabIndex={-1}
+          aria-label={`${name} markdown preview`}
+          className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm text-ink outline-none"
+          style={{ fontFamily }}
+          onKeyDown={navigationKey}
+        >
           <Blocks blocks={blocks} />
         </div>
       ) : (

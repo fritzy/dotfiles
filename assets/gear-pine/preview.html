@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gear Pine Icon Preview</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #0b1d27; color: #e9f1f4; }
+    main { width: min(1100px, calc(100% - 40px)); margin: 0 auto; padding: 52px 0 68px; }
+    h1 { margin: 0 0 8px; font-size: clamp(1.7rem, 4vw, 2.6rem); letter-spacing: -0.04em; }
+    .intro { margin: 0 0 30px; color: #9db2bc; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+    .card { min-height: 340px; border: 1px solid #294653; border-radius: 22px; padding: 24px; display: grid; place-items: center; align-content: center; gap: 16px; overflow: hidden; }
+    .light { background: #f3f6f4; color: #17303c; }
+    .dark { background: #132d39; }
+    .checker { color: #17303c; background-color: #eef3f1; background-image: linear-gradient(45deg, #dde7e2 25%, transparent 25%), linear-gradient(-45deg, #dde7e2 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #dde7e2 75%), linear-gradient(-45deg, transparent 75%, #dde7e2 75%); background-size: 24px 24px; background-position: 0 0, 0 12px, 12px -12px, -12px 0; }
+    .logo { width: min(258px, 75%); filter: drop-shadow(0 12px 12px rgb(8 28 37 / 18%)); }
+    .web-logo { width: 112px; }
+    .label { margin: 0; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.72; }
+    .sizes { display: flex; align-items: end; justify-content: center; gap: 24px; min-height: 150px; }
+    .sample { display: grid; place-items: center; gap: 10px; font-size: 12px; color: #95aab4; }
+    .favicon { image-rendering: auto; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Gear + Pine</h1>
+    <p class="intro">Full mark and favicon, checked on light and dark surfaces at intended sizes.</p>
+    <section class="grid">
+      <article class="card checker">
+        <img class="logo" src="gear-pine-logo.svg" alt="Gear and pine tree logo at desktop icon size">
+        <p class="label">Desktop · 256 px</p>
+      </article>
+      <article class="card dark">
+        <img class="logo web-logo" src="gear-pine-logo.svg" alt="Gear and pine tree logo at web logo size">
+        <p class="label">Web logo · 112 px</p>
+      </article>
+      <article class="card light">
+        <div class="sizes">
+          <div class="sample"><img class="favicon" src="gear-pine-favicon.svg" width="64" height="64" alt="Favicon at 64 pixels"><span>64 px</span></div>
+          <div class="sample"><img class="favicon" src="gear-pine-favicon.svg" width="32" height="32" alt="Favicon at 32 pixels"><span>32 px</span></div>
+          <div class="sample"><img class="favicon" src="gear-pine-favicon.svg" width="16" height="16" alt="Favicon at 16 pixels"><span>16 px</span></div>
+        </div>
+        <p class="label">Favicon scale check</p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

@@ -106,6 +106,11 @@ export function branchState(item) {
   return { icon: 'git-branch', color: 'text-muted', label: 'Git status unavailable' };
 }
 
+export function canArchiveSession(item) {
+  if (!item || item.closeable === false || item.status === 'closed') return false;
+  return item.type === 'scratchpad' || (item.type === 'repo' && item.prDone === true);
+}
+
 export function visiblePages(pageCount, page) {
   const visible = new Set([0, pageCount - 1]);
   for (let candidate = page - 2; candidate <= page + 2; candidate += 1) {

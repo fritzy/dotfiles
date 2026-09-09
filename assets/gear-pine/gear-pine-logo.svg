@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Gear and pine tree logo</title>
+  <desc id="desc">A green pine tree growing through the center of a steel-blue gear, shown with subtle front-face depth.</desc>
+
+  <defs>
+    <linearGradient id="gearSide" x1="256" y1="130" x2="256" y2="505" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#29495b"/>
+      <stop offset="1" stop-color="#102b3a"/>
+    </linearGradient>
+    <linearGradient id="gearFace" x1="127" y1="137" x2="388" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8eb6c7"/>
+      <stop offset="0.46" stop-color="#5e879b"/>
+      <stop offset="1" stop-color="#35596d"/>
+    </linearGradient>
+    <linearGradient id="pine" x1="208" y1="70" x2="307" y2="322" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#66c985"/>
+      <stop offset="0.55" stop-color="#27945d"/>
+      <stop offset="1" stop-color="#146743"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-50%" width="140%" height="220%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+    <path id="gear" fill-rule="evenodd" d="M 225.6 155.2 L 234.2 153.6 L 234.2 109.3 L 277.8 109.3 L 277.8 153.6 L 286.4 155.2 L 301 159.1 L 309.3 162.1 L 331.5 123.6 L 369.3 145.4 L 347.1 183.9 L 353.8 189.6 L 364.4 200.2 L 370.1 206.9 L 408.6 184.7 L 430.4 222.5 L 391.9 244.7 L 394.9 253 L 398.8 267.6 L 400.4 276.2 L 444.7 276.2 L 444.7 319.8 L 400.4 319.8 L 398.8 328.4 L 394.9 343 L 391.9 351.3 L 430.4 373.5 L 408.6 411.3 L 370.1 389.1 L 364.4 395.8 L 353.8 406.4 L 347.1 412.1 L 369.3 450.6 L 331.5 472.4 L 309.3 433.9 L 301 436.9 L 286.4 440.8 L 277.8 442.4 L 277.8 486.7 L 234.2 486.7 L 234.2 442.4 L 225.6 440.8 L 211 436.9 L 202.7 433.9 L 180.5 472.4 L 142.7 450.6 L 164.9 412.1 L 158.2 406.4 L 147.6 395.8 L 141.9 389.1 L 103.4 411.3 L 81.6 373.5 L 120.1 351.3 L 117.1 343 L 113.2 328.4 L 111.6 319.8 L 67.3 319.8 L 67.3 276.2 L 111.6 276.2 L 113.2 267.6 L 117.1 253 L 120.1 244.7 L 81.6 222.5 L 103.4 184.7 L 141.9 206.9 L 147.6 200.2 L 158.2 189.6 L 164.9 183.9 L 142.7 145.4 L 180.5 123.6 L 202.7 162.1 L 211 159.1 Z M 256 215 A 83 83 0 1 0 256 381 A 83 83 0 1 0 256 215 Z"/>
+  </defs>
+
+  <ellipse cx="256" cy="481" rx="153" ry="17" fill="#081c25" opacity="0.22" filter="url(#softShadow)"/>
+
+  <!-- The offset duplicate forms a restrained lower edge for the 3D front perspective. -->
+  <use href="#gear" transform="translate(0 15)" fill="url(#gearSide)" stroke="#102b3a" stroke-width="7" stroke-linejoin="round"/>
+  <use href="#gear" fill="url(#gearFace)" stroke="#173747" stroke-width="7" stroke-linejoin="round"/>
+
+  <!-- Face and bore highlights keep the gear legible at both desktop and web-logo sizes. -->
+  <path d="M 119 246 A 151 151 0 0 1 359 175" fill="none" stroke="#d7ebf1" stroke-width="8" stroke-linecap="round" opacity="0.47"/>
+  <path d="M 199 238 A 83 83 0 0 1 313 238" fill="none" stroke="#c9e1e9" stroke-width="7" stroke-linecap="round" opacity="0.52"/>
+  <path d="M 313 358 A 83 83 0 0 1 199 358" fill="none" stroke="#173747" stroke-width="9" stroke-linecap="round" opacity="0.42"/>
+
+  <!-- Tree trunk and roots visibly enter the gear's center. -->
+  <path d="M 244 260 H 268 V 349 L 296 372 L 282 382 L 256 362 L 230 382 L 216 372 L 244 349 Z" fill="#24583a" stroke="#123f2c" stroke-width="7" stroke-linejoin="round"/>
+
+  <!-- One bold pine silhouette survives cleanly when the logo is reduced. -->
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="#0c3f2a" opacity="0.22" transform="translate(6 7)"/>
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="url(#pine)" stroke="#123f2c" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M 249 72 L 222 126 M 242 142 L 204 198 M 228 214 L 184 272" fill="none" stroke="#b7e6bd" stroke-width="7" stroke-linecap="round" opacity="0.28"/>
+</svg>

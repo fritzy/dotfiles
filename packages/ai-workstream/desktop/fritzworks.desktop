@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=FritzWorks
+GenericName=AI Workstream Manager
+Comment=Open AI Workstream in its dedicated Firefox profile
+Exec=fritzworks
+TryExec=fritzworks
+Icon=fritzworks
+Terminal=false
+Categories=Development;
+Keywords=AI;workstream;terminal;zellij;
+StartupNotify=true
+StartupWMClass=fritzworks

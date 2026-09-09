@@ -2,9 +2,12 @@ import {
   forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useRef, useState,
 } from 'react';
 
-import { readEditorTabs, writeEditorTabs } from './api.js';
+import {
+  readBrowserState, readEditorTabs, writeBrowserState, writeEditorTabs,
+} from './api.js';
 import { EditorIcon, ShellIcon, XIcon } from './icons.jsx';
 import NotePicker from './NotePicker.jsx';
+import { useTarget } from './target-context.js';
 
 const LocalTerminal = lazy(() => import('./LocalTerminal.jsx'));
 const MarkdownEditor = lazy(() => import('./MarkdownEditor.jsx'));
@@ -15,6 +18,17 @@ const MAX_FONT_SIZE = 24;
 const TAB_SWITCH_MS = 300;
 const TAB_SAVE_DEBOUNCE_MS = 400;
 const EDITOR_TAB_SCOPE = 'global';
+const TERMINAL_STATE_SCOPE = 'bottom-terminals';
+const TERMINAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+
+let fallbackTerminalId = 0;
+
+function newTerminalId() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return `terminal-${uuid}`;
+  fallbackTerminalId += 1;
+  return `terminal-${Date.now().toString(36)}-${fallbackTerminalId}`;
+}
 
 // A fixed tab width keeps the strip from reflowing as notes with longer filenames
 // are opened and closed.
@@ -34,16 +48,16 @@ function editorTab({ path, name }) {
   };
 }
 
-function TabButton({ tab, selected, dirty, onChoose, onClose }) {
+function TabButton({ tab, domId, selected, dirty, onChoose, onClose }) {
   const Icon = tab.kind === 'editor' ? EditorIcon : ShellIcon;
   return (
     <div className={`pointer-events-auto relative -mb-px h-10 ${TAB_WIDTH}`}>
       <button
-        id={`${tab.id}-tab`}
+        id={`${domId}-tab`}
         type="button"
         role="tab"
         aria-selected={selected}
-        aria-controls="bottom-terminal-panel"
+        aria-controls={`${domId}-panel`}
         title={tab.kind === 'editor' ? tab.path : tab.label}
         className={`relative inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-t-xl border border-b-0 pr-9 pl-4 text-sm font-semibold shadow-[0_-0.25rem_0.75rem_rgb(0_0_0/0.12)] transition-colors before:absolute before:-bottom-px before:-left-2 before:size-2 before:content-[''] after:absolute after:-right-2 after:-bottom-px after:size-2 after:content-[''] focus-visible:z-20 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${selected ? "z-10 border-primary bg-accent text-on-accent before:bg-accent before:[clip-path:polygon(100%_0,100%_100%,0_100%)] after:bg-accent after:[clip-path:polygon(0_0,100%_100%,0_100%)]" : 'border-primary/60 bg-page text-primary before:hidden after:hidden hover:bg-soft hover:text-on-soft'}`}
         onClick={() => onChoose(tab.id)}
@@ -103,10 +117,15 @@ function FontSizeControls({ tab, onChange }) {
 }
 
 const BottomTabs = forwardRef(function BottomTabs({
-  focusedPanel, onPanelFocus, leftOffset = '0rem', layoutResizing = false,
+  visible = true, focusedPanel, onPanelFocus, leftOffset = '0rem', layoutResizing = false,
   terminalMode = 'dark', fontFamily = '"Roboto Mono", monospace', onFullscreenChange,
   fullscreenExitRevision, onSidebarFocus, onWorkspaceFocus, onToggleSidebar,
+  stateRevision = 0,
 }, ref) {
+  const target = useTarget();
+  const targetId = target?.id || 'local';
+  const panelId = (id) => `bottom-${targetId}-${id}`;
+  const fullscreenSource = `bottom-terminals-${targetId}`;
   const [tabs, setTabs] = useState([]);
   const [active, setActive] = useState(null);
   const [displayed, setDisplayed] = useState(null);
@@ -116,23 +135,103 @@ const BottomTabs = forwardRef(function BottomTabs({
   const [dirtyPaths, setDirtyPaths] = useState(() => new Set());
   const [lastEditorPath, setLastEditorPath] = useState(null);
   const [tabsRestored, setTabsRestored] = useState(false);
+  const [terminalTabsRestored, setTerminalTabsRestored] = useState(false);
   const queuedTab = useRef(null);
   const pendingRemoval = useRef(null);
   const nextTerminalNumber = useRef(1);
   const lastUsedRef = useRef(null);
+  const activeRef = useRef(active);
+  const terminalControlsRef = useRef(new Map());
   const fullscreenReportedRef = useRef(false);
+  const skipTerminalStateSaveRef = useRef(false);
   const activeTab = tabs.find((tab) => tab.id === displayed) || null;
-  const activePanel = activeTab ? `bottom-${activeTab.id}` : null;
+  const activePanel = activeTab ? panelId(activeTab.id) : null;
   const activeFullscreen = Boolean(activeTab?.fullscreen);
+  activeRef.current = active;
   const tabOpacity = focusedPanel?.startsWith('workspace-')
     ? 'opacity-20 hover:opacity-100 focus-within:opacity-100'
     : 'opacity-100';
+
+  // Terminal definitions live in the daemon DB. Restoring a tab mounts its
+  // LocalTerminal even with the drawer closed, which immediately attempts to
+  // claim and reattach the corresponding background Zellij session.
+  useEffect(() => {
+    setTerminalTabsRestored(false);
+    const controller = new AbortController();
+    readBrowserState(TERMINAL_STATE_SCOPE, controller.signal, target)
+      .then(({ state = {} }) => {
+        if (controller.signal.aborted) return;
+        const seenIds = new Set();
+        const restored = (Array.isArray(state.terminals) ? state.terminals : [])
+          .slice(0, 50)
+          .filter((tab) => {
+            if (tab?.kind !== 'terminal' || !TERMINAL_ID_PATTERN.test(tab.id || '') || seenIds.has(tab.id)) return false;
+            seenIds.add(tab.id);
+            return true;
+          })
+          .map((tab, index) => ({
+            id: tab.id,
+            kind: 'terminal',
+            label: typeof tab.label === 'string' && tab.label ? tab.label : `terminal ${index + 1}`,
+            fontSize: Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Number(tab.fontSize) || DEFAULT_FONT_SIZE)),
+            fullscreen: false,
+          }));
+        skipTerminalStateSaveRef.current = true;
+        setTabs((current) => [...restored, ...current.filter((tab) => tab.kind === 'editor')]);
+        if (restored.length) {
+          const restoredIds = new Set(restored.map((tab) => tab.id));
+          const remembered = restored.some((tab) => tab.id === state.displayedId)
+            ? state.displayedId : restored.at(-1).id;
+          setDisplayed((current) => current?.startsWith('editor:') || restoredIds.has(current)
+            ? current : remembered);
+          if (activeRef.current && !activeRef.current.startsWith('editor:')
+              && !restoredIds.has(activeRef.current)) {
+            setActive(null);
+            setDrawerOpen(false);
+          }
+          if (!lastUsedRef.current) lastUsedRef.current = remembered;
+          nextTerminalNumber.current = Math.max(
+            nextTerminalNumber.current,
+            ...restored.map((tab) => Number(tab.label.match(/^terminal (\d+)$/)?.[1]) + 1 || 1),
+          );
+        } else {
+          const activeIsEditor = activeRef.current?.startsWith('editor:');
+          setDisplayed((current) => current?.startsWith('editor:') ? current : null);
+          setActive((current) => current?.startsWith('editor:') ? current : null);
+          setDrawerOpen((open) => open && Boolean(activeIsEditor));
+        }
+      })
+      .catch(() => { /* older daemons simply start without remembered terminals */ })
+      .finally(() => { if (!controller.signal.aborted) setTerminalTabsRestored(true); });
+    return () => controller.abort();
+  }, [stateRevision, target]);
+
+  useEffect(() => {
+    if (!terminalTabsRestored) return undefined;
+    if (skipTerminalStateSaveRef.current) {
+      skipTerminalStateSaveRef.current = false;
+      return undefined;
+    }
+    const terminals = tabs.filter((tab) => tab.kind === 'terminal');
+    const timer = setTimeout(() => {
+      writeBrowserState(TERMINAL_STATE_SCOPE, {
+        terminals: terminals.map((tab) => ({
+          id: tab.id,
+          kind: 'terminal',
+          label: tab.label,
+          fontSize: tab.fontSize,
+        })),
+        displayedId: terminals.some((tab) => tab.id === displayed) ? displayed : null,
+      }, target).catch(() => { /* remembering terminals is best-effort */ });
+    }, TAB_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [displayed, tabs, target, terminalTabsRestored]);
 
   // Which notes were open is remembered server-side, so the tab strip comes back
   // after a reload (closed, not reopened — the drawer stays out of the way).
   useEffect(() => {
     const controller = new AbortController();
-    readEditorTabs(EDITOR_TAB_SCOPE, controller.signal)
+    readEditorTabs(EDITOR_TAB_SCOPE, controller.signal, target)
       .then((state) => {
         if (controller.signal.aborted) return;
         const restored = (state.tabs || []).map(editorTab);
@@ -146,36 +245,36 @@ const BottomTabs = forwardRef(function BottomTabs({
       .catch(() => { /* the editor still works without remembered tabs */ })
       .finally(() => { if (!controller.signal.aborted) setTabsRestored(true); });
     return () => controller.abort();
-  }, []);
+  }, [target]);
 
   useEffect(() => {
     if (!tabsRestored) return undefined;
     const openPaths = tabs.filter((tab) => tab.kind === 'editor').map((tab) => ({ path: tab.path }));
     const timer = setTimeout(() => {
-      writeEditorTabs(EDITOR_TAB_SCOPE, openPaths, lastEditorPath)
+      writeEditorTabs(EDITOR_TAB_SCOPE, openPaths, lastEditorPath, target)
         .catch(() => { /* remembering tabs is best-effort */ });
     }, TAB_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [lastEditorPath, tabs, tabsRestored]);
+  }, [lastEditorPath, tabs, tabsRestored, target]);
 
   useEffect(() => {
     const fullscreenVisible = drawerOpen && activeFullscreen;
     if (fullscreenReportedRef.current === fullscreenVisible) return;
     fullscreenReportedRef.current = fullscreenVisible;
-    onFullscreenChange?.('bottom-terminals', fullscreenVisible);
-  }, [activeFullscreen, drawerOpen, onFullscreenChange]);
+    onFullscreenChange?.(fullscreenSource, fullscreenVisible);
+  }, [activeFullscreen, drawerOpen, fullscreenSource, onFullscreenChange]);
 
   useEffect(() => () => {
-    if (fullscreenReportedRef.current) onFullscreenChange?.('bottom-terminals', false);
+    if (fullscreenReportedRef.current) onFullscreenChange?.(fullscreenSource, false);
     fullscreenReportedRef.current = false;
-  }, [onFullscreenChange]);
+  }, [fullscreenSource, onFullscreenChange]);
 
   const leaveFullscreen = useCallback(() => {
     if (!tabs.some((tab) => tab.fullscreen)) return false;
-    onFullscreenChange?.('bottom-terminals', false);
+    onFullscreenChange?.(fullscreenSource, false);
     setTabs((current) => current.map((tab) => (tab.fullscreen ? { ...tab, fullscreen: false } : tab)));
     return true;
-  }, [onFullscreenChange, tabs]);
+  }, [fullscreenSource, onFullscreenChange, tabs]);
 
   useEffect(() => {
     leaveFullscreen();
@@ -207,23 +306,23 @@ const BottomTabs = forwardRef(function BottomTabs({
     remember(id);
     if (closing) {
       queuedTab.current = id;
-      onPanelFocus(`bottom-${id}`);
+      onPanelFocus(panelId(id));
       return true;
     }
     queuedTab.current = null;
     setDisplayed(id);
     setActive(id);
     setDrawerOpen(true);
-    onPanelFocus(`bottom-${id}`);
+    onPanelFocus(panelId(id));
     return true;
-  }, [active, closing, leaveFullscreen, onPanelFocus, remember]);
+  }, [active, closing, leaveFullscreen, onPanelFocus, remember, targetId]);
 
   const chooseTab = useCallback((id) => {
     remember(id);
     if (id !== active || (drawerOpen && active === id)) leaveFullscreen();
     if (closing) {
       queuedTab.current = id;
-      onPanelFocus(`bottom-${id}`);
+      onPanelFocus(panelId(id));
       return true;
     }
     if (drawerOpen && active === id) {
@@ -234,22 +333,22 @@ const BottomTabs = forwardRef(function BottomTabs({
       queuedTab.current = id;
       setDrawerOpen(false);
       setClosing(true);
-      onPanelFocus(`bottom-${id}`);
+      onPanelFocus(panelId(id));
       return true;
     }
     queuedTab.current = null;
     setDisplayed(id);
     setActive(id);
     setDrawerOpen(true);
-    onPanelFocus(`bottom-${id}`);
+    onPanelFocus(panelId(id));
     return true;
-  }, [active, closing, collapseDrawer, drawerOpen, leaveFullscreen, onPanelFocus, remember]);
+  }, [active, closing, collapseDrawer, drawerOpen, leaveFullscreen, onPanelFocus, remember, targetId]);
 
   const createTerminal = useCallback(() => {
     const number = nextTerminalNumber.current;
     nextTerminalNumber.current += 1;
     const terminal = {
-      id: `terminal-${number}`,
+      id: newTerminalId(),
       kind: 'terminal',
       label: `terminal ${number}`,
       fontSize: DEFAULT_FONT_SIZE,
@@ -278,7 +377,8 @@ const BottomTabs = forwardRef(function BottomTabs({
     focusLastUsed,
     hide: hideDrawer,
     openNote,
-  }), [focusLastUsed, hideDrawer, openNote]);
+    createTerminal,
+  }), [createTerminal, focusLastUsed, hideDrawer, openNote]);
 
   const markDirty = useCallback((path, dirty) => {
     setDirtyPaths((current) => {
@@ -306,6 +406,7 @@ const BottomTabs = forwardRef(function BottomTabs({
         setLastEditorPath(nextEditor?.path || null);
       }
     }
+    if (tab?.kind === 'terminal') terminalControlsRef.current.get(id)?.terminate();
     const displayedTab = id === displayed;
     if (displayedTab && (drawerOpen || closing)) {
       pendingRemoval.current = id;
@@ -332,14 +433,14 @@ const BottomTabs = forwardRef(function BottomTabs({
   }
 
   function toggleFullscreen(id) {
-    const target = tabs.find((item) => item.id === id);
-    if (!target) return;
+    const tab = tabs.find((item) => item.id === id);
+    if (!tab) return;
     // Report during the input event so requestFullscreen retains user activation.
-    onFullscreenChange?.('bottom-terminals', !target.fullscreen);
-    setTabs((current) => current.map((tab) => (tab.id === id
-      ? { ...tab, fullscreen: !tab.fullscreen }
-      : tab)));
-    onPanelFocus(`bottom-${id}`);
+    onFullscreenChange?.(fullscreenSource, !tab.fullscreen);
+    setTabs((current) => current.map((item) => (item.id === id
+      ? { ...item, fullscreen: !item.fullscreen }
+      : item)));
+    onPanelFocus(panelId(id));
   }
 
   function navigateTab(id, direction) {
@@ -386,7 +487,7 @@ const BottomTabs = forwardRef(function BottomTabs({
   // source both preventDefault first, so exactly one handler ever acts.
   useEffect(() => {
     if (!drawerOpen || !activeTab) return undefined;
-    const panel = `bottom-${activeTab.id}`;
+    const panel = panelId(activeTab.id);
     function onKeyDown(event) {
       if (event.defaultPrevented || !event.ctrlKey || event.altKey || event.metaKey
           || event.shiftKey || event.repeat || focusedPanel !== panel) return;
@@ -405,7 +506,7 @@ const BottomTabs = forwardRef(function BottomTabs({
   // panel at the incoming tab while the outgoing one animates out, is not cut short.
   useEffect(() => {
     if (!drawerOpen || closing || !activeTab) return;
-    if (focusedPanel !== `bottom-${activeTab.id}`) hideDrawer();
+    if (focusedPanel !== panelId(activeTab.id)) hideDrawer();
   }, [activeTab, closing, drawerOpen, focusedPanel, hideDrawer]);
 
   useEffect(() => {
@@ -425,7 +526,7 @@ const BottomTabs = forwardRef(function BottomTabs({
   const openEditorPaths = new Set(tabs.filter((tab) => tab.kind === 'editor').map((tab) => tab.path));
 
   return (
-    <div className="contents" role="tablist" aria-label="Terminals and notes">
+    <div className={visible ? 'contents' : 'hidden'} role="tablist" aria-label="Terminals and notes" inert={!visible}>
       {drawerOpen && activeTab && (
         <button
           type="button"
@@ -448,6 +549,7 @@ const BottomTabs = forwardRef(function BottomTabs({
             <TabButton
               key={tab.id}
               tab={tab}
+              domId={panelId(tab.id)}
               selected={active === tab.id}
               dirty={dirtyPaths.has(tab.path)}
               onChoose={chooseTab}
@@ -457,9 +559,9 @@ const BottomTabs = forwardRef(function BottomTabs({
         </div>
 
         <section
-          id="bottom-terminal-panel"
+          id={activePanel ? `${activePanel}-panel` : undefined}
           role="tabpanel"
-          aria-labelledby={activeTab ? `${activeTab.id}-tab` : undefined}
+          aria-labelledby={activePanel ? `${activePanel}-tab` : undefined}
           aria-hidden={!drawerOpen || !activeTab}
           className={`flex shrink-0 flex-col overflow-hidden rounded-t-2xl border-2 bg-page pb-1 text-ink shadow-[0_-1rem_3rem_rgb(0_0_0/0.25)] ${activeFullscreen ? 'h-[calc(100vh-2.5rem)]' : 'h-[75vh]'} ${focusedPanel === activePanel ? 'border-accent' : 'border-primary'} ${drawerOpen && activeTab ? '' : 'pointer-events-none'}`}
           data-panel={activePanel || undefined}
@@ -486,27 +588,34 @@ const BottomTabs = forwardRef(function BottomTabs({
                           <MarkdownEditor
                             path={tab.path}
                             name={tab.label}
-                            focused={tabVisible && focusedPanel === `bottom-${tab.id}`}
+                            focused={tabVisible && focusedPanel === panelId(tab.id)}
                             fontFamily={fontFamily}
                             fontSize={tab.fontSize}
                             fullscreen={tab.fullscreen}
                             onFontSizeChange={(delta) => changeFontSize(tab.id, delta)}
                             onDirtyChange={markDirty}
-                            onFocusRequest={() => onPanelFocus(`bottom-${tab.id}`)}
+                            onFocusRequest={() => onPanelFocus(panelId(tab.id))}
                             onPanelNavigate={(direction) => navigateTab(tab.id, direction)}
                             onNavigateUp={focusWorkspace}
                             onToggleFullscreen={() => toggleFullscreen(tab.id)}
                             onToggleSidebar={onToggleSidebar}
+                            onNewTerminal={createTerminal}
                           />
                         ) : (
                           <LocalTerminal
+                            terminalId={tab.id}
+                            onControlReady={(controls) => {
+                              if (controls) terminalControlsRef.current.set(tab.id, controls);
+                              else terminalControlsRef.current.delete(tab.id);
+                            }}
                             visible={tabVisible}
                             autoFocus={false}
-                            focused={tabVisible && focusedPanel === `bottom-${tab.id}`}
+                            focused={tabVisible && focusedPanel === panelId(tab.id)}
                             onPanelNavigate={(direction) => navigateTab(tab.id, direction)}
                             onNavigateUp={focusWorkspace}
                             onToggleFullscreen={() => toggleFullscreen(tab.id)}
                             onToggleSidebar={onToggleSidebar}
+                            onNewTerminal={createTerminal}
                             onExit={() => closeTab(tab.id)}
                             label={tab.label}
                             themeMode={terminalMode}

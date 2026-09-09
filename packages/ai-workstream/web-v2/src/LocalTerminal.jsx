@@ -4,6 +4,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
+import { wsUrl } from './api.js';
+import { browserClientId } from './browser-client.js';
+import { useTarget } from './target-context.js';
+import { websocketReconnectDelay } from './websocket-retry.js';
+
 const TERMINAL_THEMES = {
   dark: {
     background: '#0f172a',
@@ -12,6 +17,30 @@ const TERMINAL_THEMES = {
     cursorAccent: '#0f172a',
     selectionBackground: '#334155',
     selectionForeground: '#f8fafc',
+  },
+  black: {
+    background: '#000000',
+    foreground: '#ffffff',
+    cursor: '#ffffff',
+    cursorAccent: '#000000',
+    selectionBackground: '#4d4d4d',
+    selectionForeground: '#ffffff',
+    black: '#000000',
+    red: '#cd0000',
+    green: '#00cd00',
+    yellow: '#cdcd00',
+    blue: '#0000ee',
+    magenta: '#cd00cd',
+    cyan: '#00cdcd',
+    white: '#e5e5e5',
+    brightBlack: '#a8a8a8',
+    brightRed: '#ff0000',
+    brightGreen: '#00ff00',
+    brightYellow: '#ffff00',
+    brightBlue: '#5c5cff',
+    brightMagenta: '#ff00ff',
+    brightCyan: '#00ffff',
+    brightWhite: '#ffffff',
   },
   light: {
     background: '#f8fafc',
@@ -29,11 +58,13 @@ function terminalTheme(mode) {
 
 export default function LocalTerminal({
   visible = true, sessionId = null, autoFocus = true, focused = null,
-  role = null, onPanelNavigate = null, onNavigateUp = null, onNavigateDown = null,
-  onToggleFullscreen = null, onToggleSidebar = null, onExit = null,
+  role = null, terminalId = 'default', onPanelNavigate = null, onNavigateUp = null, onNavigateDown = null,
+  onToggleFullscreen = null, onToggleSidebar = null, onNewTerminal = null, onExit = null,
+  onControlReady = null,
   label = 'Local zsh terminal', className = '',
   fontSize = 14, fontFamily = '"Roboto Mono", monospace', themeMode = 'dark',
 }) {
+  const target = useTarget();
   const hostRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
@@ -46,6 +77,7 @@ export default function LocalTerminal({
   const navigateDownRef = useRef(onNavigateDown);
   const toggleFullscreenRef = useRef(onToggleFullscreen);
   const toggleSidebarRef = useRef(onToggleSidebar);
+  const newTerminalRef = useRef(onNewTerminal);
   const exitRef = useRef(onExit);
   const [status, setStatus] = useState('connecting');
   const [generation, setGeneration] = useState(0);
@@ -57,6 +89,7 @@ export default function LocalTerminal({
   navigateDownRef.current = onNavigateDown;
   toggleFullscreenRef.current = onToggleFullscreen;
   toggleSidebarRef.current = onToggleSidebar;
+  newTerminalRef.current = onNewTerminal;
   exitRef.current = onExit;
 
   useEffect(() => {
@@ -65,6 +98,10 @@ export default function LocalTerminal({
     let disposed = false;
     let exited = false;
     let resizeFrame = null;
+    let reconnectTimer = null;
+    let reconnectAttempt = 0;
+    let socket = null;
+    let ownedTerminal = false;
     setStatus('connecting');
 
     const terminal = new Terminal({
@@ -80,6 +117,36 @@ export default function LocalTerminal({
     terminal.attachCustomKeyEventHandler((event) => {
       const key = event.key.toLowerCase();
       const controlOnly = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+      // Ctrl+C/Ctrl+V are the shell's interrupt and quoted-insert, so copy and
+      // paste live on Ctrl+Shift+C/Ctrl+Shift+P instead — captured here (rather
+      // than left to the browser) so Ctrl+Shift+C can't fall through to a
+      // DevTools inspector shortcut.
+      const controlShift = event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey;
+      if (key === 'c' && controlShift) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type === 'keydown' && !event.repeat) {
+          const selection = terminal.getSelection();
+          if (selection) navigator.clipboard?.writeText(selection).catch(() => {});
+        }
+        return false;
+      }
+      if (key === 'p' && controlShift) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type === 'keydown' && !event.repeat) {
+          navigator.clipboard?.readText()
+            .then((text) => { if (text) terminal.paste(text); })
+            .catch(() => {});
+        }
+        return false;
+      }
+      if (key === 't' && controlOnly && typeof newTerminalRef.current === 'function') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type === 'keydown' && !event.repeat) newTerminalRef.current();
+        return false;
+      }
       if (key === 'f' && controlOnly && typeof toggleFullscreenRef.current === 'function') {
         event.preventDefault();
         event.stopPropagation();
@@ -114,19 +181,31 @@ export default function LocalTerminal({
     terminalRef.current = terminal;
     fitRef.current = fit;
 
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const terminalQuery = new URLSearchParams();
+    terminalQuery.set('client', browserClientId());
+    terminalQuery.set('terminal', terminalId);
     if (sessionId != null) terminalQuery.set('session', String(sessionId));
     if (role) terminalQuery.set('role', role);
-    const queryString = terminalQuery.toString();
-    const socket = new WebSocket(`${protocol}//${location.host}/ws/terminal${queryString ? `?${queryString}` : ''}`);
-    socketRef.current = socket;
+    const terminalUrl = () => {
+      const reconnectQuery = new URLSearchParams(terminalQuery);
+      if (ownedTerminal) reconnectQuery.set('owner', '1');
+      return wsUrl(`/ws/terminal?${reconnectQuery.toString()}`, target);
+    };
+    onControlReady?.({
+      terminate() {
+        const activeSocket = socketRef.current;
+        if (activeSocket?.readyState === WebSocket.OPEN) {
+          activeSocket.send(JSON.stringify({ type: 'terminate' }));
+        }
+      },
+    });
 
     const sendResize = () => {
       if (disposed || !visibleRef.current || host.clientWidth < 1 || host.clientHeight < 1) return;
       try { fit.fit(); } catch { return; }
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+      const activeSocket = socketRef.current;
+      if (activeSocket?.readyState === WebSocket.OPEN) {
+        activeSocket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
       }
     };
     const scheduleResize = () => {
@@ -135,31 +214,70 @@ export default function LocalTerminal({
     };
 
     const input = terminal.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }));
-    });
-    socket.addEventListener('open', () => {
-      if (disposed) return;
-      setStatus('connected');
-      scheduleResize();
-      const shouldFocus = focusedRef.current == null ? autoFocusRef.current : focusedRef.current;
-      if (visibleRef.current && shouldFocus) terminal.focus();
-    });
-    socket.addEventListener('message', (event) => {
-      let message;
-      try { message = JSON.parse(event.data); } catch { return; }
-      if (message.type === 'output' && typeof message.data === 'string') terminal.write(message.data);
-      if (message.type === 'error') terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
-      if (message.type === 'exit') {
-        exited = true;
-        setStatus('exited');
-        terminal.writeln(`\r\n\x1b[90m[zsh exited with status ${message.exitCode}]\x1b[0m`);
-        exitRef.current?.(message);
+      const activeSocket = socketRef.current;
+      if (activeSocket?.readyState === WebSocket.OPEN) {
+        activeSocket.send(JSON.stringify({ type: 'input', data }));
       }
     });
-    socket.addEventListener('close', () => {
-      if (!disposed && !exited) setStatus('disconnected');
-    });
-    socket.addEventListener('error', () => socket.close());
+
+    const reconnect = () => {
+      if (disposed || exited) return;
+      setStatus('reconnecting');
+      reconnectTimer = setTimeout(connect, websocketReconnectDelay(reconnectAttempt));
+      reconnectAttempt += 1;
+    };
+    const connect = () => {
+      if (disposed || exited) return;
+      setStatus('connecting');
+      let candidate;
+      try {
+        candidate = new WebSocket(terminalUrl());
+      } catch {
+        reconnect();
+        return;
+      }
+      socket = candidate;
+      socketRef.current = candidate;
+      candidate.addEventListener('open', () => {
+        if (disposed || candidate !== socket) return;
+        reconnectAttempt = 0;
+        setStatus('connected');
+        scheduleResize();
+        const shouldFocus = focusedRef.current == null ? autoFocusRef.current : focusedRef.current;
+        if (visibleRef.current && shouldFocus) terminal.focus();
+      });
+      candidate.addEventListener('message', (event) => {
+        if (disposed || candidate !== socket) return;
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === 'output' && typeof message.data === 'string') terminal.write(message.data);
+        if (message.type === 'claimed') {
+          ownedTerminal = true;
+          setStatus('connected');
+          scheduleResize();
+        }
+        if (message.type === 'busy') {
+          ownedTerminal = false;
+          setStatus('active on another client');
+        }
+        if (message.type === 'error') terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
+        if (message.type === 'exit') {
+          exited = true;
+          clearTimeout(reconnectTimer);
+          setStatus('exited');
+          terminal.writeln(`\r\n\x1b[90m[zsh exited with status ${message.exitCode}]\x1b[0m`);
+          exitRef.current?.(message);
+        }
+      });
+      candidate.addEventListener('close', () => {
+        if (candidate !== socket) return;
+        if (socketRef.current === candidate) socketRef.current = null;
+        socket = null;
+        reconnect();
+      });
+      candidate.addEventListener('error', () => candidate.close());
+    };
+    connect();
 
     const resizeObserver = new ResizeObserver(scheduleResize);
     resizeObserver.observe(host);
@@ -168,15 +286,17 @@ export default function LocalTerminal({
     return () => {
       disposed = true;
       if (resizeFrame != null) cancelAnimationFrame(resizeFrame);
+      clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
       input.dispose();
-      socket.close();
+      onControlReady?.(null);
+      socket?.close();
       terminal.dispose();
       if (terminalRef.current === terminal) terminalRef.current = null;
       if (fitRef.current === fit) fitRef.current = null;
-      if (socketRef.current === socket) socketRef.current = null;
+      socketRef.current = null;
     };
-  }, [generation, role, sessionId]);
+  }, [generation, role, sessionId, target, terminalId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -243,8 +363,18 @@ export default function LocalTerminal({
           type="button"
           className="absolute top-3 right-3 rounded-md border border-primary bg-page/90 px-2 py-1 text-xs font-semibold text-primary shadow-sm hover:bg-soft hover:text-on-soft disabled:cursor-wait disabled:opacity-70"
           disabled={status === 'connecting'}
-          onClick={() => setGeneration((value) => value + 1)}
-        >{status === 'connecting' ? 'connecting…' : `${status} · reconnect`}</button>
+          onClick={() => {
+            if (status === 'active on another client' && socketRef.current?.readyState === WebSocket.OPEN) {
+              socketRef.current.send(JSON.stringify({ type: 'takeover' }));
+            } else {
+              setGeneration((value) => value + 1);
+            }
+          }}
+          title={status === 'active on another client' ? 'Take over this terminal' : undefined}
+        >{status === 'connecting' ? 'connecting…'
+            : status === 'active on another client' ? 'Active on another client · waiting'
+              : status === 'reconnecting' ? 'reconnecting… · retry now'
+              : `${status} · reconnect`}</button>
       )}
     </div>
   );

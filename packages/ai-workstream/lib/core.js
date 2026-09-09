@@ -132,6 +132,13 @@ export function openDb(path = DB_PATH) {
       git_clean INTEGER CHECK(git_clean IN (0, 1))
     );
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS browser_ui_state (
+      scope TEXT PRIMARY KEY,
+      state_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
   try { db.exec("ALTER TABLE configured_location_state ADD COLUMN shell_status TEXT CHECK(shell_status IN ('working', 'ready'))"); } catch { /* exists */ }
   try { db.exec("ALTER TABLE configured_location_state ADD COLUMN agent TEXT CHECK(agent IN ('claude', 'codex'))"); } catch { /* exists */ }
   try { db.exec('ALTER TABLE configured_location_state ADD COLUMN git_clean INTEGER CHECK(git_clean IN (0, 1))'); } catch { /* exists */ }
@@ -328,6 +335,41 @@ export function openDb(path = DB_PATH) {
     END;
   `);
   return db;
+}
+
+// Browser terminal/workspace inventory is daemon-owned so a reload (or another
+// browser client) can rebuild the same views before claiming their persistent
+// Zellij sessions. `scope` lets independently mounted UI surfaces save without
+// overwriting one another.
+export function readBrowserUiState(db, scope) {
+  const row = db.prepare(`
+    SELECT state_json, updated_at
+    FROM browser_ui_state
+    WHERE scope=?
+  `).get(String(scope));
+  if (!row) return { scope: String(scope), state: {}, updatedAt: null };
+  try {
+    const state = JSON.parse(row.state_json);
+    return {
+      scope: String(scope),
+      state: state && typeof state === 'object' && !Array.isArray(state) ? state : {},
+      updatedAt: row.updated_at,
+    };
+  } catch {
+    return { scope: String(scope), state: {}, updatedAt: row.updated_at };
+  }
+}
+
+export function writeBrowserUiState(db, scope, state, { updatedAt = now() } = {}) {
+  const value = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
+  db.prepare(`
+    INSERT INTO browser_ui_state (scope, state_json, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(scope) DO UPDATE SET
+      state_json=excluded.state_json,
+      updated_at=excluded.updated_at
+  `).run(String(scope), JSON.stringify(value), updatedAt);
+  return { scope: String(scope), state: value, updatedAt };
 }
 
 export const latestWorkstreamEventSequence = (db) =>

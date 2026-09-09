@@ -178,6 +178,24 @@ function booleanValue(value, fallback, name) {
   return selected;
 }
 
+function daemonUrlValue(value, name) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`daemons.${name}.url must be a non-empty string`);
+  }
+  const url = value.trim();
+  try { new URL(url); }
+  catch { throw new Error(`daemons.${name}.url must be a valid absolute URL`); }
+  return url.replace(/\/+$/, '');
+}
+
+function daemonNameValue(value, id) {
+  if (value === undefined) return id.charAt(0).toUpperCase() + id.slice(1);
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`daemons.${id}.name must be a non-empty string`);
+  }
+  return value.trim();
+}
+
 export function resolveConfig({
   env = process.env,
   home = homedir(),
@@ -233,6 +251,14 @@ export function resolveConfig({
       closeable: false,
       weeklyNotes: booleanValue(location.weeklyNotes, false, `locations.${id}.weeklyNotes`),
     }];
+  }));
+
+  const daemons = Object.fromEntries(Object.entries(file.daemons || {}).map(([id, daemon]) => {
+    if (id === 'local') throw new Error('daemons.local is reserved for the current daemon');
+    if (!daemon || typeof daemon !== 'object' || Array.isArray(daemon)) {
+      throw new Error(`daemons.${id} must be a section with a url setting`);
+    }
+    return [id, { id, name: daemonNameValue(daemon.name, id), url: daemonUrlValue(daemon.url, id) }];
   }));
 
   const agent = firstDefined(env.AI_WORKSTREAM_AGENT, env.WS_AGENT, file.agent);
@@ -293,6 +319,7 @@ export function resolveConfig({
     home,
     paths,
     locations,
+    daemons,
     panels,
     commands,
     agent,

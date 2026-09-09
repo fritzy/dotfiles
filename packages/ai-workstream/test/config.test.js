@@ -73,8 +73,42 @@ default =
   assert.equal(config.models.claude.scratch, 'sonnet');
   assert.equal(config.gitProtocol, 'https');
   assert.deepEqual(config.server, { host: '127.0.0.1', port: 7444, pollInterval: 1000 });
+  assert.deepEqual(config.daemons.workstation, {
+    id: 'workstation', name: 'Workstation', url: 'http://127.1.1.2:7337',
+  });
   assert.equal(config.defaultConfigPath, DEFAULT_CONFIG_PATH);
   assert.equal(config.configPath, configPath);
+});
+
+test('daemons are named remote endpoints validated as absolute URLs, with "local" reserved', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-config-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = join(dir, 'config.ini');
+  writeFileSync(configPath, `
+[daemons.staging]
+url = https://staging.example.com:9000/
+`);
+  const config = resolveConfig({ configPath, home: '/users/example' });
+  assert.deepEqual(config.daemons.staging, {
+    id: 'staging', name: 'Staging', url: 'https://staging.example.com:9000',
+  });
+  assert.deepEqual(config.daemons.workstation, {
+    id: 'workstation', name: 'Workstation', url: 'http://127.1.1.2:7337',
+  });
+
+  const badUrl = join(dir, 'bad-url.ini');
+  writeFileSync(badUrl, '[daemons.staging]\nurl = not-a-url\n');
+  assert.throws(
+    () => resolveConfig({ configPath: badUrl, home: '/users/example' }),
+    /daemons\.staging\.url must be a valid absolute URL/,
+  );
+
+  const reserved = join(dir, 'reserved.ini');
+  writeFileSync(reserved, '[daemons.local]\nurl = http://example.com\n');
+  assert.throws(
+    () => resolveConfig({ configPath: reserved, home: '/users/example' }),
+    /daemons\.local is reserved/,
+  );
 });
 
 test('configuration rejects unknown panels and agents', () => {
@@ -105,6 +139,8 @@ test('default user path follows XDG_CONFIG_HOME and the bundled data path follow
   assert.deepEqual(Object.keys(config.locations), ['notes', 'dotfiles']);
   assert.deepEqual(config.panels, ['shell', 'editor', 'agent']);
   assert.equal(config.server.port, 7337);
+  assert.deepEqual(Object.keys(config.daemons), ['workstation']);
+  assert.equal(config.daemons.workstation.url, 'http://127.1.1.2:7337');
 });
 
 test('INI parser reports malformed input with its source and line', () => {

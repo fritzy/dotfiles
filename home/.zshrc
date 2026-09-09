@@ -8,7 +8,7 @@ unsetopt beep nomatch
 bindkey -v
 # End of lines configured by zsh-newuser-install
 # The following lines were added by compinstall
-zstyle :compinstall filename '/home/nathan.fritz/.zshrc'
+zstyle :compinstall filename "$HOME/.zshrc"
 bindkey "^R" history-incremental-search-backward
 
 autoload -Uz compinit
@@ -173,12 +173,12 @@ if [ -r /etc/os-release ] && grep -q '^ID=chainguard$' /etc/os-release; then
 fi
 
 # The next line updates PATH for the Google Cloud SDK.
-if [ -f '/home/nathan.fritz/.local/opt/google-cloud-sdk/path.zsh.inc' ]; then . '/home/nathan.fritz/.local/opt/google-cloud-sdk/path.zsh.inc'; fi
+if [ -f "$HOME/.local/opt/google-cloud-sdk/path.zsh.inc" ]; then . "$HOME/.local/opt/google-cloud-sdk/path.zsh.inc"; fi
 
 # The next line enables shell command completion for gcloud.
-if [ -f '/home/nathan.fritz/.local/opt/google-cloud-sdk/completion.zsh.inc' ]; then . '/home/nathan.fritz/.local/opt/google-cloud-sdk/completion.zsh.inc'; fi
+if [ -f "$HOME/.local/opt/google-cloud-sdk/completion.zsh.inc" ]; then . "$HOME/.local/opt/google-cloud-sdk/completion.zsh.inc"; fi
 
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
 
-# ai-workstream shell status hook
-source '/home/nathan.fritz/.config/ai-workstream/shell.zsh'
+# ai-workstream shell status hook (generated at runtime by `ws`; absent until it's been run)
+[ -f "$HOME/.config/ai-workstream/shell.zsh" ] && source "$HOME/.config/ai-workstream/shell.zsh"
