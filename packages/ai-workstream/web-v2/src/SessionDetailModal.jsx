@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   ArchiveIcon, MaskIcon, RefreshIcon, Spinner,
 } from './icons.jsx';
 import LinkEditor from './LinkEditor.jsx';
 import {
-  AgentToggle, Button, Definition, DefinitionList, ErrorMessage, IconButton, inputClass, Modal, PanelToggles,
+  AgentToggle, Button, Definition, DefinitionList, ErrorMessage, IconButton, inputClass, Modal,
 } from './ui.jsx';
 import {
   branchState, canArchiveSession, githubBranchUrl, opticalPillPadding, stackDescription, timestamp,
@@ -30,10 +30,6 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
     setName(item?.type === 'scratchpad' ? item.name : '');
     setError('');
   }, [item?.id, item?.name, item?.type]);
-
-  const selectedPanels = useMemo(() => (
-    ['shell', 'editor', 'agent'].filter((panel) => item?.panels?.[panel])
-  ), [item?.panels]);
 
   async function run(command, body = {}) {
     if (!item || busy) return null;
@@ -85,12 +81,6 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
               disabled={busy}
               onChange={(agent) => { if (agent !== item.agent) run('agent-set', { agent }); }}
             />
-            <PanelToggles
-              panels={selectedPanels}
-              available={Boolean(item.panels?.tabOpen)}
-              disabled={busy}
-              onToggle={(panel) => run('panel-toggle', { panel })}
-            />
             <div className="ml-auto flex flex-wrap gap-2">
               <Button variant="danger" disabled={busy} onClick={resetTerminals}><RefreshIcon /> Reset terminals</Button>
               {canArchiveSession(item) && (
@@ -108,9 +98,6 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
               ><RefreshIcon /></IconButton>
             </div>
           </div>
-
-          {item.panelError && <p className="text-sm text-danger">Panel state unavailable: {item.panelError}</p>}
-          {!item.panelError && !item.panels?.tabOpen && <p className="text-sm text-muted">Open or resume this workstream before changing its panels.</p>}
 
           <DefinitionList>
             <Definition term="Repository / Branch">

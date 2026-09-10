@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --no-warnings
-// ws CLI — workstream manager (git worktrees + Zellij tabs + AI agents).
+// ws CLI — command-line client for the FritzWorks workstream service.
 // Shared data/git logic lives in ./lib/core.js (also used by the MCP server).
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -9,25 +9,18 @@ import { fileURLToPath } from 'node:url';
 
 import { AGENT_PROVIDERS, CONFIG, PANEL_ROLES } from './lib/config.js';
 import {
-  WS_SESSION, now, isScratch, computeTabName,
-  openDb, upsertWorkstream, resolveRow, currentWorkstream, setStatus, setPath, renameWorkstream,
-  touchLastJoined,
-  refreshWorkstreamStatuses,
-  listWorkstreams, issuesByWorkstream, listIssues, addIssue, removeIssue, addLog,
-  hasClone, parseSelector, materializeWorktree, removeWorktree, worktreeDirty,
-  createScratchpad, linkPr, listNotes, readNote, writeSeed,
+  isScratch,
+  openDb, resolveRow, currentWorkstream,
+  listIssues,
+  hasClone, worktreeDirty,
+  listNotes, readNote,
   parentOf, setParent, stackTree, stackLine, stackCheck, ghStackLink, rebaseStack,
-  NOTES_ROOT, ensureWeeklyNote, appendDayEntry, collectDayActivity, renderDigest,
-  selectedAgent,
-  expandIssueReference,
-  linkedSessionSeed,
+  NOTES_ROOT, appendDayEntry, collectDayActivity, renderDigest,
 } from './lib/core.js';
-import {
-  openTab, closeTab, renameTab, inZellij, openPane, closePane,
-} from './lib/zellij.js';
 import {
   daemonFiles, daemonStatus, openWebPage, runForeground, startDaemon, stopDaemon,
 } from './lib/daemon.js';
+import { requestLocalService, workstreamCommand } from './lib/client.js';
 import {
   agentHookStatus,
   installAgentHooks,
@@ -69,7 +62,7 @@ function flagValue(args, name) {
 
 // Positional args, with flags removed — including the value that follows a
 // value-taking flag like `--ws X` (so it isn't mistaken for a positional).
-function positionals(args, valueFlags = ['--ws', '--seed', '--parent', '--agent', '--model', '--panels']) {
+function positionals(args, valueFlags = ['--ws', '--seed', '--parent', '--agent', '--panels', '--link']) {
   const out = [];
   for (let i = 0; i < args.length; i++) {
     if (valueFlags.includes(args[i])) { i++; continue; }
@@ -77,6 +70,25 @@ function positionals(args, valueFlags = ['--ws', '--seed', '--parent', '--agent'
     out.push(args[i]);
   }
   return out;
+}
+
+function flagValues(args, name) {
+  const values = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === name) {
+      const value = args[i + 1];
+      if (!value || value.startsWith('--')) throw new Error(`${name} requires a value`);
+      values.push(value);
+      i += 1;
+      continue;
+    }
+    if (args[i].startsWith(`${name}=`)) {
+      const value = args[i].slice(name.length + 1);
+      if (!value) throw new Error(`${name} requires a value`);
+      values.push(value);
+    }
+  }
+  return values;
 }
 
 function agentFlag(args) {
@@ -90,43 +102,50 @@ function agentFlag(args) {
   return agent;
 }
 
-// Convert one-run layout flags into openTab/openPane options. Explicit flags
-// override the session's persisted provider; other layout flags remain one-run.
-function tabOpts(args, row, extra = {}) {
-  const opts = { ...extra };
-  const agent = agentFlag(args) || row.agent;
-  if (agent) opts.agent = agent;
-  const model = flagValue(args, '--model');
-  if (model) opts.model = model;
+function browserPanels(args) {
   const panels = flagValue(args, '--panels');
-  if (panels) {
-    opts.panels = panels.split(',').map((part) => part.trim()).filter(Boolean);
-    const invalid = opts.panels.find((panel) => !PANEL_ROLES.includes(panel));
+  let selected = panels
+    ? panels.split(',').map((part) => part.trim()).filter(Boolean)
+    : undefined;
+  if (args.includes('--no-editor') || args.includes('--no-vim')) selected = ['shell', 'agent'];
+  if (selected) {
+    selected = [...new Set(selected)];
+    const invalid = selected.find((panel) => !PANEL_ROLES.includes(panel));
     if (invalid) die(`unknown panel "${invalid}" (expected shell, editor, or agent)`);
+    const set = new Set(selected);
+    if (!set.has('shell') || !set.has('agent')
+        || (selected.length !== 2 && selected.length !== 3)
+        || (selected.length === 3 && !set.has('editor'))) {
+      die('browser panels must be shell,agent or shell,editor,agent');
+    }
   }
-  if (args.includes('--no-editor') || args.includes('--no-vim')) opts.noEditor = true;
+  return selected;
+}
 
-  // The seed is read up front so a bad path fails before any tab is changed.
+function browserRequestBody(args, extra = {}) {
+  const body = { ...extra };
+  const agent = agentFlag(args);
+  if (agent) body.agent = agent;
+  const panels = browserPanels(args);
+  if (panels) body.panels = panels;
   const seedFile = flagValue(args, '--seed');
-  if (!seedFile) return opts;
-  if (!existsSync(seedFile)) die(`seed file not found: ${seedFile}`);
-  return { ...opts, seed: writeSeed(row, readFileSync(seedFile, 'utf8')) };
+  if (seedFile) {
+    if (!existsSync(seedFile)) die(`seed file not found: ${seedFile}`);
+    body.seed = readFileSync(seedFile, 'utf8');
+  }
+  return body;
 }
 
-// Print a note when a freshly linked PR was added (shared linkPr is best-effort,
-// idempotent, and silent when there's no PR or gh is unavailable).
-function linkPrForRow(db, row) {
-  const res = linkPr(db, row);
-  if (res && res.added) console.log(`  linked PR #${res.pr.number} (${res.pr.state.toLowerCase()}): ${res.pr.url}`);
+export function creationRequestBody(args, extra = {}) {
+  const links = flagValues(args, '--link');
+  return browserRequestBody(args, {
+    ...extra,
+    ...(links.length ? { links } : {}),
+  });
 }
 
-function linkedSessionTabOpts(db, row, args, kind) {
-  const opts = tabOpts(args, row);
-  const linked = linkedSessionSeed(kind, listIssues(db, row.id).map((issue) => issue.ref));
-  if (!linked) return opts;
-  const explicit = opts.seed ? readFileSync(opts.seed, 'utf8').trimEnd() : '';
-  const seed = explicit ? `${explicit}\n\n${linked}` : linked;
-  return { ...opts, seed: writeSeed(row, seed) };
+function openedInBrowser(row, daemon) {
+  console.log(`Opened FritzWorks workspace #${row.id} (${daemon.url})`);
 }
 
 function printIssues(db, workstreamId) {
@@ -150,7 +169,7 @@ async function resolveTarget(db, selector, verb) {
     console.log(`(current workstream: #${cur.id} ${cur.org}/${cur.repo} @ ${cur.branch})`);
     return cur;
   }
-  cmdList([]);
+  await cmdList([]);
   const picked = await prompt(`\nWorkstream to ${verb} (id or branch): `);
   const row = resolveRow(db, picked);
   if (!row) die(`no workstream matching "${picked}"`);
@@ -159,14 +178,15 @@ async function resolveTarget(db, selector, verb) {
 
 // ---------------------------------------------------------------- commands
 
-function cmdList(args) {
+async function cmdList(args) {
   const db = openDb();
-  const rows = listWorkstreams(db, { all: args.includes('--all') });
+  const status = args.includes('--all') ? 'all' : 'active_paused';
+  const { result } = await requestLocalService(`/ws/all?status=${status}&perpage=100`);
+  const rows = result.items;
   if (rows.length === 0) {
     console.log('No workstreams yet. Create one with: ws new <org/repo> <branch>');
     return;
   }
-  const issues = issuesByWorkstream(db);
   const current = currentWorkstream(db);
   const fmt = (s, w) => String(s ?? '').padEnd(w);
   const useColor = process.stdout.isTTY;
@@ -174,20 +194,21 @@ function cmdList(args) {
   console.log([fmt('ID', 4), fmt('', 3), fmt('REPO', 28), fmt('BRANCH', 24), fmt('STATUS', 8), 'LAST JOINED'].join(' '));
   rows.forEach((r, i) => {
     // "▸" marks the workstream containing the current directory; ●/○ = worktree present.
-    const mark = (current && current.id === r.id ? '▸' : ' ') + (existsSync(r.path) ? '●' : '○');
-    const last = r.last_joined_at ? r.last_joined_at.replace('T', ' ').slice(0, 16) : '—';
-    const repoLabel = isScratch(r) ? 'scratch' : `${r.org}/${r.repo}`;
+    const mark = (current && String(current.id) === String(r.id) ? '▸' : ' ')
+      + (r.worktreePresent ? '●' : '○');
+    const last = r.lastJoined ? r.lastJoined.replace('T', ' ').slice(0, 16) : '—';
+    const repoLabel = r.repo;
     const line = [
       fmt(r.id, 4), fmt(mark, 3), fmt(repoLabel, 28),
       fmt(r.branch, 24), fmt(r.status === 'closed' ? 'archived' : r.status, 8), last,
     ].join(' ');
     console.log(i % 2 === 1 ? dim(line) : line);
-    const parent = parentOf(db, r);
+    const parent = r.stackedOn;
     if (parent) {
       const stackLabel = `         ↳ stacked on #${parent.id} (${parent.branch})`;
       console.log(i % 2 === 1 ? dim(stackLabel) : stackLabel);
     }
-    for (const it of issues[r.id] || []) {
+    for (const it of r.issues || []) {
       const issueLine = `         ↳ [${it.kind}] ${it.ref}`;
       console.log(i % 2 === 1 ? dim(issueLine) : issueLine);
     }
@@ -217,136 +238,69 @@ async function cmdNew(args) {
     if (isScratch(parent)) die(`--parent #${parent.id} is a scratchpad, so it has no branch to build on`);
   }
 
-  const { branch, source } = parseSelector(org, repo, selector);
-  // Only branch off the parent when it's the same repo — a branch from elsewhere
-  // isn't a ref in this clone. A cross-repo parent still records the relationship.
-  const sameRepo = parent && parent.org === org && parent.repo === repo;
-  const path = materializeWorktree(org, repo, branch, source,
-    sameRepo ? { base: parent.branch } : {});
-  let row = upsertWorkstream(db, {
-    org, repo, branch, source, path,
-    status: 'paused',
-    created_at: now(),
-    last_joined_at: now(),
+  const { daemon, result } = await requestLocalService('/ws', {
+    method: 'POST',
+    body: creationRequestBody(args, {
+      repository: orgRepo,
+      selector,
+      ...(parent ? { parent: String(parent.id) } : {}),
+    }),
   });
-  if (parent) row = setParent(db, row, parent);
-  console.log(`Workstream #${row.id}: ${org}/${repo} @ ${branch}`);
-  console.log(`  worktree: ${path}`);
+  const row = result.workstream;
+  console.log(`Workstream #${row.id}: ${org}/${repo} @ ${row.branch}`);
+  console.log(`  worktree: ${row.path}`);
   if (parent) {
     console.log(`  stacked on #${parent.id} (${parent.branch})`
-      + (sameRepo ? '' : ' — different repo, so recorded only (not branched off it)'));
+      + (result.branchedOffParent ? '' : ' — different repo, so recorded only (not branched off it)'));
   }
-  linkPrForRow(db, row);
-  openTab(row, linkedSessionTabOpts(db, row, args, 'repo'));
+  openedInBrowser(row, daemon);
 }
 
-// Create a scratchpad under the configured root with the configured tab layout.
+// Create a scratchpad and make it the active FritzWorks workspace.
 // With no name, a random one is generated.
 async function cmdScratch(args) {
   const name = positionals(args)[0];
-  const db = openDb();
-  const row = createScratchpad(db, name);
+  const { daemon, result } = await requestLocalService('/ws/scratchpad', {
+    method: 'POST',
+    body: creationRequestBody(args, { ...(name ? { name } : {}) }),
+  });
+  const row = result.workstream;
   console.log(`Scratchpad #${row.id}: ${row.branch}`);
   console.log(`  dir: ${row.path}`);
-  openTab(row, linkedSessionTabOpts(db, row, args, 'scratchpad'));
-}
-
-// Open (or focus) any configured location. These are never closed as state and
-// their directories are never removed; --close only pauses the Zellij tab.
-async function requestBrowserCommand(id, command, body = {}) {
-  const daemon = await daemonStatus(CONFIG);
-  if (!daemon.running) return null;
-  const response = await fetch(`${daemon.url}/ws/${encodeURIComponent(id)}/${command}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const result = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(result?.message || `browser terminal command failed (HTTP ${response.status})`);
-  return result;
+  openedInBrowser(row, daemon);
 }
 
 async function cmdConfiguredLocation(id, args) {
   const location = CONFIG.locations[id];
   if (!location) die(`unknown configured location "${id}"`);
-  const db = openDb();
-  const row = {
-    ...location,
-    id,
-    tab_name: id,
-    agent: selectedAgent(db, id, CONFIG.agent),
-  };
   if (args.includes('--close')) {
-    await requestBrowserCommand(id, 'pause');
-    console.log(`Paused configured location "${id}" browser terminals.`);
+    await workstreamCommand(id, 'pause');
+    console.log(`Closed configured location "${id}" in FritzWorks.`);
     return;
   }
-  const editorFile = location.weeklyNotes ? ensureWeeklyNote(location.path) : undefined;
-  openTab(row, tabOpts(args, row, { ...(editorFile ? { editorFile } : {}) }));
+  const { daemon, result } = await workstreamCommand(id, 'resume', browserRequestBody(args));
+  openedInBrowser(result.workstream, daemon);
 }
 
-// Open (or focus) a workstream's tab, reconstituting the worktree if it's gone.
-// Backs both `join`/`rejoin` and `resume`.
+// Reconstitute a worktree if needed and make it the active FritzWorks workspace.
 async function cmdJoin(args, verb = 'join') {
   const positional = positionals(args);
   const db = openDb();
   const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), verb);
 
-  if (!existsSync(row.path)) {
-    const path = materializeWorktree(row.org, row.repo, row.branch, row.source);
-    // The canonical path can move (e.g. after a configured root changes);
-    // keep the stored path and the tab's cwd in sync with where it landed.
-    if (path && path !== row.path) { setPath(db, row.id, path); row.path = path; }
-    console.log(`Worktree missing; reconstituting at ${row.path}`);
-  }
-  if (row.status === 'closed') setStatus(db, row.id, 'paused', true);
-  else touchLastJoined(db, row.id);
-  linkPrForRow(db, row);
-  // Focuses the tab if it already exists (layout flags have no effect then), else creates
-  // it; either way this is a one-off layout choice for this open, not persisted.
-  openTab(row, tabOpts(args, row));
+  if (!existsSync(row.path)) console.log(`Worktree missing; reconstituting ${row.org}/${row.repo} @ ${row.branch}`);
+  const { daemon, result } = await workstreamCommand(row.id, 'resume', browserRequestBody(args));
+  console.log(`  worktree: ${result.workstream.path}`);
+  openedInBrowser(result.workstream, daemon);
 }
 
-// Stop working on a workstream for now: close its tab, keep the worktree.
+// Stop working on a workstream for now: close its web workspace, keep the worktree.
 async function cmdPause(args) {
   const positional = positionals(args);
   const db = openDb();
   const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), 'pause');
-  const remote = await requestBrowserCommand(row.id, 'pause');
-  if (!remote) {
-    linkPrForRow(db, row);
-    setStatus(db, row.id, 'paused');
-  }
+  await workstreamCommand(row.id, 'pause');
   console.log(`Paused workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch}); worktree kept at ${row.path}`);
-}
-
-// Add or remove one configured panel role in a workstream's tab.
-async function resolvePaneTarget(args, verb) {
-  if (!inZellij()) die('this only works from inside a Zellij session');
-  const db = openDb();
-  const row = await resolveTarget(db, positionals(args)[0] || flagValue(args, '--ws'), verb);
-  return row;
-}
-
-async function cmdOpenPane(kind, args, forcedAgent) {
-  const row = await resolvePaneTarget(args, `open the ${kind} pane for`);
-  const opts = tabOpts(args, row);
-  if (forcedAgent && opts.agent && opts.agent !== forcedAgent) {
-    die(`open-${forcedAgent} cannot be combined with --agent ${opts.agent}`);
-  }
-  if (forcedAgent) opts.agent = forcedAgent;
-  const opened = openPane(row, kind, opts);
-  console.log(opened
-    ? `Opened "${kind}" pane in #${row.id} (${row.org}/${row.repo} @ ${row.branch})`
-    : `"${kind}" pane already open in #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
-}
-
-async function cmdClosePane(kind, args) {
-  const row = await resolvePaneTarget(args, `close the ${kind} pane for`);
-  const closed = closePane(row, kind);
-  console.log(closed
-    ? `Closed "${kind}" pane in #${row.id} (${row.org}/${row.repo} @ ${row.branch})`
-    : `"${kind}" pane not open in #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
 }
 
 function cmdConfig() {
@@ -354,16 +308,10 @@ function cmdConfig() {
 }
 
 async function cmdRefresh() {
-  const daemon = await daemonStatus(CONFIG);
-  let terminalSessionIds = [];
-  if (daemon.running) {
-    const response = await fetch(`${daemon.url}/ws/terminal-sessions`);
-    if (!response.ok) throw new Error(`could not query browser terminals (HTTP ${response.status})`);
-    const body = await response.json();
-    terminalSessionIds = (body.sessions || []).map((session) => String(session.id));
-  }
-  const db = openDb();
-  const result = refreshWorkstreamStatuses(db, terminalSessionIds);
+  const { result: response } = await requestLocalService('/ws/refresh', {
+    method: 'POST', body: {},
+  });
+  const { result } = response;
   console.log(`Checked ${result.checked} workstream${result.checked === 1 ? '' : 's'} against ${result.terminalSessionCount} browser terminal session${result.terminalSessionCount === 1 ? '' : 's'}.`);
   if (!result.activated.length && !result.paused.length) {
     console.log('No statuses changed.');
@@ -496,9 +444,8 @@ async function cmdWeb(args) {
   console.log(`Opened ${opened.url} with ${opened.opener}`);
 }
 
-// Rename a workstream's display name (and its tab, if open). For a scratchpad
-// this renames its directory/branch field; for a git-backed workstream it only
-// sets a label used for the tab name — the git branch is untouched.
+// Rename the display name shown by FritzWorks. Scratchpads retain their stable
+// directory and internal branch key; git branch names are never changed.
 async function cmdRename(args) {
   const positional = positionals(args);
   const db = openDb();
@@ -507,11 +454,8 @@ async function cmdRename(args) {
   const row = await resolveTarget(db, selector, 'rename');
   const newName = explicitName || await prompt('New name: ');
   if (!newName) die('a new name is required');
-  const oldTabName = computeTabName(row);
-  const updated = renameWorkstream(db, row, newName);
-  const newTabName = computeTabName(updated);
-  renameTab(oldTabName, newTabName);
-  console.log(`Renamed #${updated.id}: tab is now "${newTabName}"`);
+  const { result } = await workstreamCommand(row.id, 'rename', { name: newName });
+  console.log(`Renamed #${result.workstream.id} to "${result.workstream.name || result.workstream.label}"`);
 }
 
 async function cmdArchive(args) {
@@ -523,14 +467,14 @@ async function cmdArchive(args) {
   const scratch = isScratch(row);
   const noun = scratch ? 'directory' : 'worktree';
 
-  linkPrForRow(db, row);
-  closeTab(row);
   // Git worktrees are removed by default (commits/branch survive in the bare clone);
   // a scratchpad has no such backing, so its directory is kept by default and only
   // removed when explicitly discarded — either way, still confirmed interactively.
   const shouldRemove = scratch ? discard : !keep;
+  let remove = false;
+  let force = false;
   if (shouldRemove && existsSync(row.path)) {
-    const dirty = worktreeDirty(row.path);
+    const dirty = scratch ? null : worktreeDirty(row.path);
     if (dirty) {
       const lines = dirty.split('\n');
       console.log(`\n⚠  Worktree at ${row.path} has uncommitted changes:`);
@@ -542,14 +486,15 @@ async function cmdArchive(args) {
       ? `Discard these changes and remove the worktree at ${row.path}?`
       : `Remove the ${noun} at ${row.path}?`;
     if (await confirm(question)) {
-      removeWorktree(row.org, row.repo, row.path);
+      remove = true;
+      force = Boolean(dirty);
     } else {
       console.log(`Kept ${noun} at ${row.path}.`);
     }
   } else if (scratch && !discard && existsSync(row.path)) {
     console.log(`Kept scratchpad directory at ${row.path} (resume with: ws resume ${row.id}; --delete to remove).`);
   }
-  setStatus(db, row.id, 'closed');
+  await workstreamCommand(row.id, 'archive', { remove, force });
   console.log(`Archived workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
 }
 
@@ -686,10 +631,9 @@ async function cmdIssueAdd(args) {
     if (r) refs = [r];
   }
   if (refs.length === 0) die('no issue given');
-  for (const ref of refs) {
-    const expanded = expandIssueReference(row, ref);
-    const { added, kind } = addIssue(db, row.id, expanded);
-    console.log(added ? `  + [${kind}] ${expanded}` : `  (already linked) ${expanded}`);
+  const { result } = await workstreamCommand(row.id, 'issue-add', { refs });
+  for (const issue of result.result.issues) {
+    console.log(issue.added ? `  + [${issue.kind}] ${issue.ref}` : `  (already linked) ${issue.ref}`);
   }
   console.log(`Issues on #${row.id} (${row.org}/${row.repo} @ ${row.branch}):`);
   printIssues(db, row.id);
@@ -705,7 +649,8 @@ async function cmdIssueRemove(args) {
     target = await prompt('\nIssue to remove (id or exact link): ');
   }
   if (!target) die('no issue given');
-  const { removed } = removeIssue(db, row.id, target);
+  const { result } = await workstreamCommand(row.id, 'issue-remove', { ref: target });
+  const { removed } = result.result;
   console.log(removed ? `Removed issue "${target}" from #${row.id}` : `No matching issue "${target}" on #${row.id}`);
 }
 
@@ -725,7 +670,8 @@ async function cmdLog(args) {
   let body = positionals(args).join(' ').trim();
   if (!body) body = (await prompt('What did you do? ')).trim();
   if (!body) die('nothing to log');
-  const entry = addLog(db, row.id, body, done);
+  const { result } = await workstreamCommand(row.id, 'log', { body, done });
+  const entry = result.result;
   console.log(`  logged${entry.done ? ' [done]' : ''}: ${entry.body}`);
   console.log(`  on #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
 }
@@ -780,26 +726,23 @@ async function cmdNoteShow(args) {
 }
 
 export function usageText() {
-  return `ws — AI workstream manager (git worktrees + Zellij + Claude Code or Codex)
+  return `ws — FritzWorks CLI (git worktrees + browser terminals + Claude Code or Codex)
 
 Usage:
   ws list [--all]                  List active workstreams (--all includes archived)
-  ws new <org/repo> <ref>          Create/open a workstream (alias: create)
+  ws new <org/repo> <ref>          Create and open a FritzWorks workspace (alias: create)
                                    (--parent <id|branch>: branch off that workstream and stack on it)
   ws scratch [name]                Create a scratchpad under the configured root (alias: sp)
-                                   (both take --seed <file>: the agent opens reading that seed doc)
-  ws location <name> [--close]     Open any configured location; --close pauses browser terminals
+                                   (both take repeatable --link <ref> and --seed <file>)
+  ws location <name> [--close]     Open any configured location in FritzWorks; --close pauses it
   ws <location-name> [--close]     Shorthand when the name is not another ws command
-  ws join [id|branch]              Rejoin a workstream, reconstituting it if needed (alias: rejoin)
+  ws join [id|branch]              Open in FritzWorks, reconstituting if needed (alias: rejoin)
   ws pause [id|branch]             Close browser terminals but keep the worktree
-  ws open-shell|open-editor|open-agent [id|branch]   Add that panel to an open tab
-  ws open-claude|open-codex [id|branch]              Add an agent panel using that provider
-  ws close-shell|close-editor|close-agent [id|branch] Close that panel if it is open
-  ws resume [id|branch]             Reopen a paused workstream's tab (reconstitutes if needed)
+  ws resume [id|branch]            Open a paused workstream in FritzWorks
   ws archive [id|branch] [--keep]  Archive the session; remove worktree unless --keep
                                    (scratchpads keep their dir by default; --delete removes it)
                                    (aliases: close, rm)
-  ws rename [id|branch] <name>     Rename the tab (scratchpad: renames its dir/name too)
+  ws rename [id|branch] <name>     Rename the FritzWorks display name
   ws issue add <link...> [--ws X]       Link Linear/GitHub issues to a workstream
   ws issue remove <link> [--ws X]       Unlink an issue (by link or issue id)
   ws issue list [--ws X]                Show issues linked to a workstream
@@ -821,12 +764,15 @@ Usage:
   ws web start [--host H] [--port P]
                                    Start the daemon if needed and open its web client
 
-Tab options for new/scratch/join/resume/location/open-agent:
-  --agent claude|codex             Override the configured agent (--claude/--codex shorthand)
-  --model <name>                   Override that agent's configured model
-  --panels shell,editor,agent      Override the configured panel roles for this tab
-  --no-editor                      Omit the editor panel (--no-vim is retained as an alias)
-  --seed <file>                    Start the agent with a markdown seed document
+Browser workspace options for new/scratch/join/resume/location:
+  --agent claude|codex             Persist the agent provider (--claude/--codex shorthand)
+  --panels shell,agent             Open the two-panel browser layout
+  --panels shell,editor,agent      Open the three-panel browser layout
+  --no-editor                      Select the two-panel layout (--no-vim is an alias)
+  --seed <file>                    Seed the next newly-created browser agent terminal
+
+Creation option for new/scratch:
+  --link <ref>                     Associate a Linear/GitHub reference or URL (repeatable)
 
 <ref> for "new" is one of:
   feature-x        a branch on origin (created off the default branch if new)
@@ -835,8 +781,8 @@ Tab options for new/scratch/join/resume/location/open-agent:
 
 Context: commands that act on a workstream take it from, in order: the given
 selector (id, branch, or org/repo:branch) or --ws; else the worktree you're in;
-else an interactive pick. Run from outside Zellij, join/resume/new attach to (or
-create) the "${WS_SESSION}" session; from inside, they use the current session.
+else an interactive pick. Lifecycle commands start the local service if needed
+and update the shared FritzWorks workspace inventory; they never manage terminal tabs.
 
 Configuration: ${CONFIG.configPath}
 An MCP server is available as ws-mcp.`;
@@ -850,6 +796,15 @@ function usage() {
 
 export const run = async (argv = process.argv.slice(2)) => {
   const [cmd, ...rest] = argv;
+  if (argv.some((arg) => arg === '--model' || arg.startsWith('--model='))) {
+    die('--model was removed; configure the provider model in config.ini instead');
+  }
+  if (new Set([
+    'open-shell', 'open-zsh', 'open-editor', 'open-nvim', 'open-agent', 'open-claude', 'open-codex',
+    'close-shell', 'close-zsh', 'close-editor', 'close-nvim', 'close-agent', 'close-claude', 'close-codex',
+  ]).has(cmd)) {
+    die('terminal pane commands were removed; use --panels while opening a workspace or the FritzWorks layout control');
+  }
   switch (cmd) {
     case 'list': case 'ls': return cmdList(rest);
     case 'new': case 'create': return cmdNew(rest);
@@ -862,14 +817,6 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'join': case 'rejoin': return cmdJoin(rest);
     case 'resume': return cmdJoin(rest, 'resume');
     case 'pause': return cmdPause(rest);
-    case 'open-shell': case 'open-zsh': return cmdOpenPane('shell', rest);
-    case 'open-editor': case 'open-nvim': return cmdOpenPane('editor', rest);
-    case 'open-agent': return cmdOpenPane('agent', rest);
-    case 'open-claude': return cmdOpenPane('agent', rest, 'claude');
-    case 'open-codex': return cmdOpenPane('agent', rest, 'codex');
-    case 'close-shell': case 'close-zsh': return cmdClosePane('shell', rest);
-    case 'close-editor': case 'close-nvim': return cmdClosePane('editor', rest);
-    case 'close-agent': case 'close-claude': case 'close-codex': return cmdClosePane('agent', rest);
     case 'rename': return cmdRename(rest);
     case 'archive': case 'close': case 'rm': return cmdArchive(rest);
     case 'issue': case 'issues': return cmdIssue(rest);

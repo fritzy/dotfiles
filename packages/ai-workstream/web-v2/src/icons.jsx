@@ -56,12 +56,32 @@ export function CollapseIcon({ className = svgClass }) {
   return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" aria-hidden="true"><path d="M3 9h6V3M21 15h-6v6M15 3v6h6M9 21v-6H3" /></svg>;
 }
 
+export function MinimizeIcon({ className = svgClass }) {
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.5" aria-hidden="true"><path d="M5 12h14" /></svg>;
+}
+
+export function GripIcon({ className = svgClass }) {
+  return <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="8" cy="7" r="2" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="12" r="2" /><circle cx="16" cy="12" r="2" /><circle cx="8" cy="17" r="2" /><circle cx="16" cy="17" r="2" /></svg>;
+}
+
 export function Spinner({ className = 'size-4' }) {
   return <span className={`${className} inline-block animate-spin rounded-full border-2 border-current/25 border-t-current motion-reduce:animate-none`} aria-hidden="true" />;
 }
 
-export function AssetIcon({ name, className = svgClass }) {
-  return <MaskIcon name={name} className={className} />;
+export function AssetIcon({ name, className = svgClass, title }) {
+  return <MaskIcon name={name} className={className} title={title} />;
+}
+
+export function TargetIcon({ target, className = svgClass }) {
+  const local = !target || target.id === 'local';
+  const targetName = target?.name || (local ? 'Local' : 'Remote');
+  return (
+    <AssetIcon
+      name={local ? 'local' : 'remote'}
+      className={className}
+      title={`Working on ${targetName}`}
+    />
+  );
 }
 
 export function ProviderIcon({ provider, className = 'size-4' }) {

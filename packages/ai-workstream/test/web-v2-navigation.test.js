@@ -44,11 +44,13 @@ async function harness(t, { browserState = {} } = {}) {
   const { default: BottomTabsHarness } = await import('./helpers/BottomTabsHarness.jsx');
   const ref = React.createRef();
   const sidebarFocused = [];
+  const sessionStates = [];
   const mounted = await mountReact(React.createElement(BottomTabsHarness, {
     ref, onSidebarFocus: () => { sidebarFocused.push(true); return true; },
+    onSessionsChange: (state) => sessionStates.push(state),
   }));
   await flush(20);
-  return { ref, sidebarFocused, ...mounted };
+  return { ref, sessionStates, sidebarFocused, ...mounted };
 }
 
 const fakeTerminals = (container) => [...container.querySelectorAll('[data-fake-terminal]')];
@@ -177,4 +179,125 @@ test('Ctrl-H returns Markdown Edit and Preview sessions to the sidebar', async (
   await togglePreview(container);
   await dispatchKey(previewPane(container), 'h');
   assert.deepEqual(sidebarFocused, [true, true]);
+});
+
+test('standalone terminals split, navigate, fullscreen, rename, and minimize without stopping', async (t) => {
+  const { ref, container, sessionStates, sidebarFocused } = await harness(t, {
+    browserState: {
+      terminals: [
+        { id: 'terminal-one', kind: 'terminal', label: 'Alpha', fontSize: 13 },
+        { id: 'terminal-two', kind: 'terminal', label: 'Beta', fontSize: 15 },
+      ],
+      displayedId: 'terminal-one',
+    },
+  });
+  const visiblePanels = () => [...container.querySelectorAll('[data-panel^="standalone-local-terminal-"]')]
+    .filter((panel) => panel.getAttribute('aria-hidden') === 'false');
+  const terminal = (id) => container.querySelector(`[data-terminal-id="${id}"]`);
+
+  await actCall(() => ref.current.activate('terminal-one'));
+  await flush(20);
+  const drop = new window.Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(drop, 'dataTransfer', {
+    value: {
+      getData: () => JSON.stringify({ targetId: 'local', terminalId: 'terminal-two' }),
+    },
+  });
+  await actCall(() => container.querySelector('[data-standalone-terminal-group]').dispatchEvent(drop));
+  await flush(20);
+  assert.equal(drop.defaultPrevented, true);
+  assert.equal(visiblePanels().length, 2, 'dropping a second terminal creates a visible split');
+
+  await actCall(() => ref.current.activate('terminal-one'));
+  await flush(20);
+  assert.equal(visiblePanels().length, 2, 'selecting the first member restores the entire group');
+  assert.equal(document.activeElement, terminal('terminal-one'));
+  await dispatchKey(terminal('terminal-one'), 'l');
+  await flush(20);
+  assert.equal(document.activeElement, terminal('terminal-two'), 'Ctrl-L focuses the right terminal');
+  await dispatchKey(terminal('terminal-two'), 'h');
+  await flush(20);
+  assert.equal(document.activeElement, terminal('terminal-one'), 'Ctrl-H focuses the left terminal');
+  await dispatchKey(terminal('terminal-one'), 'h');
+  assert.deepEqual(sidebarFocused, [true], 'Ctrl-H at the left boundary returns to the sidebar');
+
+  await actCall(() => ref.current.activate('terminal-one'));
+  await flush(20);
+  await dispatchKey(terminal('terminal-one'), 'f');
+  await flush(20);
+  assert.equal(visiblePanels().length, 1, 'fullscreen suppresses the other group member');
+  assert.equal(visiblePanels()[0].dataset.terminalFullscreen, 'true');
+  await dispatchKey(terminal('terminal-one'), 'f');
+  await flush(20);
+  assert.equal(visiblePanels().length, 2, 'leaving fullscreen restores the group');
+
+  await actCall(() => ref.current.activate('terminal-two'));
+  await flush(20);
+  const renameButton = container.querySelector('button[aria-label="Rename Beta"]');
+  await actCall(() => renameButton.click());
+  const renameInput = container.querySelector('input[aria-label="Rename Beta"]');
+  await actCall(() => {
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setValue.call(renameInput, 'Build logs');
+    renameInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+  await dispatchKey(renameInput, 'Enter', { ctrlKey: false });
+  await flush(20);
+  assert.equal(sessionStates.at(-1).items.find((item) => item.id === 'terminal-two').label, 'Build logs');
+
+  const minimize = container.querySelector('button[aria-label="Minimize Build logs from split group"]');
+  await actCall(() => minimize.click());
+  await flush(20);
+  assert.equal(visiblePanels().length, 1, 'minimizing dissolves a two-terminal group');
+  assert.equal(fakeTerminals(container).length, 2, 'the minimized terminal remains mounted and running');
+  assert.equal(sessionStates.at(-1).items.every((item) => !item.splitGroupId), true);
+
+  await actCall(() => ref.current.groupTerminals('terminal-one', 'terminal-two', 'right'));
+  await flush(20);
+  assert.equal(visiblePanels().length, 2, 'sidebar-style terminal-to-terminal grouping displays the group');
+  assert.equal(document.activeElement, terminal('terminal-one'), 'the dragged terminal becomes the focused group member');
+});
+
+test('restored split groups reject stale, duplicate, and excess members', async () => {
+  const { normalizeTerminalSplitGroups } = await import('../web-v2/src/BottomTabs.jsx');
+  assert.deepEqual(normalizeTerminalSplitGroups([
+    { id: 'split-valid', members: ['one', 'two', 'three', 'four'], boundaries: [20, 60, 80] },
+    { id: 'split-overlap', members: ['three', 'four'], boundaries: [50] },
+    { id: 'split-stale', members: ['missing', 'four'], boundaries: [50] },
+  ], ['one', 'two', 'three', 'four']), [{
+    id: 'split-valid', members: ['one', 'two', 'three'], boundaries: [20, 60],
+  }]);
+});
+
+test('session workspaces use the shared terminal panel navigation and fullscreen contract', async (t) => {
+  const dom = setupJsdom();
+  t.after(() => teardownJsdom(dom));
+  const React = await import('react');
+  const { default: SessionWorkspaceHarness } = await import('./helpers/SessionWorkspaceHarness.jsx');
+  const sidebarFocused = [];
+  const { container } = await mountReact(React.createElement(SessionWorkspaceHarness, {
+    onSidebarFocus: () => sidebarFocused.push(true),
+  }));
+  await flush(20);
+  const terminal = (id) => container.querySelector(`[data-terminal-id="${id}"]`);
+  const visiblePanels = () => [...container.querySelectorAll('[data-panel^="workspace-local-workspace-test-"]')]
+    .filter((panel) => panel.getAttribute('aria-hidden') === 'false');
+
+  assert.equal(document.activeElement, terminal('workspace-shell'));
+  await dispatchKey(terminal('workspace-shell'), 'l');
+  await flush(20);
+  assert.equal(document.activeElement, terminal('workspace-agent'));
+  await dispatchKey(terminal('workspace-agent'), 'h');
+  await flush(20);
+  assert.equal(document.activeElement, terminal('workspace-shell'));
+  await dispatchKey(terminal('workspace-shell'), 'h');
+  assert.deepEqual(sidebarFocused, [true]);
+
+  await dispatchKey(terminal('workspace-shell'), 'f');
+  await flush(20);
+  assert.equal(visiblePanels().length, 1);
+  assert.equal(visiblePanels()[0].dataset.terminalFullscreen, 'true');
+  await dispatchKey(terminal('workspace-shell'), 'f');
+  await flush(20);
+  assert.equal(visiblePanels().length, 2);
 });

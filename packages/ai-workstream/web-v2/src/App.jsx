@@ -221,6 +221,16 @@ export default function App() {
     paneControllers.current.get(targetId)?.closeStandalone(id);
   }, []);
 
+  const groupStandalone = useCallback((targetId, sourceId, destinationId) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.groupStandalone(sourceId, destinationId);
+  }, [selectTarget]);
+
+  const minimizeStandalone = useCallback((targetId, id) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.minimizeStandalone(id);
+  }, [selectTarget]);
+
   const createTerminal = useCallback((targetId) => {
     selectTarget(targetId);
     paneControllers.current.get(targetId)?.createTerminal();
@@ -283,6 +293,8 @@ export default function App() {
               onOpenDetails={openSessionDetails}
               onActivateStandalone={activateStandalone}
               onCloseStandalone={closeStandalone}
+              onGroupStandalone={groupStandalone}
+              onMinimizeStandalone={minimizeStandalone}
               onCreateTerminal={createTerminal}
               onOpenMarkdown={openMarkdown}
               onToggle={toggleSidebar}

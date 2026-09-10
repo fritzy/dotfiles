@@ -11,7 +11,6 @@ test('user INI configuration layers over the bundled defaults and environment ov
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configPath = join(dir, 'config.ini');
   writeFileSync(configPath, `
-panels = shell, agent
 agent = codex
 gitProtocol = https
 
@@ -41,7 +40,6 @@ default =
     home: '/users/example',
     env: {
       XDG_DATA_HOME: '/var/example-data',
-      AI_WORKSTREAM_PANELS: 'editor,agent',
       AI_WORKSTREAM_SHELL: '["fish","--login"]',
       AI_WORKSTREAM_PORT: '7444',
     },
@@ -51,20 +49,19 @@ default =
   assert.equal(config.paths.notes, '/users/example/writing');
   assert.deepEqual(config.locations.notes, {
     id: 'notes', name: 'notes', repo: 'fritzy/notes', path: '/users/example/writing', branch: 'main',
-    closeable: false, weeklyNotes: true,
+    closeable: false,
   });
   assert.deepEqual(config.locations.dotfiles, {
     id: 'dotfiles', name: 'dotfiles', repo: 'example/dotfiles', path: join(dir, 'settings'), branch: 'trunk',
-    closeable: false, weeklyNotes: false,
+    closeable: false,
   });
   assert.deepEqual(config.locations.savefiles, {
     id: 'savefiles', name: 'savefiles', repo: 'example/savefiles', path: '/users/example/savefiles', branch: 'main',
-    closeable: false, weeklyNotes: false,
+    closeable: false,
   });
   assert.equal(config.paths.dotfiles, join(dir, 'settings'));
   assert.equal(config.paths.data, '/var/example-data/ws');
   assert.equal(config.paths.scratchpads, '/users/example/scratchpad');
-  assert.deepEqual(config.panels, ['editor', 'agent']);
   assert.deepEqual(config.commands.shell, ['fish', '--login']);
   assert.deepEqual(config.commands.editor, ['nvim', '--clean']);
   assert.deepEqual(config.commands.codex, ['/opt/codex']);
@@ -111,12 +108,8 @@ url = https://staging.example.com:9000/
   );
 });
 
-test('configuration rejects unknown panels and agents', () => {
+test('configuration rejects unknown agents', () => {
   const base = { configPath: '/tmp/does-not-exist-ai-workstream.ini', home: '/users/example' };
-  assert.throws(
-    () => resolveConfig({ ...base, env: { AI_WORKSTREAM_PANELS: 'shell,browser' } }),
-    /unknown panel/,
-  );
   assert.throws(
     () => resolveConfig({ ...base, env: { AI_WORKSTREAM_AGENT: 'other' } }),
     /unknown agent/,
@@ -137,7 +130,6 @@ test('default user path follows XDG_CONFIG_HOME and the bundled data path follow
   assert.equal(config.locations.notes.branch, 'main');
   assert.equal(config.locations.dotfiles.repo, 'fritzy/dotfiles');
   assert.deepEqual(Object.keys(config.locations), ['notes', 'dotfiles']);
-  assert.deepEqual(config.panels, ['shell', 'editor', 'agent']);
   assert.equal(config.server.port, 7337);
   assert.deepEqual(Object.keys(config.daemons), ['workstation']);
   assert.equal(config.daemons.workstation.url, 'http://127.1.1.2:7337');

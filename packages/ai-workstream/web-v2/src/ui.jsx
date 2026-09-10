@@ -1,8 +1,7 @@
 import { useEffect, useRef } from 'react';
 
-import { PANEL_ROLES } from './constants.js';
 import {
-  EditorIcon, ProviderIcon, RobotIcon, ShellIcon, ThreePanelIcon, TwoPanelIcon, XIcon,
+  ProviderIcon, ThreePanelIcon, TwoPanelIcon, XIcon,
 } from './icons.jsx';
 
 const BUTTON_VARIANTS = {
@@ -79,32 +78,6 @@ export function AgentToggle({ value, onChange, disabled = false, compact = false
           onClick={() => onChange(provider)}
         ><ProviderIcon provider={provider} /></button>
       ))}
-    </div>
-  );
-}
-
-const PANEL_ICONS = { shell: ShellIcon, editor: EditorIcon, agent: RobotIcon };
-
-export function PanelToggles({ panels, onToggle, disabled = false, available = true }) {
-  const selected = new Set(panels || []);
-  return (
-    <div className="inline-flex gap-1" aria-label="Panels">
-      {PANEL_ROLES.map((panel) => {
-        const Icon = PANEL_ICONS[panel];
-        const enabled = selected.has(panel);
-        return (
-          <button
-            key={panel}
-            type="button"
-            className={`flex size-9 items-center justify-center rounded-md border border-primary transition-colors ${enabled ? 'bg-accent text-on-accent' : 'bg-page text-primary hover:bg-soft hover:text-on-soft'} disabled:cursor-not-allowed disabled:opacity-40`}
-            aria-label={`${enabled ? 'Disable' : 'Enable'} ${panel} panel`}
-            aria-pressed={enabled}
-            title={`${panel[0].toUpperCase()}${panel.slice(1)} panel: ${enabled ? 'on' : 'off'}`}
-            disabled={disabled || !available}
-            onClick={() => onToggle(panel)}
-          ><Icon /></button>
-        );
-      })}
     </div>
   );
 }

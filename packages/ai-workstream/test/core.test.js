@@ -8,12 +8,13 @@ import test from 'node:test';
 import {
   addIssue,
   addLog,
-  computeTabName,
   configuredLocationAgentStatus,
   configuredLocationGitClean,
   configuredLocationShellStatus,
   expandIssueReference,
+  hasGitHubPullRequest,
   issueKind,
+  isGitHubPullRequestUrl,
   listIssues,
   linkedSessionSeed,
   linkPr,
@@ -185,6 +186,29 @@ test('branch PR checks link the PR, cache completion, and throttle terminal chec
   const columns = db.prepare('PRAGMA table_info(workstreams)').all().map(({ name }) => name);
   assert.equal(columns.includes('pr_done'), true);
   assert.equal(columns.includes('pr_checked_at'), true);
+});
+
+test('GitHub pull request links are recognized among associated links', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-pr-link-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const db = openDb(join(dir, 'workstreams.db'));
+  t.after(() => db.close());
+  const row = upsertWorkstream(db, {
+    org: 'example', repo: 'project', branch: 'feature', source: 'origin',
+    path: join(dir, 'feature'), created_at: '2026-08-26T12:00:00.000Z',
+    last_joined_at: '2026-08-26T12:00:00.000Z',
+  });
+
+  assert.equal(isGitHubPullRequestUrl('https://github.com/example/project/pull/42'), true);
+  assert.equal(isGitHubPullRequestUrl('http://github.com/example/project/pull/42/files'), true);
+  assert.equal(isGitHubPullRequestUrl('https://github.com/example/project/issues/42'), false);
+  assert.equal(isGitHubPullRequestUrl('https://example.com/example/project/pull/42'), false);
+  assert.equal(isGitHubPullRequestUrl('not a URL'), false);
+  assert.equal(hasGitHubPullRequest(db, row.id), false);
+  addIssue(db, row.id, 'https://github.com/example/project/issues/42');
+  assert.equal(hasGitHubPullRequest(db, row.id), false);
+  addIssue(db, row.id, 'https://github.com/example/project/pull/42');
+  assert.equal(hasGitHubPullRequest(db, row.id), true);
 });
 
 test('shell status emits typed events for workstreams and configured locations', (t) => {
@@ -448,7 +472,6 @@ test('database operations preserve workstream, stack, issue, and log state', (t)
   assert.equal(resolveRow(db, 'example/project:base').id, parent.id);
   assert.equal(parentOf(db, child).id, parent.id);
   assert.deepEqual(stackLine(db, child).map((row) => row.branch), ['base', 'feature']);
-  assert.equal(computeTabName(child), `${child.id}:project:feature`);
 
   const refreshed = refreshWorkstreamStatuses(db, [String(parent.id)]);
   assert.equal(refreshed.checked, 2);

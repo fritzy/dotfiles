@@ -21,7 +21,7 @@ class FakeWebSocket {
   close() { this.readyState = 3; }
 }
 
-function mockNetwork() {
+function mockNetwork({ groupedLocal = false } = {}) {
   globalThis.WebSocket = FakeWebSocket;
   globalThis.fetch = async (url) => {
     const path = String(url);
@@ -35,23 +35,33 @@ function mockNetwork() {
     if (path.includes('/notes/tabs')) return { ok: true, json: async () => ({ tabs: [], activePath: null }) };
     if (path.includes('/browser/state')) {
       const workstation = path.startsWith('http://127.1.1.2');
+      const localTerminals = groupedLocal ? [
+        { id: 'terminal-right', kind: 'terminal', label: 'Right', fontSize: 14 },
+        { id: 'terminal-loose', kind: 'terminal', label: 'Loose', fontSize: 14 },
+        { id: 'terminal-left', kind: 'terminal', label: 'Left', fontSize: 14 },
+      ] : [{
+        id: 'terminal-local', kind: 'terminal', label: 'terminal 1', fontSize: 14,
+      }];
       return {
         ok: true,
-        json: async () => ({ state: { terminals: [{
-          id: workstation ? 'terminal-workstation' : 'terminal-local',
-          kind: 'terminal',
-          label: workstation ? 'terminal 2' : 'terminal 1',
-          fontSize: 14,
-        }] } }),
+        json: async () => ({ state: workstation ? { terminals: [{
+          id: 'terminal-workstation', kind: 'terminal', label: 'terminal 2', fontSize: 14,
+        }] } : {
+          terminals: localTerminals,
+          groups: groupedLocal ? [{
+            id: 'split-local', members: ['terminal-left', 'terminal-right'], boundaries: [50],
+          }] : [],
+          displayedId: groupedLocal ? 'terminal-right' : 'terminal-local',
+        } }),
       };
     }
     return { ok: true, json: async () => ({}) };
   };
 }
 
-async function harness(t) {
+async function harness(t, options = {}) {
   const dom = setupJsdom();
-  mockNetwork();
+  mockNetwork(options);
   t.after(() => teardownJsdom(dom));
 
   const React = await import('react');
@@ -88,6 +98,8 @@ test('Local and Workstation sidebar groups expose their own mounted standalone s
   const workstationSectionButton = machineButton(container, 'workstation');
   assert.ok(localSectionButton, 'the shared sidebar has a Local section');
   assert.ok(workstationSectionButton, 'the shared sidebar has a Workstation section');
+  assert.ok(localSectionButton.querySelector('span[style*="/icons/local.svg"]'));
+  assert.ok(workstationSectionButton.querySelector('span[style*="/icons/remote.svg"]'));
   assert.equal(localSectionButton.getAttribute('aria-expanded'), 'true');
   assert.equal(workstationSectionButton.getAttribute('aria-expanded'), 'false');
 
@@ -101,6 +113,10 @@ test('Local and Workstation sidebar groups expose their own mounted standalone s
   assert.ok(workstationSectionButton.parentElement.querySelector('[data-sidebar-standalone="terminal-workstation"]'));
   assert.equal(localPane.querySelector('[data-fake-terminal]').dataset.terminalId, 'terminal-local');
   assert.equal(workstationPane.querySelector('[data-fake-terminal]').dataset.terminalId, 'terminal-workstation');
+  const localHeaderTarget = localPane.querySelector('[data-panel] span[aria-label="Working on Local"]');
+  const workstationHeaderTarget = workstationPane.querySelector('[data-panel] span[aria-label="Working on Workstation"]');
+  assert.ok(localHeaderTarget?.getAttribute('style').includes('/icons/local.svg'));
+  assert.ok(workstationHeaderTarget?.getAttribute('style').includes('/icons/remote.svg'));
 
   await actCall(() => localSectionButton.parentElement
     .querySelector('[data-sidebar-standalone="terminal-local"] > button').click());
@@ -135,4 +151,34 @@ test('Local and Workstation sidebar groups expose their own mounted standalone s
   await actCall(() => machineButton(container, 'workstation').click());
   assert.equal(machineButton(container, 'workstation').getAttribute('aria-expanded'), 'false');
   assert.equal(isInert(workstationPane), false, 'collapsing navigation keeps its terminals mounted and selected');
+});
+
+test('the sidebar orders and links split terminals and can minimize one without closing it', async (t) => {
+  const { container } = await harness(t, { groupedLocal: true });
+  const localSection = machineSection(container, 'local');
+  const rows = () => [...localSection.querySelectorAll('[data-sidebar-standalone]')];
+
+  assert.deepEqual(
+    rows().map((row) => row.dataset.sidebarStandalone),
+    ['terminal-left', 'terminal-right', 'terminal-loose'],
+    'split members are contiguous and follow their left-to-right pane order',
+  );
+  assert.deepEqual(
+    rows().map((row) => row.dataset.terminalGroupPosition || null),
+    ['start', 'end', null],
+    'the first and last rows expose the connected-group rail endpoints',
+  );
+  assert.equal(localSection.querySelectorAll('button[aria-label^="Minimize "]').length, 2);
+
+  await actCall(() => localSection
+    .querySelector('button[aria-label="Minimize Left from split group"]').click());
+  await flush(20);
+
+  assert.equal(localSection.querySelectorAll('[data-standalone-split-group]').length, 0);
+  assert.equal(localSection.querySelectorAll('button[aria-label^="Minimize "]').length, 0);
+  assert.equal(
+    container.querySelectorAll('[data-daemon-pane="local"] [data-fake-terminal]').length,
+    3,
+    'removing the pane from its split leaves every terminal mounted and running',
+  );
 });

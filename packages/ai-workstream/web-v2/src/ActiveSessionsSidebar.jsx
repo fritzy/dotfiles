@@ -3,10 +3,10 @@ import {
 } from 'react';
 
 import {
-  AssetIcon, ChevronIcon, EditorIcon, GearIcon, MaskIcon, ProviderIcon, ShellIcon, Spinner, XIcon,
+  AssetIcon, ChevronIcon, EditorIcon, GearIcon, GripIcon, MaskIcon, MinimizeIcon, ProviderIcon, ShellIcon, Spinner, XIcon,
 } from './icons.jsx';
 import BrandLogo from './BrandLogo.jsx';
-import { TERMINAL_FONTS, THEMES } from './constants.js';
+import { STANDALONE_TERMINAL_DRAG_TYPE, TERMINAL_FONTS, THEMES } from './constants.js';
 import { useTarget } from './target-context.js';
 import {
   Button, selectClass,
@@ -76,6 +76,36 @@ const sessionNavigationKey = (targetId, id) => `session:${targetId}:${id}`;
 const standaloneNavigationKey = (targetId, id) => `standalone:${targetId}:${id}`;
 const SIDEBAR_VIEWS = ['sessions', 'settings'];
 
+function terminalDragPayload(dataTransfer) {
+  try {
+    return JSON.parse(dataTransfer.getData(STANDALONE_TERMINAL_DRAG_TYPE));
+  } catch {
+    return null;
+  }
+}
+
+export function orderStandaloneTerminals(items) {
+  const groups = new Map();
+  for (const item of items) {
+    if (!item.splitGroupId) continue;
+    if (!groups.has(item.splitGroupId)) groups.set(item.splitGroupId, []);
+    groups.get(item.splitGroupId).push(item);
+  }
+  for (const members of groups.values()) {
+    members.sort((left, right) => (
+      (Number.isInteger(left.splitGroupIndex) ? left.splitGroupIndex : Number.MAX_SAFE_INTEGER)
+      - (Number.isInteger(right.splitGroupIndex) ? right.splitGroupIndex : Number.MAX_SAFE_INTEGER)
+    ));
+  }
+  const emittedGroups = new Set();
+  return items.flatMap((item) => {
+    if (!item.splitGroupId) return [item];
+    if (emittedGroups.has(item.splitGroupId)) return [];
+    emittedGroups.add(item.splitGroupId);
+    return groups.get(item.splitGroupId) || [item];
+  });
+}
+
 function SessionRow({
   item, selected, highlighted, navigationKey, onHighlight, onActivate, onOpenDetails, rowRef,
 }) {
@@ -105,15 +135,74 @@ function SessionRow({
 }
 
 function StandaloneSessionRow({
-  item, selected, highlighted, navigationKey, onHighlight, onActivate, onClose, rowRef,
+  item, targetId, selected, highlighted, navigationKey,
+  onHighlight, onActivate, onClose, onGroup, onMinimize, rowRef,
 }) {
   const Icon = item.kind === 'editor' ? EditorIcon : ShellIcon;
   const type = item.kind === 'editor' ? 'Markdown' : 'terminal';
+  const [dropTarget, setDropTarget] = useState(false);
+  useEffect(() => {
+    if (!dropTarget) return undefined;
+    const clearDropTarget = () => setDropTarget(false);
+    document.addEventListener('dragend', clearDropTarget, { once: true });
+    return () => document.removeEventListener('dragend', clearDropTarget);
+  }, [dropTarget]);
+  const groupPosition = item.splitGroupId && (
+    item.splitGroupIndex === 0
+      ? 'start'
+      : item.splitGroupIndex === item.splitGroupSize - 1 ? 'end' : 'middle'
+  );
   return (
     <div
-      className={`group/standalone grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center rounded-md transition-colors ${selected ? 'bg-row-highlight text-on-row-highlight' : highlighted ? 'outline-2 -outline-offset-2 outline-accent' : 'hover:bg-soft hover:text-on-soft'}`}
+      className={`group/standalone grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center rounded-md transition-colors ${dropTarget ? 'bg-accent/20 outline-2 -outline-offset-2 outline-accent' : selected ? 'bg-row-highlight text-on-row-highlight' : highlighted ? 'outline-2 -outline-offset-2 outline-accent' : 'hover:bg-soft hover:text-on-soft'}`}
       data-sidebar-standalone={item.id}
+      data-standalone-split-group={item.splitGroupId || undefined}
+      data-terminal-group-position={groupPosition || undefined}
+      onDragOver={(event) => {
+        if (item.kind !== 'terminal'
+            || !Array.from(event.dataTransfer.types || []).includes(STANDALONE_TERMINAL_DRAG_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        setDropTarget(true);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setDropTarget(false);
+      }}
+      onDrop={(event) => {
+        if (item.kind !== 'terminal') return;
+        event.preventDefault();
+        event.stopPropagation();
+        setDropTarget(false);
+        const payload = terminalDragPayload(event.dataTransfer);
+        if (payload?.targetId !== targetId || typeof payload.terminalId !== 'string') return;
+        onGroup?.(payload.terminalId, item.id);
+      }}
     >
+      {item.kind === 'terminal' ? (
+        <span
+          draggable
+          className={`relative ml-0.5 flex size-6 cursor-grab items-center justify-center rounded hover:bg-page/30 hover:opacity-100 active:cursor-grabbing ${groupPosition ? 'opacity-100' : 'opacity-60'}`}
+          aria-label={`Drag ${item.label} into a terminal split`}
+          title="Drag into the terminal view to split"
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData(STANDALONE_TERMINAL_DRAG_TYPE, JSON.stringify({
+              targetId, terminalId: item.id,
+            }));
+          }}
+        >
+          {groupPosition && (
+            <>
+              <span
+                className={`pointer-events-none absolute left-1/2 z-0 w-0.5 -translate-x-1/2 bg-current ${groupPosition === 'start' ? 'top-1/2 -bottom-1' : groupPosition === 'end' ? '-top-1 bottom-1/2' : '-top-1 -bottom-1'}`}
+                aria-hidden="true"
+              />
+              <span className="pointer-events-none absolute left-1/2 right-0 top-1/2 z-0 h-0.5 bg-current" aria-hidden="true" />
+            </>
+          )}
+          <GripIcon className={`relative z-10 size-4 ${groupPosition ? 'rounded bg-page text-current' : ''}`} />
+        </span>
+      ) : <span className="w-1" aria-hidden="true" />}
       <button
         ref={rowRef}
         type="button"
@@ -128,13 +217,24 @@ function StandaloneSessionRow({
         <span className="truncate">{item.label}</span>
         {item.dirty && <span className="size-1.5 shrink-0 rounded-full bg-current" title="Unsaved changes" aria-label="Unsaved changes" />}
       </button>
-      <button
-        type="button"
-        className="mr-1 flex size-6 items-center justify-center rounded text-current opacity-60 transition-opacity hover:bg-page/30 hover:opacity-100 focus-visible:outline-2 focus-visible:outline-accent"
-        aria-label={`Close ${item.label}`}
-        title={`Close ${item.label}`}
-        onClick={onClose}
-      ><XIcon className="size-3.5" /></button>
+      <div className="mr-1 flex shrink-0 items-center gap-0.5">
+        {item.kind === 'terminal' && item.splitGroupId && (
+          <button
+            type="button"
+            className="flex size-6 items-center justify-center rounded text-current opacity-60 transition-opacity hover:bg-page/30 hover:opacity-100 focus-visible:outline-2 focus-visible:outline-accent"
+            aria-label={`Minimize ${item.label} from split group`}
+            title="Remove from split group; terminal keeps running"
+            onClick={onMinimize}
+          ><MinimizeIcon className="size-3.5" /></button>
+        )}
+        <button
+          type="button"
+          className="flex size-6 items-center justify-center rounded text-current opacity-60 transition-opacity hover:bg-page/30 hover:opacity-100 focus-visible:outline-2 focus-visible:outline-accent"
+          aria-label={`Close ${item.label}`}
+          title={`Close ${item.label}`}
+          onClick={onClose}
+        ><XIcon className="size-3.5" /></button>
+      </div>
     </div>
   );
 }
@@ -219,7 +319,8 @@ function SidebarResizeHandle({
 
 export default function ActiveSessionsSidebar({
   sections, open, onActivate, onOpenDetails,
-  onActivateStandalone, onCloseStandalone, onCreateTerminal, onOpenMarkdown,
+  onActivateStandalone, onCloseStandalone, onGroupStandalone, onMinimizeStandalone,
+  onCreateTerminal, onOpenMarkdown,
   onToggle, onNewRepo, onNewScratchpad,
   currentTargetId, onTargetChange,
   theme, onThemeChange,
@@ -236,7 +337,9 @@ export default function ActiveSessionsSidebar({
   const targetSections = useMemo(() => sections.map((section) => {
     const workstreamGroups = groupActiveSessionsByRepo(section.items)
       .map((group) => ({ ...group, kind: 'workstream' }));
-    const terminals = section.standaloneSessions.filter((item) => item.kind === 'terminal');
+    const terminals = orderStandaloneTerminals(
+      section.standaloneSessions.filter((item) => item.kind === 'terminal'),
+    );
     const markdown = section.standaloneSessions.filter((item) => item.kind === 'editor');
     const standaloneGroups = [
       terminals.length ? { label: 'Terminals', kind: 'standalone', items: terminals } : null,
@@ -539,6 +642,7 @@ export default function ActiveSessionsSidebar({
                       onFocus={() => setHighlightedNavigationKey(navigationKey)}
                     >
                       <ChevronIcon className={`size-3.5 transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+                      <AssetIcon name={sectionId === 'local' ? 'local' : 'remote'} className="size-4" />
                       <span className={`size-2 shrink-0 rounded-full ${CONNECTION_DOT_CLASS[section.connection] || CONNECTION_DOT_CLASS.connecting}`} aria-hidden="true" />
                       <span className="truncate">{section.target.name}</span>
                       {section.loading
@@ -596,12 +700,17 @@ export default function ActiveSessionsSidebar({
                                           <StandaloneSessionRow
                                             key={item.id}
                                             item={item}
+                                            targetId={sectionId}
                                             selected={String(section.activeStandaloneId) === String(item.id)}
                                             navigationKey={itemKey}
                                             highlighted={highlightedNavigationKey === itemKey}
                                             onHighlight={setHighlightedNavigationKey}
                                             onActivate={() => onActivateStandalone(sectionId, item.id)}
                                             onClose={() => onCloseStandalone(sectionId, item.id)}
+                                            onMinimize={() => onMinimizeStandalone?.(sectionId, item.id)}
+                                            onGroup={(sourceId, destinationId) => (
+                                              onGroupStandalone(sectionId, sourceId, destinationId)
+                                            )}
                                             rowRef={(node) => {
                                               if (node) navigationRows.current.set(itemKey, node); else navigationRows.current.delete(itemKey);
                                             }}

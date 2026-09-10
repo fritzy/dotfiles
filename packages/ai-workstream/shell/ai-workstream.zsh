@@ -1,5 +1,5 @@
 # Report interactive shell activity for FritzWorks. This file is installed by
-# `ws hooks install` and is inert outside an ai-workstream shell pane.
+# `ws hooks install` and is inert outside a FritzWorks shell terminal.
 if [[ -n ${AI_WORKSTREAM_ID:-} ]] && (( $+commands[ws] )); then
   autoload -Uz add-zsh-hook
 

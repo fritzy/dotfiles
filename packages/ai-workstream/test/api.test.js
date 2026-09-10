@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-  mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+  existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -10,10 +10,15 @@ import test from 'node:test';
 import {
   ApiError,
   createApiService,
+  createWorkstreamNote,
   encodeWebSocketFrame,
   executeWorkstreamCommand,
   openPathWithXdg,
   queryWorkstreams,
+  setWorkstreamStack,
+  workstreamDigest,
+  workstreamNotes,
+  workstreamStack,
 } from '../lib/api.js';
 import {
   addIssue,
@@ -93,26 +98,28 @@ function fixture(t) {
     locations: {
       notes: {
         id: 'notes', name: 'notes', repo: 'fritzy/notes', path: join(dir, 'notes'), branch: 'main',
-        closeable: false, weeklyNotes: true,
+        closeable: false,
       },
       dotfiles: {
         id: 'dotfiles', name: 'dotfiles', repo: 'fritzy/dotfiles', path: join(dir, 'dotfiles'), branch: 'main',
-        closeable: false, weeklyNotes: false,
+        closeable: false,
       },
       savefiles: {
         id: 'savefiles', name: 'savefiles', repo: 'fritzy/savefiles', path: join(dir, 'savefiles'), branch: 'main',
-        closeable: false, weeklyNotes: false,
+        closeable: false,
       },
     },
     server: { host: '127.0.0.1', port: 7337, pollInterval: 1000 },
     agent: 'claude',
-    panels: ['shell', 'editor', 'agent'],
     commands: {
       shell: ['zsh', '-l'], editor: ['nvim', '--clean'], claude: ['claude'], codex: ['codex'],
     },
     models: {
       claude: { default: 'opus', scratch: 'sonnet' },
       codex: { default: null, scratch: null },
+    },
+    daemons: {
+      workstation: { id: 'workstation', name: 'Workstation', url: 'http://127.1.1.2:7337' },
     },
   };
   return { db, dir, repo, scratch, closed, config };
@@ -178,30 +185,17 @@ test('REST query model filters types and statuses and paginates consistently', (
 
 test('POST command model mutates only supported workstream state', (t) => {
   const { db, repo, scratch, closed, config } = fixture(t);
-  const closedTabs = [];
-  let response = executeWorkstreamCommand(db, String(repo.id), 'pause', {}, {
-    closeTab: (row) => { closedTabs.push(row.id); },
-  });
+  let response = executeWorkstreamCommand(db, String(repo.id), 'pause');
   assert.equal(response.workstream.status, 'paused');
   assert.deepEqual(response.result, { browserTerminals: 'pause_requested' });
-  assert.deepEqual(closedTabs, []);
   response = executeWorkstreamCommand(db, String(repo.id), 'rename', { name: 'API work' });
   assert.equal(response.workstream.id, repo.id);
   const scratchPath = scratch.path;
-  const renamedTabs = [];
-  response = executeWorkstreamCommand(db, String(scratch.id), 'rename', { name: 'Project ideas' }, {
-    renameTab: (oldName, newName) => {
-      renamedTabs.push([oldName, newName]);
-      return true;
-    },
-  });
+  response = executeWorkstreamCommand(db, String(scratch.id), 'rename', { name: 'Project ideas' });
   assert.equal(response.workstream.name, 'Project ideas');
   assert.equal(response.workstream.branch, 'ideas');
   assert.equal(response.workstream.path, scratchPath);
-  assert.equal(response.result.tabRenamed, true);
-  assert.deepEqual(renamedTabs, [[
-    `${scratch.id}:scratchpad:ideas`, `${scratch.id}:Project ideas`,
-  ]]);
+  assert.deepEqual(response.result, { renamed: true });
   response = executeWorkstreamCommand(db, String(repo.id), 'log', { body: 'served over REST', done: true });
   assert.deepEqual(response.result, { id: 1, body: 'served over REST', done: true });
   response = executeWorkstreamCommand(db, String(repo.id), 'issue-add', { refs: ['#42'] });
@@ -253,49 +247,24 @@ test('POST command model mutates only supported workstream state', (t) => {
     config,
   });
   assert.equal(response.workstream.status, 'paused');
-  assert.deepEqual(response.result, { browserTerminals: 'resume_requested', panels: ['shell', 'agent'] });
+  assert.deepEqual(response.result, {
+    browserTerminals: 'resume_requested', panels: ['shell', 'agent'], agent: 'claude', seeded: false,
+  });
   response = executeWorkstreamCommand(db, 'notes', 'resume', { panels: ['shell', 'editor', 'agent'] }, {
     config,
   });
   assert.equal(response.workstream.status, 'paused');
   assert.deepEqual(response.result, {
-    browserTerminals: 'resume_requested', panels: ['shell', 'editor', 'agent'],
+    browserTerminals: 'resume_requested', panels: ['shell', 'editor', 'agent'], agent: 'claude', seeded: false,
   });
-  let configuredPanel;
-  response = executeWorkstreamCommand(db, 'notes', 'panel-toggle', { panel: 'editor' }, {
-    config,
-    terminalSessionIds: ['notes'],
-    togglePanel: (row, panel, opts) => {
-      configuredPanel = { row, panel, opts };
-      return { panel, open: true };
-    },
-  });
-  assert.equal(response.workstream.status, 'active');
-  assert.deepEqual(response.result, { panel: 'editor', open: true });
-  assert.equal(configuredPanel.row.id, 'notes');
-  assert.equal(configuredPanel.row.tab_name, 'notes');
-  assert.equal(configuredPanel.panel, 'editor');
-  assert.match(configuredPanel.opts.editorFile, /-week\.md$/);
-  const replacements = [];
-  response = executeWorkstreamCommand(db, String(repo.id), 'agent-set', { agent: 'codex' }, {
-    config,
-    replaceAgent: (row, agent) => {
-      replacements.push([row.id, agent]);
-      return { agent, tabOpen: true, panelOpen: true, replaced: true };
-    },
-  });
+  response = executeWorkstreamCommand(db, String(repo.id), 'agent-set', { agent: 'codex' }, { config });
   assert.equal(response.workstream.agent, 'codex');
-  assert.equal(response.result.replaced, true);
+  assert.equal(response.result.replaced, false);
   response = executeWorkstreamCommand(db, 'dotfiles', 'agent-set', { agent: 'codex' }, {
     config,
     terminalSessionIds: ['dotfiles'],
-    replaceAgent: (row, agent) => {
-      replacements.push([row.id, agent]);
-      return { agent, tabOpen: true, panelOpen: true, replaced: true };
-    },
   });
   assert.equal(response.workstream.agent, 'codex');
-  assert.deepEqual(replacements, [[repo.id, 'codex'], ['dotfiles', 'codex']]);
   assert.equal(selectedAgent(db, repo.id, 'claude'), 'codex');
   assert.equal(selectedAgent(db, 'dotfiles', 'claude'), 'codex');
   response = executeWorkstreamCommand(db, String(repo.id), 'terminal-reset');
@@ -304,26 +273,107 @@ test('POST command model mutates only supported workstream state', (t) => {
     () => executeWorkstreamCommand(db, String(closed.id), 'open-path', {}, { openPath: () => ({}) }),
     (error) => error instanceof ApiError && error.status === 404,
   );
-  response = executeWorkstreamCommand(db, String(repo.id), 'archive', {}, { closeTab: () => false });
+  response = executeWorkstreamCommand(db, String(repo.id), 'archive');
   assert.equal(response.command, 'archive');
   assert.equal(response.workstream.status, 'closed');
   assert.deepEqual(response.result, { removed: false });
-  executeWorkstreamCommand(db, String(scratch.id), 'pause', {}, { closeTab: () => false });
-  let opened;
-  response = executeWorkstreamCommand(db, String(scratch.id), 'resume', { panels: ['shell', 'agent'] }, {
-    openTab: (row, opts) => { opened = { id: row.id, opts }; },
-  });
+  executeWorkstreamCommand(db, String(scratch.id), 'pause');
+  response = executeWorkstreamCommand(db, String(scratch.id), 'resume', { panels: ['shell', 'agent'] });
   assert.equal(response.workstream.status, 'paused');
-  assert.equal(opened, undefined);
-  assert.deepEqual(response.result, { browserTerminals: 'resume_requested', panels: ['shell', 'agent'] });
-  response = executeWorkstreamCommand(db, String(scratch.id), 'panel-toggle', { panel: 'editor' }, {
-    togglePanel: (row, panel) => ({ id: row.id, panel, open: true }),
+  assert.deepEqual(response.result, {
+    browserTerminals: 'resume_requested', panels: ['shell', 'agent'], agent: 'claude', seeded: false,
   });
-  assert.deepEqual(response.result, { id: scratch.id, panel: 'editor', open: true });
   assert.throws(
     () => executeWorkstreamCommand(db, String(repo.id), 'shell', {}),
     (error) => error instanceof ApiError && error.status === 400,
   );
+  assert.throws(
+    () => executeWorkstreamCommand(db, String(scratch.id), 'resume', {
+      seed: 'x'.repeat(64 * 1024 + 1),
+    }),
+    (error) => error instanceof ApiError && error.status === 400 && /64 KiB/.test(error.message),
+  );
+});
+
+test('daemon-side MCP models manage stacks, notes, and digest validation', (t) => {
+  const { db, repo, scratch, config } = fixture(t);
+
+  const stacked = setWorkstreamStack(db, String(scratch.id), { parent: String(repo.id) });
+  assert.equal(stacked.stackedOn.id, repo.id);
+  assert.equal(workstreamStack(db, String(scratch.id)).stackedOn.id, repo.id);
+  const cleared = setWorkstreamStack(db, String(scratch.id), { clear: true });
+  assert.equal(cleared.wasStackedOn.id, repo.id);
+  assert.equal(workstreamStack(db, String(scratch.id)).stackedOn, null);
+
+  const note = createWorkstreamNote(db, String(repo.id), {
+    title: 'Relay behavior', body: '  body formatting is preserved  ',
+  }, { notesRoot: config.paths.notes });
+  assert.equal(readFileSync(note.path, 'utf8'), '# Relay behavior\n\n  body formatting is preserved  \n');
+  assert.deepEqual(workstreamNotes(db, String(repo.id), { notesRoot: config.paths.notes }).notes, [{
+    year: note.path.match(/\/work\/(\d{4})\//)[1], file: note.file, path: note.path,
+  }]);
+
+  assert.throws(
+    () => workstreamDigest(db, { date: 'not-a-date' }, { notesRoot: config.paths.notes }),
+    (error) => error instanceof ApiError && error.status === 400,
+  );
+});
+
+test('HTTP service exposes daemon-side stack, note, digest, and config routes', async (t) => {
+  const { db, repo, scratch, config } = fixture(t);
+  const service = createApiService({
+    db,
+    config,
+    pollInterval: 0,
+    prCheckIntervalMs: 0,
+    checkGit: async () => null,
+    checkPr: async () => ({ added: false }),
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      service.server.once('error', reject);
+      service.server.listen(0, '127.0.0.1', resolve);
+    });
+  } catch (error) {
+    if (error.code === 'EPERM' || error.code === 'EACCES') {
+      t.skip(`local sockets unavailable: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+  t.after(() => service.close());
+  const base = `http://127.0.0.1:${service.server.address().port}`;
+
+  const exposedConfig = await (await fetch(`${base}/config`)).json();
+  assert.equal(exposedConfig.daemons.workstation.url, 'http://127.1.1.2:7337');
+
+  const stackSet = await fetch(`${base}/ws/${scratch.id}/stack-set`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent: String(repo.id) }),
+  });
+  assert.equal(stackSet.status, 200);
+  assert.equal((await stackSet.json()).stackedOn.id, repo.id);
+  const stack = await (await fetch(`${base}/ws/${scratch.id}/stack`)).json();
+  assert.equal(stack.stackedOn.id, repo.id);
+
+  const created = await fetch(`${base}/ws/${repo.id}/note`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Remote note', body: 'Created on the selected daemon.' }),
+  });
+  assert.equal(created.status, 201);
+  const note = await created.json();
+  assert.equal(existsSync(note.path), true);
+  const notes = await (await fetch(`${base}/ws/${repo.id}/notes`)).json();
+  assert.deepEqual(notes.notes.map((item) => item.file), [note.file]);
+
+  const invalidDigest = await fetch(`${base}/ws/digest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: 'tomorrow' }),
+  });
+  assert.equal(invalidDigest.status, 400);
 });
 
 test('path opener invokes xdg-open without shell interpolation', () => {
@@ -344,18 +394,53 @@ test('WebSocket frame encoder supports short and extended payloads', () => {
   assert.equal(extended.readUInt16BE(2), 130);
 });
 
+test('PR discovery retries unlinked repos and stops after a PR link is associated', async (t) => {
+  const { db, dir, repo, config } = fixture(t);
+  const alreadyLinked = upsertWorkstream(db, {
+    org: 'example', repo: 'project', branch: 'already-linked', source: 'origin',
+    path: join(dir, 'already-linked'),
+    created_at: '2026-08-26T12:00:00.000Z',
+    last_joined_at: '2026-08-26T12:00:00.000Z',
+  });
+  addIssue(db, alreadyLinked.id, 'https://github.com/example/project/pull/40');
+  const checks = [];
+  const service = createApiService({
+    db,
+    config,
+    pollInterval: 0,
+    prCheckIntervalMs: 20,
+    checkPr: async (database, row, { checkedAt }) => {
+      checks.push(row.id);
+      const found = row.id === repo.id && checks.filter((id) => id === repo.id).length > 1;
+      return linkPr(database, row, {
+        checkedAt,
+        run: () => ({
+          status: 0,
+          stdout: JSON.stringify(found ? [{
+            number: 41,
+            url: 'https://github.com/example/project/pull/41',
+            state: 'OPEN',
+            createdAt: checkedAt,
+          }] : []),
+        }),
+      });
+    },
+  });
+  t.after(() => service.close());
+
+  await waitUntil(
+    () => listIssues(db, repo.id).some((issue) => issue.ref.endsWith('/pull/41')),
+    'background PR discovery did not associate the branch PR',
+  );
+  assert.equal(checks.filter((id) => id === repo.id).length, 2);
+  assert.equal(checks.includes(alreadyLinked.id), false);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(checks.filter((id) => id === repo.id).length, 2);
+});
+
 test('HTTP service serves assets, REST commands, and WebSocket invalidations', async (t) => {
   const { db, dir, repo, config } = fixture(t);
-  const openedTabs = [];
-  const openedTabOptions = [];
   const openedPaths = [];
-  const closedTabs = [];
-  const toggledPanels = [];
-  const focusedAgents = [];
-  const focusedShells = [];
-  const replacedAgents = [];
-  const renamedSessionTabs = [];
-  const openTabSet = new Set(['dotfiles']);
   let checkedRepoClean = false;
   let createdRepoGitChecks = 0;
   let linearSuggestionLoads = 0;
@@ -368,6 +453,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const ensuredTerminalSessions = [];
   const killedTerminalSessions = [];
   const resetTerminalSessions = [];
+  const materializedWorktrees = [];
   let resetAllCalls = 0;
   const killedTerminalNames = () => killedTerminalSessions.map(browserTerminalSessionName);
   const fakeTerminal = (options) => {
@@ -431,20 +517,17 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
         }),
       });
     },
-    listOpenTabs: () => [...openTabSet],
-    openTab: (row, options) => {
-      openedTabs.push(row.id);
-      openedTabOptions.push(options);
-      openTabSet.add(String(row.id));
-    },
     writeSeed: (row, content) => {
       const path = join(dir, 'seeds', `${row.id}.md`);
+      mkdirSync(join(dir, 'seeds'), { recursive: true });
+      writeFileSync(path, content);
       seededSessions.push({ id: row.id, content, path });
       return path;
     },
-    materialize: (org, repository, branch) => {
+    materialize: (org, repository, branch, source, options) => {
       const path = join(dir, 'created', org, repository, branch.replaceAll('/', '-'));
       mkdirSync(path, { recursive: true });
+      materializedWorktrees.push({ org, repository, branch, source, options, path });
       return path;
     },
     clock: () => new Date(serviceTime).toISOString(),
@@ -459,29 +542,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
       });
     },
     openPath: (path) => { openedPaths.push(path); return { opener: 'xdg-open', path }; },
-    closeTab: (row) => { closedTabs.push(row.id); openTabSet.delete(String(row.id)); },
-    panelState: () => ({ tabOpen: true, shell: true, editor: false, agent: true }),
-    togglePanel: (row, panel) => {
-      toggledPanels.push({ id: row.id, panel });
-      return { panel, open: true };
-    },
-    replaceAgent: (row, agent) => {
-      replacedAgents.push({ id: row.id, agent });
-      return { agent, tabOpen: true, panelOpen: true, replaced: true };
-    },
-    renameTab: (oldName, newName) => {
-      renamedSessionTabs.push([oldName, newName]);
-      return true;
-    },
-    focusAgent: (row) => {
-      focusedAgents.push(row.id);
-      return { session: 'ws', tabName: `tab-${row.id}`, paneId: 'terminal_7' };
-    },
-    focusShell: (row) => {
-      focusedShells.push(row.id);
-      return { session: 'ws', tabName: `tab-${row.id}`, paneId: 'terminal_8' };
-    },
-    focusTerminal: (session) => ({ focused: true, terminal: 'test', session }),
     linearSuggestions: async () => {
       linearSuggestionLoads += 1;
       return [{
@@ -516,6 +576,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     terminalSessionConfigFile: () => 'test-terminal-config.kdl',
     ensureTerminalSession: (identity, options) => {
       ensuredTerminalSessions.push({ identity, ...options });
+      return { session: browserTerminalSessionName(identity), created: true };
     },
     killTerminalSession: (identity) => {
       killedTerminalSessions.push(identity);
@@ -545,9 +606,18 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   t.after(() => service.close());
   const { port } = service.server.address();
   const base = `http://127.0.0.1:${port}`;
+  await waitUntil(
+    () => prChecks.some((check) => check.id === repo.id),
+    'startup PR discovery did not check the repo session',
+  );
 
   const health = await (await fetch(`${base}/health`)).json();
   assert.match(health.revision, /^[a-f0-9]{16}$/);
+  const refreshed = await (await fetch(`${base}/ws/refresh`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })).json();
+  assert.equal(refreshed.result.checked, 3);
+  assert.equal(refreshed.result.terminalSessionCount, 0);
   const daemons = await (await fetch(`${base}/daemons`)).json();
   assert.deepEqual(daemons.daemons, [
     { id: 'workstation', name: 'Workstation', url: 'http://127.1.1.2:7337' },
@@ -638,7 +708,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(fontLicenseResponse.status, 200);
   assert.match(fontLicenseResponse.headers.get('content-type'), /^text\/plain/);
   assert.match(await fontLicenseResponse.text(), /SIL OPEN FONT LICENSE/);
-  for (const icon of ['check.svg', 'claude.svg', 'folder.svg', 'notes.svg', 'openai.svg']) {
+  for (const icon of ['check.svg', 'claude.svg', 'folder.svg', 'local.svg', 'notes.svg', 'openai.svg', 'remote.svg']) {
     const response = await fetch(`${base}/icons/${icon}`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'image/svg+xml');
@@ -651,7 +721,10 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const listingBody = await listing.json();
   assert.equal(listingBody.total, 2);
   assert.equal(listingBody.items.find((item) => item.id === repo.id).gitClean, null);
-  assert.equal(listingBody.items.find((item) => item.id === repo.id).prDone, null);
+  assert.equal(listingBody.items.find((item) => item.id === repo.id).prDone, true);
+  assert.equal(listingBody.items.find((item) => item.id === repo.id).issues.some(
+    (issue) => issue.ref === 'https://github.com/example/project/pull/41'
+  ), true);
   const miscListing = await (await fetch(`${base}/ws/all/?type=misc&status=all`)).json();
   assert.deepEqual(
     miscListing.items.map((item) => [item.id, item.status]),
@@ -669,7 +742,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     scratchpadRoot: config.paths.scratchpads,
     recentRepositories: ['example/project'],
     agent: 'claude',
-    panels: config.panels,
+    panels: ['shell', 'agent'],
   });
   const linearLinks = await (await fetch(`${base}/ws/link-suggestions/linear`)).json();
   assert.deepEqual(linearLinks.items.map((item) => item.id), ['ECO-42']);
@@ -687,9 +760,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(invalidLinks.status, 400);
   const detail = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(detail.items[0].gitClean, false);
-  assert.deepEqual(detail.items[0].panels, {
-    tabOpen: true, shell: true, editor: false, agent: true,
-  });
+  assert.equal(detail.items[0].panels, undefined);
   const pathOpened = await fetch(`${base}/ws/${repo.id}/open-path`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -699,29 +770,12 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.deepEqual((await pathOpened.json()).result, { opener: 'xdg-open', path: repo.path });
   assert.deepEqual(openedPaths, [repo.path]);
 
-  const agentFocused = await fetch(`${base}/ws/${repo.id}/focus-agent`, {
+  const legacyFocus = await fetch(`${base}/ws/${repo.id}/focus-agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   });
-  assert.equal(agentFocused.status, 200);
-  assert.deepEqual((await agentFocused.json()).result, {
-    session: 'ws', tabName: `tab-${repo.id}`, paneId: 'terminal_7',
-    terminalFocus: { focused: true, terminal: 'test', session: 'ws' },
-  });
-  assert.deepEqual(focusedAgents, [repo.id]);
-
-  const shellFocused = await fetch(`${base}/ws/${repo.id}/focus-shell`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(shellFocused.status, 200);
-  assert.deepEqual((await shellFocused.json()).result, {
-    session: 'ws', tabName: `tab-${repo.id}`, paneId: 'terminal_8',
-    terminalFocus: { focused: true, terminal: 'test', session: 'ws' },
-  });
-  assert.deepEqual(focusedShells, [repo.id]);
+  assert.equal(legacyFocus.status, 400);
 
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/events`);
   t.after(() => socket.close());
@@ -812,10 +866,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   ]);
   const activeBrowserTerminal = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(activeBrowserTerminal.items[0].status, 'active');
-  await waitUntil(
-    () => prChecks.some((check) => check.id === repo.id),
-    'terminal output did not trigger a branch PR check',
-  );
   const checkedPrDetail = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(checkedPrDetail.items[0].prDone, true);
   assert.equal(checkedPrDetail.items[0].issues.some(
@@ -827,10 +877,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(prChecks.filter((check) => check.id === repo.id).length, initialTerminalPrChecks);
   serviceTime += 3 * 60_000 + 1;
   sessionTerminalSocket.send(JSON.stringify({ type: 'input', data: 'after throttle\r' }));
-  await waitUntil(
-    () => prChecks.filter((check) => check.id === repo.id).length === initialTerminalPrChecks + 1,
-    'terminal input did not recheck the branch PR after three minutes',
-  );
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(prChecks.filter((check) => check.id === repo.id).length, initialTerminalPrChecks);
   assert.deepEqual(await (await fetch(`${base}/ws/terminal-sessions`)).json(), {
     sessions: [{ id: repo.id, count: 1 }],
   });
@@ -902,8 +950,10 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     body: JSON.stringify({
       repository: 'example/project',
       selector: 'from-web',
+      parent: String(repo.id),
+      seed: 'Start with the explicit browser task.',
       agent: 'codex',
-      panels: ['editor', 'agent'],
+      panels: ['shell', 'editor', 'agent'],
       links: ['#321'],
     }),
   });
@@ -912,20 +962,23 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(createdFromWeb.workstream.branch, 'from-web');
   assert.equal(createdFromWeb.workstream.agent, 'codex');
   assert.equal(createdFromWeb.workstream.status, 'paused');
+  assert.deepEqual(createdFromWeb.browserWorkspace, { opened: true, panelMode: 'three' });
   assert.equal(createdFromWeb.workstream.gitClean, false);
   assert.equal(createdFromWeb.workstream.prDone, false);
+  assert.equal(createdFromWeb.branchedOffParent, true);
+  assert.deepEqual(materializedWorktrees.at(-1).options, { base: repo.branch });
   assert.equal(createdRepoGitChecks > 0, true);
   assert.equal(createdFromWeb.workstream.issues[0].ref, 'https://github.com/example/project/issues/321');
   assert.equal(createdFromWeb.workstream.issues.some(
     (issue) => issue.ref === 'https://github.com/example/project/pull/322'
   ), true);
   assert.equal(prChecks.filter((check) => check.id === createdFromWeb.workstream.id).length, 1);
-  assert.deepEqual(openedTabs, []);
-  assert.deepEqual(openedTabOptions, []);
   const createdRepoSeed = seededSessions.filter(
     (seeded) => seeded.id === createdFromWeb.workstream.id
   ).at(-1);
   assert.equal(createdRepoSeed.content, [
+    'Start with the explicit browser task.',
+    '',
     'This is a new ws session to work on a repo. The following links are associated with this session. Use the linear skill with the cli and/or the gh cli to retrieve authed information.',
     '* https://github.com/example/project/issues/321',
     '* https://github.com/example/project/pull/322',
@@ -933,6 +986,28 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     '',
   ].join('\n'));
   assert.deepEqual(await createdPromise, { id: createdFromWeb.workstream.id, type: 'new_session' });
+  let workspaceState = (await (await fetch(`${base}/browser/state?scope=workspaces`)).json()).state;
+  assert.equal(workspaceState.activeWorkspaceId, String(createdFromWeb.workstream.id));
+  assert.deepEqual(workspaceState.workspaces.at(-1), {
+    id: String(createdFromWeb.workstream.id), panelMode: 'three',
+  });
+
+  const seededAgentSocket = new WebSocket(
+    `ws://127.0.0.1:${port}/ws/terminal?session=${createdFromWeb.workstream.id}&role=agent`,
+  );
+  await new Promise((resolve, reject) => {
+    seededAgentSocket.addEventListener('open', resolve, { once: true });
+    seededAgentSocket.addEventListener('error', () => reject(new Error('seeded agent terminal websocket failed')), { once: true });
+  });
+  assert.deepEqual(ensuredTerminalSessions.at(-1).command.slice(0, 5), [
+    'env', 'TERM=xterm-256color', 'COLORTERM=truecolor',
+    `AI_WORKSTREAM_ID=${createdFromWeb.workstream.id}`, 'codex',
+  ]);
+  assert.equal(ensuredTerminalSessions.at(-1).command.at(-1), createdRepoSeed.content);
+  assert.equal(existsSync(createdRepoSeed.path), false);
+  const seededAgentClosed = new Promise((resolve) => seededAgentSocket.addEventListener('close', resolve, { once: true }));
+  seededAgentSocket.close();
+  await seededAgentClosed;
 
   const scratchCreatedPromise = nextMessage();
   const scratchCreatedResponse = await fetch(`${base}/ws/scratchpad`, {
@@ -950,9 +1025,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(scratchCreated.workstream.type, 'scratchpad');
   assert.equal(scratchCreated.workstream.branch, 'web-notes');
   assert.equal(scratchCreated.workstream.status, 'paused');
+  assert.deepEqual(scratchCreated.browserWorkspace, { opened: true, panelMode: 'two' });
   assert.equal(scratchCreated.workstream.issues[0].ref, 'https://github.com/example/project/issues/654');
-  assert.deepEqual(openedTabs, []);
-  assert.deepEqual(openedTabOptions, []);
   const scratchSeed = seededSessions.find((seeded) => seeded.id === scratchCreated.workstream.id);
   assert.equal(scratchSeed.content, [
     'This is a new ws session to work on a scratchpad. The following links are associated with this session. Use the linear skill with the cli and/or the gh cli to retrieve authed information.',
@@ -961,6 +1035,11 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     '',
   ].join('\n'));
   assert.deepEqual(await scratchCreatedPromise, { id: scratchCreated.workstream.id, type: 'new_session' });
+  workspaceState = (await (await fetch(`${base}/browser/state?scope=workspaces`)).json()).state;
+  assert.equal(workspaceState.activeWorkspaceId, String(scratchCreated.workstream.id));
+  assert.deepEqual(workspaceState.workspaces.at(-1), {
+    id: String(scratchCreated.workstream.id), panelMode: 'two',
+  });
 
   const scratchRenamedPromise = nextMessage();
   const originalScratchPath = scratchCreated.workstream.path;
@@ -974,10 +1053,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(scratchRenamed.workstream.name, 'Web research notes');
   assert.equal(scratchRenamed.workstream.branch, 'web-notes');
   assert.equal(scratchRenamed.workstream.path, originalScratchPath);
-  assert.deepEqual(renamedSessionTabs, [[
-    `${scratchCreated.workstream.id}:scratchpad:web-notes`,
-    `${scratchCreated.workstream.id}:Web research notes`,
-  ]]);
+  assert.deepEqual(scratchRenamed.result, { renamed: true });
   assert.deepEqual(await scratchRenamedPromise, {
     id: scratchCreated.workstream.id, type: 'update_session',
   });
@@ -1000,36 +1076,44 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   });
   assert.equal(paused.status, 200);
   assert.equal((await paused.json()).workstream.status, 'paused');
-  assert.equal(prChecks.filter((check) => check.id === repo.id).length, checksBeforePause + 1);
-  assert.deepEqual(closedTabs, []);
+  assert.equal(prChecks.filter((check) => check.id === repo.id).length, checksBeforePause);
   assert.deepEqual(killedTerminalNames(), ['shell', 'editor', 'agent'].map((role) => (
     browserTerminalSessionName({ sessionId: String(repo.id), role })
   )));
+  workspaceState = (await (await fetch(`${base}/browser/state?scope=workspaces`)).json()).state;
+  assert.equal(workspaceState.workspaces.some((workspace) => workspace.id === String(repo.id)), false);
 
   const checksBeforeResume = prChecks.filter((check) => check.id === repo.id).length;
   const resumed = await fetch(`${base}/ws/${repo.id}/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ panels: ['shell', 'agent'] }),
+    body: JSON.stringify({
+      panels: ['shell', 'agent'], agent: 'codex', seed: 'Investigate through FritzWorks.',
+    }),
   });
   assert.equal(resumed.status, 200);
   const resumedBody = await resumed.json();
   assert.equal(resumedBody.workstream.status, 'paused');
-  assert.equal(prChecks.filter((check) => check.id === repo.id).length, checksBeforeResume + 1);
-  assert.deepEqual(resumedBody.result, { browserTerminals: 'resume_requested', panels: ['shell', 'agent'] });
-  assert.deepEqual(openedTabs, []);
-  assert.deepEqual(openedTabOptions, []);
+  assert.equal(prChecks.filter((check) => check.id === repo.id).length, checksBeforeResume);
+  assert.deepEqual(resumedBody.result, {
+    browserTerminals: 'resume_requested', panels: ['shell', 'agent'], agent: 'codex',
+    agentChanged: true, seeded: true,
+  });
+  assert.deepEqual(resumedBody.browserWorkspace, { opened: true, panelMode: 'two' });
+  assert.equal(seededSessions.at(-1).content, 'Investigate through FritzWorks.');
+  assert.equal(killedTerminalNames().at(-1), browserTerminalSessionName({
+    sessionId: String(repo.id), role: 'agent',
+  }));
+  workspaceState = (await (await fetch(`${base}/browser/state?scope=workspaces`)).json()).state;
+  assert.equal(workspaceState.activeWorkspaceId, String(repo.id));
+  assert.deepEqual(workspaceState.workspaces.at(-1), { id: String(repo.id), panelMode: 'two' });
 
-  const panelPromise = nextMessage();
   const toggled = await fetch(`${base}/ws/${repo.id}/panel-toggle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ panel: 'editor' }),
   });
-  assert.equal(toggled.status, 200);
-  assert.deepEqual((await toggled.json()).result, { panel: 'editor', open: true });
-  assert.deepEqual(toggledPanels, [{ id: repo.id, panel: 'editor' }]);
-  assert.deepEqual(await panelPromise, { id: repo.id, type: 'update_session' });
+  assert.equal(toggled.status, 400);
 
   const linkedPromise = nextMessage();
   const linked = await fetch(`${base}/ws/${repo.id}/issue-add`, {
@@ -1080,38 +1164,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const dotfilesDetail = await (await fetch(`${base}/ws/dotfiles/?status=all`)).json();
   assert.equal(dotfilesDetail.items[0].agentStatus, 'ready');
   assert.equal(dotfilesDetail.items[0].agent, 'claude');
-  assert.deepEqual(dotfilesDetail.items[0].panels, {
-    tabOpen: true, shell: true, editor: false, agent: true,
-  });
-
-  const dotfilesFocused = await fetch(`${base}/ws/dotfiles/focus-agent`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(dotfilesFocused.status, 200);
-  assert.equal((await dotfilesFocused.json()).result.paneId, 'terminal_7');
-  assert.deepEqual(focusedAgents, [repo.id, 'dotfiles']);
-
-  const dotfilesShellFocused = await fetch(`${base}/ws/dotfiles/focus-shell`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  });
-  assert.equal(dotfilesShellFocused.status, 200);
-  assert.equal((await dotfilesShellFocused.json()).result.paneId, 'terminal_8');
-  assert.deepEqual(focusedShells, [repo.id, 'dotfiles']);
-
-  const dotfilesPanelPromise = nextMessage();
-  const dotfilesPanel = await fetch(`${base}/ws/dotfiles/panel-toggle`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ panel: 'editor' }),
-  });
-  assert.equal(dotfilesPanel.status, 200);
-  assert.deepEqual((await dotfilesPanel.json()).result, { panel: 'editor', open: true });
-  assert.deepEqual(toggledPanels.at(-1), { id: 'dotfiles', panel: 'editor' });
-  assert.deepEqual(await dotfilesPanelPromise, { id: 'dotfiles', type: 'update_session' });
+  assert.equal(dotfilesDetail.items[0].panels, undefined);
 
   const dotfilesAgentSetPromise = nextMessage();
   const previousDotfilesAgentClosed = new Promise((resolve) => dotfilesTerminalSocket.addEventListener('close', resolve, { once: true }));
@@ -1126,7 +1179,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(dotfilesAgentSetBody.workstream.agentStatus, null);
   assert.equal(dotfilesAgentSetBody.result.replaced, true);
   assert.equal(dotfilesAgentSetBody.result.browserTerminalRestart, true);
-  assert.deepEqual(replacedAgents, []);
   assert.deepEqual(await dotfilesAgentSetPromise, { id: 'dotfiles', type: 'update_session' });
   await previousDotfilesAgentClosed;
   assert.equal(terminalPtys[3].killed, true);
@@ -1166,7 +1218,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   });
   assert.equal(notesResumed.status, 200);
   assert.equal((await notesResumed.json()).workstream.status, 'paused');
-  assert.deepEqual(openedTabOptions, []);
   const notesDetail = await (await fetch(`${base}/ws/notes/?status=all`)).json();
   assert.equal(notesDetail.items[0].status, 'paused');
 
@@ -1180,7 +1231,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
       assert.equal(rejected.status, 400);
     }
   }
-  assert.equal(openTabSet.has('notes'), false);
 
   const checksBeforeArchive = prChecks.filter(
     (check) => check.id === createdFromWeb.workstream.id
@@ -1194,7 +1244,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal((await archivedRepo.json()).workstream.status, 'closed');
   assert.equal(prChecks.filter(
     (check) => check.id === createdFromWeb.workstream.id
-  ).length, checksBeforeArchive + 1);
+  ).length, checksBeforeArchive);
   assert.deepEqual(killedTerminalNames().slice(-3), ['shell', 'editor', 'agent'].map((role) => (
     browserTerminalSessionName({ sessionId: String(createdFromWeb.workstream.id), role })
   )));

@@ -8,7 +8,7 @@ import {
   readMarkdownFile, readNotesFile, writeMarkdownFile, writeNotesFile,
 } from './api.js';
 import {
-  CalendarIcon, CollapseIcon, ExpandIcon, Spinner, XIcon,
+  CalendarIcon, CollapseIcon, ExpandIcon, Spinner, TargetIcon, XIcon,
 } from './icons.jsx';
 import {
   appendUnderHeading, continueList, shiftIndent,
@@ -163,8 +163,8 @@ export default function MarkdownEditor({
       h: () => onPanelNavigate?.(-1),
       l: () => onPanelNavigate?.(1),
     };
-    if (key === 'j') {
-      // Standalone sessions have no vertical neighbor; keep the browser in place.
+    if ((key === 'j' || key === 'k') && !handlers[key]) {
+      // Standalone sessions have no vertical neighbors; keep the browser in place.
       event.preventDefault();
       return true;
     }
@@ -234,6 +234,7 @@ export default function MarkdownEditor({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-primary/30 px-2 py-1.5">
+        <TargetIcon target={target} className="size-4" />
         <span className="min-w-0 truncate font-mono text-xs font-bold text-primary" title={path}>{name}</span>
         <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide ${conflict ? 'border-danger text-danger' : dirty ? 'border-soft text-primary' : 'border-primary/40 text-muted'}`}>{status}</span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">

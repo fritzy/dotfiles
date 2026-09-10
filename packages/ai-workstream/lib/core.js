@@ -27,10 +27,8 @@ export const SCRATCH_ORG = 'scratch';
 export const SCRATCH_ROOT = CONFIG.paths.scratchpads;
 export const DATA_DIR = CONFIG.paths.data;
 export const DB_PATH = join(DATA_DIR, 'workstreams.db');
-// Seed documents handed to a workstream's agent panel on open (see writeSeed).
+// Seed documents handed to a workstream's browser agent on first launch.
 export const SEEDS_DIR = join(DATA_DIR, 'seeds');
-// Zellij session used when ws is run from outside any session.
-export const WS_SESSION = CONFIG.zellijSession;
 
 export const now = () => new Date().toISOString();
 export const sanitize = (branch) => branch.replace(/\//g, '-');
@@ -81,8 +79,7 @@ export function openDb(path = DB_PATH) {
     );
   `);
   // Migrate older databases that predate the `source`/`label` columns, and drop
-  // the old `tab_name` column now that it's computed on demand (see computeTabName)
-  // instead of stored — storing it let stale rows keep a pre-id-prefix name forever.
+  // the obsolete terminal-tab name. Browser workspaces use the stable row id.
   try { db.exec("ALTER TABLE workstreams ADD COLUMN source TEXT NOT NULL DEFAULT 'origin'"); } catch { /* exists */ }
   try { db.exec("ALTER TABLE workstreams ADD COLUMN agent_status TEXT CHECK(agent_status IN ('working', 'ready'))"); } catch { /* exists */ }
   try { db.exec("ALTER TABLE workstreams ADD COLUMN shell_status TEXT CHECK(shell_status IN ('working', 'ready'))"); } catch { /* exists */ }
@@ -394,16 +391,6 @@ export const workstreamEventsAfter = (db, sequence) =>
       sequence: Number(event.sequence),
     };
   });
-
-// The tab name for a workstream: derived on demand from its id, org/repo/branch
-// (or label override), never stored — so it can't go stale relative to those
-// fields. `row.tab_name` lets synthetic configured-location tabs pass a
-// literal name straight through instead of being computed.
-export function computeTabName(row) {
-  if (row.tab_name) return row.tab_name;
-  const base = row.label || (isScratch(row) ? `scratchpad:${row.branch}` : `${row.repo}:${sanitize(row.branch)}`);
-  return `${row.id}:${base}`;
-}
 
 export function upsertWorkstream(db, ws) {
   const status = ws.status === 'paused' ? 'paused' : 'active';
@@ -854,6 +841,20 @@ export function expandIssueReference(row, value, { run = spawnSync } = {}) {
 export const listIssues = (db, workstreamId) =>
   db.prepare('SELECT * FROM issues WHERE workstream_id=? ORDER BY id').all(workstreamId);
 
+export function isGitHubPullRequestUrl(ref) {
+  try {
+    const url = new URL(String(ref));
+    return (url.protocol === 'https:' || url.protocol === 'http:')
+      && url.hostname.toLowerCase() === 'github.com'
+      && /^\/[^/]+\/[^/]+\/pull\/\d+(?:\/|$)/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+export const hasGitHubPullRequest = (db, workstreamId) =>
+  listIssues(db, workstreamId).some((issue) => isGitHubPullRequestUrl(issue.ref));
+
 // All issues grouped by workstream id — for rendering a full list without N+1.
 export function issuesByWorkstream(db) {
   const map = {};
@@ -911,7 +912,7 @@ export const isScratch = (row) => row.source === 'scratch' || row.org === SCRATC
 
 export const scratchPath = (name) => join(SCRATCH_ROOT, name);
 
-// Slug a user-supplied scratchpad name into something safe for a dir/tab name:
+// Slug a user-supplied scratchpad name into something safe for a directory and display name:
 // whitespace and other odd characters collapse to single hyphens.
 const scratchSlug = (name) =>
   name.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -924,9 +925,8 @@ export function randomScratchName() {
   return `${pick(ADJECTIVES)}-${pick(NOUNS)}`;
 }
 
-// Create (and register) a scratchpad under the configured scratchpad root, opened
-// with the same configured tab as a workstream. An unnamed scratchpad gets a random
-// name.
+// Create and register a scratchpad under the configured scratchpad root. An
+// unnamed scratchpad gets a random name.
 // Names collide-avoid by appending a numeric suffix.
 export function createScratchpad(db, rawName) {
   let name = (rawName ? scratchSlug(rawName) : '') || randomScratchName();
@@ -1496,10 +1496,10 @@ export function linkedSessionSeed(kind, links) {
   ].join('\n');
 }
 
-// Persist a seed document for a workstream's agent panel. Seeds live under
+// Persist a seed document for a workstream's browser agent. Seeds live under
 // DATA_DIR (not the worktree — git status stays clean) keyed by workstream id,
 // so re-seeding overwrites rather than accumulating. Returns the file path,
-// which the Zellij layout hands to the selected agent as its opening prompt target.
+// which the daemon hands to the next newly-created agent terminal.
 export function writeSeed(row, content) {
   mkdirSync(SEEDS_DIR, { recursive: true });
   const file = join(SEEDS_DIR, `${row.id}.md`);

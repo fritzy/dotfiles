@@ -1,6 +1,6 @@
 # @fritzy/ai-workstream
 
-`ai-workstream` is an opinionated `ws` command for managing development work as Git worktrees and Zellij tabs. Each workstream records a repository, branch, status, linked issues, short logs, and longer notes. Tabs can combine configurable shell, editor, and AI-agent panels, using either Claude Code or Codex.
+`ai-workstream` is an opinionated browser-based workstream manager for Git worktrees. Each workstream records a repository, branch, status, linked issues, short logs, and longer notes. FritzWorks displays each open workstream as a two- or three-panel browser workspace with a shell, optional editor, and Claude Code or Codex agent.
 
 The package also installs `ws-mcp`, an stdio MCP server exposing the non-interactive workstream operations.
 
@@ -32,9 +32,7 @@ The package name is scoped, but its primary executable remains `ws`.
 The package ships a complete [`config.ini`](./config.ini). A user file at `$XDG_CONFIG_HOME/ai-workstream/config.ini`, normally `~/.config/ai-workstream/config.ini`, is layered over those defaults. The user file can contain only the settings you want to change. Run `ws config` to print both file paths and the fully resolved configuration.
 
 ```ini
-panels = shell, editor, agent
 agent = claude
-zellijSession = ws
 gitProtocol = ssh
 
 [paths]
@@ -45,7 +43,6 @@ data = ${XDG_DATA_HOME}/ws
 [locations.notes]
 repo = fritzy/notes
 path = /home/nathan.fritz/notes/
-weeklyNotes = true
 
 [locations.dotfiles]
 repo = fritzy/dotfiles
@@ -71,7 +68,7 @@ port = 7337
 pollInterval = 1000
 ```
 
-Paths beginning with `~/` are expanded against the user's home directory. `${HOME}` and `${XDG_DATA_HOME}` are also supported at the start of a path. Relative user paths are resolved from the user configuration file's directory. Every `[locations.<name>]` section becomes a configured location in API list/detail responses, assumes the `main` branch unless a `branch` setting is present, and is always non-closeable (pause only). `weeklyNotes = true` asks the editor panel to open that location's current weekly notes file. The legacy `[paths]` `notes` and `dotfiles` settings remain supported as path overrides. Commands may be a single executable string or a JSON-style array containing the executable and fixed arguments, such as `editor = ["nvim", "--clean"]`. Empty model values disable an explicit model selection.
+Paths beginning with `~/` are expanded against the user's home directory. `${HOME}` and `${XDG_DATA_HOME}` are also supported at the start of a path. Relative user paths are resolved from the user configuration file's directory. Every `[locations.<name>]` section becomes a configured location in API list/detail responses, assumes the `main` branch unless a `branch` setting is present, and is always non-closeable (pause only). Commands may be a single executable string or a JSON-style array containing the executable and fixed arguments, such as `editor = ["nvim", "--clean"]`. Empty model values disable an explicit model selection.
 
 The default data path intentionally remains `~/.local/share/ws` so existing databases continue to work after upgrading.
 
@@ -87,13 +84,11 @@ Every setting can also be overridden without editing the INI file:
 | Notes root | `AI_WORKSTREAM_NOTES` |
 | Dotfiles path | `AI_WORKSTREAM_DOTFILES` |
 | Data directory | `AI_WORKSTREAM_DATA` |
-| Panel roles | `AI_WORKSTREAM_PANELS` |
 | Default agent | `AI_WORKSTREAM_AGENT` |
 | Shell/editor commands | `AI_WORKSTREAM_SHELL`, `AI_WORKSTREAM_EDITOR` |
 | Agent commands | `AI_WORKSTREAM_CLAUDE`, `AI_WORKSTREAM_CODEX` |
 | Agent models | `AI_WORKSTREAM_CLAUDE_MODEL`, `AI_WORKSTREAM_CODEX_MODEL` |
 | Scratchpad models | `AI_WORKSTREAM_CLAUDE_SCRATCH_MODEL`, `AI_WORKSTREAM_CODEX_SCRATCH_MODEL` |
-| Zellij session | `AI_WORKSTREAM_ZELLIJ_SESSION` |
 | GitHub URL protocol | `AI_WORKSTREAM_GIT_PROTOCOL` |
 | API bind address/port | `AI_WORKSTREAM_HOST`, `AI_WORKSTREAM_PORT` |
 | API state polling interval | `AI_WORKSTREAM_POLL_INTERVAL` |
@@ -102,9 +97,9 @@ Command arrays in environment variables can be JSON, for example `AI_WORKSTREAM_
 
 Precedence is: one-run CLI flags, environment variables, the user INI file, then the bundled `config.ini`.
 
-## Panels and agents
+## Browser workspaces and agents
 
-The standard panel roles are `shell`, `editor`, and `agent`. Configure any non-empty subset globally, or override it for a single newly opened tab:
+Browser workspaces support a two-panel `shell,agent` layout and a three-panel `shell,editor,agent` layout. Choose the initial layout when opening from the CLI, then use the layout control in FritzWorks:
 
 ```sh
 ws new fritzy/example feature-x --panels shell,agent
@@ -116,12 +111,12 @@ Choose an agent in configuration or per command:
 ```sh
 ws new fritzy/example feature-x --agent codex
 ws scratch investigation --claude
-ws resume feature-x --codex --model gpt-5.6-sol
+ws resume feature-x --codex
+ws new fritzy/example feature-x --link ECO-123 --link fritzy/example#456
+ws scratch investigation --link fritzy/example#456
 ```
 
-For an existing workstream directory, Claude uses `--continue`; Codex uses the officially documented cwd-scoped [`codex resume --last`](https://developers.openai.com/codex/cli/reference). Both fall back to a new session when no matching session exists. A `--seed file.md` starts a fresh session with instructions to read that document.
-
-Panel-management commands are `ws open-shell`, `ws open-editor`, `ws open-agent`, and their `close-*` counterparts. `open-claude` and `open-codex` force a provider. The older `zsh`, `nvim`, and `claude` command aliases remain available.
+`ws new` and `ws scratch` accept a repeatable `--link <ref>` option for associated Linear keys, GitHub references, or URLs. Those links are included in the new session's initial agent briefing. For an existing workstream directory, Claude uses `--continue`; Codex uses the officially documented cwd-scoped [`codex resume --last`](https://developers.openai.com/codex/cli/reference). Both fall back to a new session when no matching session exists. A `--seed file.md` is delivered to a fresh browser agent terminal as its first prompt; resuming an already-open workspace with a seed restarts only its agent terminal so the prompt is not ignored. Seed text is limited to 64 KiB. Agent models come from configuration; the old transient `--model` override no longer exists.
 
 Install the user-level Claude Code, Codex, and Zsh lifecycle hooks once to track when an agent or shell is working or waiting for input:
 
@@ -130,7 +125,7 @@ ws hooks install
 ws hooks status
 ```
 
-The installer preserves existing hooks and is idempotent. It adds `UserPromptSubmit`, `Stop`, `PermissionRequest`, `PostToolUse`, and `SessionStart` handlers to both clients, plus Claude's idle/permission notification handler. It also installs a Zsh integration under `~/.config/ai-workstream/shell.zsh` and sources it from `.zshrc`; `preexec` reports a running command and `precmd` reports a ready prompt. Agent and shell panes opened by `ws` carry their workstream ID, with working-directory matching as a fallback.
+The installer preserves existing hooks and is idempotent. It adds `UserPromptSubmit`, `Stop`, `PermissionRequest`, `PostToolUse`, and `SessionStart` handlers to both clients, plus Claude's idle/permission notification handler. It also installs a Zsh integration under `~/.config/ai-workstream/shell.zsh` and sources it from `.zshrc`; `preexec` reports a running command and `precmd` reports a ready prompt. Browser agent and shell terminals carry their workstream ID, with working-directory matching as a fallback.
 
 Run the installer on every machine that hosts an ai-workstream daemon, including remote targets. Activity is recorded by the machine running the shell or agent; the browser's cross-origin event connection only relays those recorded changes. The dotfiles bootstrap runs this installation automatically.
 
@@ -151,7 +146,9 @@ ws log "identified the root cause" --ws feature-branch
 ws stack --ws feature-branch
 ```
 
-`ws refresh` reconciles stored status against the browser terminals connected to the API daemon. The first browser terminal for a workstream makes it `active`; closing its final browser terminal makes it `paused`; and an archived workstream remains archived. When the daemon is not running, there can be no live browser terminals, so refresh pauses stale active rows.
+`ws refresh` starts the local daemon if needed and asks it to reconcile stored status against its connected browser terminals. The first browser terminal for a workstream makes it `active`; closing its final browser terminal makes it `paused`; and an archived workstream remains archived.
+
+`ws list`, `refresh`, `new`, `scratch`, `join`/`resume`, `pause`, `archive`, and `rename`, plus issue and log mutations, are clients of the same REST service used by FritzWorks. They start the local daemon when necessary; lifecycle calls also update its shared browser workspace inventory. If a browser is connected, the workspace opens or closes immediately; otherwise that state is restored the next time FritzWorks opens. These commands never attach to or create an interactive Zellij tab.
 
 Worktrees are stored under `<repositories>/<org>/<repo>/<branch>` with a bare clone at `<repositories>/<org>/<repo>/.bare`. Scratchpads are plain directories without Git backing. The SQLite database and agent seed documents live under the configured data directory.
 
@@ -177,6 +174,8 @@ Browser terminals retain Zellij's mouse mode. A regular drag uses Zellij selecti
 Local and configured remote machines share one sidebar as independently collapsible sections. Each section contains that machine's workstream tree plus **Terminals** and **Markdown** groups for standalone sessions, with controls to create a terminal or open a Markdown file on that machine. Every machine still owns a separately mounted content host, so its terminal and Markdown actions, live connections, and daemon-backed session state never mix with another machine.
 
 Activating a session in the React client's sidebar opens its two- or three-panel terminal workspace. Every terminal is rooted in the session directory: the shell role runs the configured shell, the editor role runs the configured editor, and the agent role runs the session's selected Claude or Codex provider using the same resume/fallback command as Zellij. Each role runs inside a borderless background Zellij session, so switching or closing a browser view only detaches it and leaves the process running. The daemon stores the open workspace inventory and selected two/three-panel layout in its SQLite database; refreshing the app restores those views and reattaches, recreating a missing Zellij session after a reboot. Pause and Archive deliberately stop the workstream's persistent terminal sessions. Active/Paused status is derived exclusively from attached browser-terminal connections. The open detail modal is stored as `session=<id>` in the URL, so it participates in Back/Forward history and survives reloads and bookmarks. A scratchpad's Name field changes its display name without renaming its original directory or branch identifier. The detail and creation modals share Custom, Linear, and GitHub link controls with autocomplete and a combined pill list; detail changes are saved immediately when a link is added or removed. A `#2353` entry expands against a repository workstream, `owner/repo#23945` expands anywhere (and is required for GitHub shorthand in a scratchpad), and a Linear key such as `ECO-23550` is resolved with `linear issue url` before its full URL is saved. Every terminal font falls back to [Symbols Nerd Font Mono](https://github.com/ryanoasis/nerd-fonts) v3.5.1, bundled at `/v2/fonts/symbols-nerd-font-mono.woff2`, so Powerline separators, Devicons, Font Awesome, Octicons, Codicons, Seti, Weather, Font Logos, and Material Design glyphs render in the browser terminals and the notes editor whichever family is selected. Only the symbol face is bundled rather than a patched build of each family: patching adds glyphs without changing text outlines, so this renders identically while keeping the five text fonts at their variable-weight latin subsets. Cell metrics are measured from the selected family alone, so the symbol face streams in without delaying the first fit. Its MIT license and the per-icon-set attributions are in `/v2/fonts/Symbols-Nerd-Font-LICENSE.txt`. The theme selector includes [curiosities](https://lospec.com/palette-list/curiosities) (the default palette), [Clément 8](https://lospec.com/palette-list/clement-8), [Oil 6](https://lospec.com/palette-list/oil-6), [SLSO8](https://lospec.com/palette-list/slso8), [Endesga 8](https://lospec.com/palette-list/endesga-8), and [FunkyFuture 8](https://lospec.com/palette-list/funkyfuture-8) from Lospec; [Dracula](https://github.com/dracula/dracula-theme) and [Nord](https://www.nordtheme.com/docs/colors-and-palettes/); and Tailwind Light and Tailwind Dark built from the standard [Tailwind CSS colors](https://tailwindcss.com/docs/colors). It remembers the selection in local storage. `ws web start` reuses a healthy daemon whose server-source revision is current, automatically replaces an outdated daemon after a package update or local server edit, and then invokes `xdg-open` on Linux or `open` on macOS with its actual URL.
+
+The daemon checks each non-archived repository session for a pull request matching its branch when it starts and every three minutes afterward. Finding a PR adds its canonical GitHub URL to the session's existing associated links and broadcasts an update to connected clients. A session that already has any `github.com/<owner>/<repo>/pull/<number>` link is excluded from discovery, whether that link was added automatically or by the user, so GitHub is not polled again for it.
 
 The collection/detail endpoint is:
 
@@ -210,27 +209,29 @@ POST /ws/{id}/{cmd}
 
 | Command | JSON body |
 | --- | --- |
-| `pause`, `resume` | `{}` |
+| `pause` | `{}` |
+| `resume` | Optional `{"panels":["shell","agent"],"agent":"codex","seed":"markdown prompt"}` fields |
 | `archive` | `{}` archives state only; `{"remove":true}` also removes the directory; dirty Git worktrees require `"force":true` (`close` is a compatibility alias) |
 | `rename` | `{"name":"New label"}` |
 | `log` | `{"body":"What changed","done":true}` |
 | `issue-add` | `{"refs":["ABC-123"]}` or `{"ref":"ABC-123"}` |
 | `issue-remove` | `{"ref":"ABC-123"}` |
-| `panel-toggle` | `{"panel":"shell"}`, `{"panel":"editor"}`, or `{"panel":"agent"}` |
 | `agent-set` | `{"agent":"claude"}` or `{"agent":"codex"}` persists the provider and replaces an open agent panel |
 | `terminal-reset` | `{}` stops and deletes the workstream's browser-backed Zellij sessions so open shell/editor/agent views reconnect from the current layout |
-| `focus-agent` | `{}` focuses the workstream's Zellij tab and Claude/Codex pane |
-| `focus-shell` | `{}` focuses the workstream's Zellij tab and shell pane |
 | `open-path` | `{}` launches the workstream directory with `xdg-open` |
 | `open-notes` | `{}` launches the newest existing notes directory for the workstream with `xdg-open` |
 
-The REST `resume` command reconstitutes a missing worktree and tells the React client to activate its browser terminal workspace; the first attached browser terminal marks it active. `pause` disconnects every browser attach and stops the persistent shell/editor/agent sessions for that workstream. `terminal-reset` is the recovery path for a corrupt or incorrectly resurrected terminal: it disconnects the workstream's browser clients, force-deletes its live Zellij sessions and saved snapshots, and lets the still-open views reconnect into fresh processes. The workspace header and detail modal expose that per-session action. Settings also offers **Reset all terminal sessions**, backed by `POST /ws/terminal-reset`, which performs the same operation for every `ws-browser-*` session on the selected daemon, including standalone terminals. Both reset controls warn first because they stop running shells, editors, and agents. Workstream detail responses still include live Zellij `panels` state for the legacy Zellij panel controls, but that state no longer affects Active/Paused status. Every configured location supports pause/resume, terminal reset, panel toggles, provider selection, focus, and path opening, while the API always rejects `close` for it.
+Daemon-executed MCP support also uses `GET /config`, `GET /ws/{id}/stack`, `POST /ws/{id}/stack-set`, `POST /ws/{id}/stack-link`, `POST /ws/{id}/note`, `GET /ws/{id}/notes`, and `POST /ws/digest`. Keeping these operations behind HTTP ensures a remote MCP request reads and mutates the remote daemon's database, worktrees, and notes rather than local state.
 
-In the web list, the Actions cell includes icon-only Shell and Agent controls; either icon becomes a spinner while its process is working. Click one to focus that workstream's Zellij tab and corresponding pane. On Kitty, `ws` also focuses the exact terminal window when Kitty exposes a remote-control socket (`allow_remote_control yes` or `socket-only`, plus `listen_on` in `kitty.conf`). Zellij focus still succeeds when terminal-window activation is unavailable.
+`POST /ws/refresh` performs synchronous status reconciliation through the daemon. It is the endpoint used by `ws refresh`.
 
-Web clients connect to `ws://127.0.0.1:7337/ws/events`. Adding a workstream emits `{"id":123,"type":"new_session"}`; changing its session status or associated links emits `{"id":123,"type":"update_session"}`; and activity hooks emit `{"id":123,"type":"agent_status","status":"working"}` or `{"id":123,"type":"shell_status","status":"ready"}`. Session messages are invalidations, so clients GET the affected workstream and their current collection again. Mutations are recorded in a durable event journal; the service detects changes made through the CLI or MCP by polling that journal every `server.pollInterval` milliseconds, while REST changes emit immediately.
+The REST `resume` command reconstitutes a missing worktree, places it last in the daemon-owned browser workspace inventory, makes it selected, and broadcasts a browser-state invalidation. The first attached browser terminal marks it active. `pause` removes it from that inventory, disconnects every browser attach, and stops the persistent shell/editor/agent sessions. `terminal-reset` is the recovery path for a corrupt or incorrectly resurrected terminal: it disconnects the workstream's browser clients, force-deletes its live Zellij sessions and saved snapshots, and lets the still-open views reconnect into fresh processes. The workspace header and detail modal expose that per-session action. Settings also offers **Reset all terminal sessions**, backed by `POST /ws/terminal-reset`, which performs the same operation for every `ws-browser-*` persistence session on the selected daemon, including standalone terminals. Every configured location supports pause/resume, terminal reset, provider selection, and path opening; the API always rejects `close` for it.
 
-The React client's standalone xterm.js sessions are backed by borderless Zellij sessions rooted at the user's home directory. Selecting one from its machine's **Terminals** sidebar group opens it in the main content area. It uses the separate `/ws/terminal` WebSocket for terminal input, output, resize, and ownership messages; `/ws/events` is unchanged. Terminal upgrades are accepted only from loopback clients with a matching origin when an origin is supplied. The daemon stores the open standalone terminals in SQLite and restores them after refresh. A websocket disconnect kills only its Zellij attach, leaving the shell alive. Terminal and event sockets reconnect automatically after a daemon restart or network interruption, backing off from 500 milliseconds to a 10-second cap; reconnecting the event stream also refreshes state that might have changed while it was unavailable. Reconnecting terminals identify whether that browser held the attachment before the interruption, so an earlier non-owner connection cannot win solely by reaching a restarted daemon first; after the returning owner is restored, competing reconnects wait rather than repeatedly stealing it. Exactly one browser client owns each attach: another client shows “Active on another client,” waits without accepting input, and automatically claims the session when the owner detaches. Clicking that status transfers the attachment immediately; the displaced client becomes the waiter and the backing Zellij session continues running.
+Web clients connect to `ws://127.0.0.1:7337/ws/events`. Adding a workstream emits `{"id":123,"type":"new_session"}`; changing its session status or associated links emits `{"id":123,"type":"update_session"}`; lifecycle operations also emit a `browser_state` invalidation; and activity hooks emit `{"id":123,"type":"agent_status","status":"working"}` or `{"id":123,"type":"shell_status","status":"ready"}`. Session messages are invalidations, so clients GET the affected workstream and their current collection again. CLI and MCP lifecycle mutations go through REST and emit immediately; direct bookkeeping changes such as stack relationships remain visible through the durable event journal poll.
+
+The React client's standalone xterm.js sessions are backed by borderless Zellij sessions rooted at the user's home directory. Selecting one from its machine's **Terminals** sidebar group opens it in the main content area. Drag another terminal onto the left or right half of that view to form a resizable side-by-side group, or drag it directly onto another terminal in the sidebar to append it on the right. Group members are kept together in left-to-right pane order in the sidebar and joined by a visual rail. Selecting any member displays its whole group; Ctrl-H/Ctrl-L and fullscreen use the same shared terminal-panel behavior as workstream sessions. A panel's title can be clicked to rename it, while the minimize control in either the panel header or sidebar removes only that panel from the group and leaves the terminal running. Split membership, ordering, sizes, names, and the last-displayed member are restored after refresh.
+
+Standalone terminals use the separate `/ws/terminal` WebSocket for terminal input, output, resize, and ownership messages; `/ws/events` is unchanged. Terminal upgrades are accepted only from loopback clients with a matching origin when an origin is supplied. The daemon stores the open standalone terminals in SQLite and restores them after refresh. A websocket disconnect kills only its Zellij attach, leaving the shell alive. Terminal and event sockets reconnect automatically after a daemon restart or network interruption, backing off from 500 milliseconds to a 10-second cap; reconnecting the event stream also refreshes state that might have changed while it was unavailable. Reconnecting terminals identify whether that browser held the attachment before the interruption, so an earlier non-owner connection cannot win solely by reaching a restarted daemon first; after the returning owner is restored, competing reconnects wait rather than repeatedly stealing it. Exactly one browser client owns each attach: another client shows “Active on another client,” waits without accepting input, and automatically claims the session when the owner detaches. Clicking that status transfers the attachment immediately; the displaced client becomes the waiter and the backing Zellij session continues running.
 
 The main content area also hosts standalone Markdown editor sessions selected from the matching machine's **Markdown** sidebar group. Its picker accepts an absolute path, a `~/` path, or a path relative to the selected daemon's working directory, so any existing `.md` file on that FritzWorks machine can be opened. It also lists every work note under the tree configured as `[locations.notes]`, filterable by path, and offers to scaffold this week's work note only while that file does not exist yet — once it does, it is simply one of the listed files. Journal entries and the per-session notes `ws note` writes under `work/<YYYY>/workstream/` are deliberately excluded. That scaffold action creates the file with one `## <Weekday>, <Month> <Day><ord>, <Year>` heading per weekday and with today's heading guaranteed to be present, matching the layout the notes skill expects; an older compact `<YYYYMMDD>-week.md` name is reused rather than duplicated. Each session has an Edit/Preview toggle, font-size and fullscreen controls, Tab/Shift-Tab indenting, and Enter list continuation (a task bullet continues as `- [ ]`, while an empty bullet ends the list). Work-note sessions additionally have a Today button that jumps to today's heading and an "+ Entry" button that appends a `- [x] ` bullet at the end of today's section. Ctrl-E toggles Edit/Preview, Ctrl-H returns to the sidebar, and Ctrl-F and Ctrl-P toggle fullscreen and the sidebar, exactly as they do from a terminal. Edits autosave shortly after typing stops and on blur, plus explicitly with Ctrl/Cmd-S. Saves carry the content hash the session loaded, so a file edited elsewhere in the meantime is reported as a conflict with reload and overwrite choices rather than silently clobbered. Open work-note and general Markdown sessions are remembered across reloads.
 
@@ -264,7 +265,9 @@ claude mcp add --scope user ws -- ws-mcp
 codex mcp add ws -- ws-mcp
 ```
 
-The MCP tools share the same configuration and database as the CLI. `ws_config` reports the resolved settings.
+The MCP tools share the same configuration and service as the CLI. `ws_daemons` exposes the local daemon and every configured `[daemons.<id>]` endpoint. Every tool accepts an optional `daemon` id (default: `local`) and relays its operation to that daemon, so filesystem, Git, GitHub, notes, and lifecycle work happens on the selected machine. Pass `workstream` explicitly for remote workstream operations because the MCP process's current directory can only identify a local workstream.
+
+Lifecycle, stack, issue, log, note, and digest tools all execute through the selected daemon's REST API. Consequently, `ws_new`, `ws_scratch`, `ws_resume`, `ws_pause`, and `ws_close` update that daemon's FritzWorks browser state rather than manipulating the MCP host terminal. `ws_new` and `ws_scratch` accept an optional `links` array; as in the web client and CLI, those links are included in the initial agent briefing. `ws_config` reports the selected daemon's resolved settings.
 
 ## Development and publishing
 

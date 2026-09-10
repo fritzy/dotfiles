@@ -1,47 +1,59 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { AGENT_PROVIDERS, CONFIG, PANEL_ROLES } from './config.js';
 import {
+  addNote,
   addIssue,
   addLog,
+  appendDayEntry,
+  briefStackRow,
+  collectDayActivity,
   configuredLocationAgentStatus,
   configuredLocationGitClean,
   configuredLocationShellStatus,
-  computeTabName,
   createScratchpad,
   dayHeading,
-  ensureWeeklyNote,
   existingNoteDir,
   expandIssueReference,
+  ghStackLink,
+  hasGitHubPullRequest,
   isScratch,
   latestWorkstreamEventSequence,
   linkPrAsync,
   linkedSessionSeed,
   listIssues,
+  listNotes,
   listWorkstreams,
   materializeWorktree,
   now,
   openDb,
   parseSelector,
+  parentOf,
   prCheckDue,
   readBrowserUiState,
   recentRepositories,
   removeIssue,
   removeWorktree,
+  renderDigest,
   refreshWorkstreamStatuses,
   resolveRow,
   selectedAgent,
   setPath,
+  setParent,
   setSelectedAgent,
   setCachedGitClean,
   setConfiguredLocationShellStatus,
   setShellStatus,
   setWorkstreamLabel,
   setStatus,
+  stackCheck,
+  stackLine,
+  stackTree,
   touchLastJoined,
   upsertWorkstream,
   worktreeDirty,
@@ -53,20 +65,14 @@ import {
 } from './core.js';
 import {
   agentCommand,
+  agentInvocation,
   browserTerminalConfigFile,
   browserTerminalSessionName,
   ensureBrowserTerminalSession,
-  focusAgentInSession,
-  focusShellInSession,
   killBrowserTerminalSession,
-  panelStatesInSession,
-  replaceAgentInSession,
   resetAllBrowserTerminalSessions,
   resetBrowserTerminalSession,
-  renameTabInSession,
-  togglePanelInSession,
 } from './zellij.js';
-import { focusTerminalForZellij } from './terminal.js';
 import {
   githubWorkSuggestions,
   linearSearchSuggestions as searchLinearSuggestions,
@@ -92,7 +98,7 @@ import { spawnZellijAttachTerminal } from './pty.js';
 const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 const WEB_ICONS = new Set([
-  'check.svg', 'claude.svg', 'folder.svg', 'git-branch.svg', 'git-pull-request.svg', 'github.svg', 'linear.svg', 'notes.svg', 'openai.svg',
+  'check.svg', 'claude.svg', 'folder.svg', 'git-branch.svg', 'git-pull-request.svg', 'github.svg', 'linear.svg', 'local.svg', 'notes.svg', 'openai.svg', 'remote.svg',
 ]);
 const V2_ASSET_TYPES = new Map([
   ['css', 'text/css; charset=utf-8'],
@@ -106,11 +112,13 @@ const V2_FONT_TYPES = new Map([
 const TYPES = ['repo', 'scratchpad', 'misc'];
 const STATUSES = ['active', 'paused', 'closed', 'all', 'active_paused'];
 const MAX_WEBSOCKET_PAYLOAD = 1024 * 1024;
+const MAX_SEED_BYTES = 64 * 1024;
 const BROWSER_UI_SCOPES = new Set(['workspaces', 'bottom-terminals']);
 const BROWSER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const DEFAULT_BROWSER_PANELS = ['shell', 'agent'];
 export const API_COMMANDS = [
-  'pause', 'resume', 'archive', 'close', 'rename', 'log', 'issue-add', 'issue-remove', 'panel-toggle', 'open-path',
-  'open-notes', 'focus-agent', 'focus-shell', 'agent-set', 'terminal-reset',
+  'pause', 'resume', 'archive', 'close', 'rename', 'log', 'issue-add', 'issue-remove', 'open-path',
+  'open-notes', 'agent-set', 'terminal-reset',
 ];
 
 export class ApiError extends Error {
@@ -121,8 +129,12 @@ export class ApiError extends Error {
   }
 }
 
-function browserTerminalLaunch(role, workstream, config) {
+function browserTerminalLaunch(role, workstream, config, seedContent = null) {
   if (role === 'agent') {
+    if (seedContent) {
+      const launch = agentInvocation(workstream, { agent: workstream.agent }, config);
+      return { command: launch.command, args: [...launch.args, seedContent] };
+    }
     return {
       command: 'sh',
       args: ['-c', agentCommand(workstream, { agent: workstream.agent }, config)],
@@ -267,7 +279,7 @@ function commandRow(db, id) {
 function configuredLocationRow(id, config = CONFIG) {
   const location = config.locations?.[id];
   if (!location) return null;
-  return { ...location, id, tab_name: id, path: location.path };
+  return { ...location, id, path: location.path };
 }
 
 function repositoryParts(value) {
@@ -279,7 +291,7 @@ function repositoryParts(value) {
   return parts;
 }
 
-function requestedPanels(value, fallback) {
+function requestedPanels(value, fallback = DEFAULT_BROWSER_PANELS) {
   const panels = value === undefined ? fallback : value;
   if (!Array.isArray(panels) || panels.length === 0) {
     throw new ApiError(400, 'panels must contain at least one panel');
@@ -287,8 +299,30 @@ function requestedPanels(value, fallback) {
   const unique = [...new Set(panels.map((panel) => requiredString(panel, 'panel')))];
   const invalid = unique.find((panel) => !PANEL_ROLES.includes(panel));
   if (invalid) throw new ApiError(400, `panel must be one of: ${PANEL_ROLES.join(', ')}`);
+  const selected = new Set(unique);
+  if (!selected.has('shell') || !selected.has('agent')
+      || (unique.length !== 2 && unique.length !== 3)
+      || (unique.length === 3 && !selected.has('editor'))) {
+    throw new ApiError(400, 'browser panels must be shell,agent or shell,editor,agent');
+  }
   return unique;
 }
+
+function requestedSeed(value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') throw new ApiError(400, 'seed must be markdown text');
+  const seed = value.trimEnd();
+  if (Buffer.byteLength(seed) > MAX_SEED_BYTES) {
+    throw new ApiError(400, `seed must be at most ${MAX_SEED_BYTES / 1024} KiB`);
+  }
+  return seed;
+}
+
+function combinedSeed(explicit, linked) {
+  return [explicit, linked].filter(Boolean).join('\n\n');
+}
+
+const panelModeFor = (panels) => panels.includes('editor') ? 'three' : 'two';
 
 export function createRepoWorkstream(db, body = {}, context = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -298,7 +332,8 @@ export function createRepoWorkstream(db, body = {}, context = {}) {
   const [org, repo] = repositoryParts(body.repository);
   const selector = requiredString(body.selector, 'branch or ref');
   const agent = requiredAgent(body.agent ?? config.agent);
-  const panels = requestedPanels(body.panels, config.panels);
+  const panels = requestedPanels(body.panels);
+  const seed = requestedSeed(body.seed);
   const links = body.links ?? [];
   if (!Array.isArray(links)) throw new ApiError(400, 'links must be an array');
 
@@ -323,26 +358,41 @@ export function createRepoWorkstream(db, body = {}, context = {}) {
   }
 
   const existing = resolveRow(db, `${org}/${repo}:${branch}`);
+  const previousAgent = existing ? selectedAgent(db, existing.id, config.agent) : agent;
+  let parent = null;
+  if (body.parent !== undefined && body.parent !== null && body.parent !== '') {
+    parent = resolveRow(db, requiredString(body.parent, 'parent'));
+    if (!parent) throw new ApiError(404, `no workstream matching parent "${body.parent}"`);
+    if (isScratch(parent)) {
+      throw new ApiError(400, `parent #${parent.id} is a scratchpad, so it has no branch to build on`);
+    }
+  }
+  const sameRepoParent = parent && parent.org === org && parent.repo === repo;
   let path;
   try {
-    path = (context.materialize || materializeWorktree)(org, repo, branch, source);
+    path = (context.materialize || materializeWorktree)(
+      org, repo, branch, source, sameRepoParent ? { base: parent.branch } : {},
+    );
   } catch (error) {
     throw new ApiError(502, `could not create worktree: ${error.message}`);
   }
   const timestamp = (context.now || now)();
   let row = upsertWorkstream(db, {
     org, repo, branch, source, path,
-    status: 'paused',
+    status: existing?.status === 'active' ? 'active' : 'paused',
     created_at: timestamp,
     last_joined_at: timestamp,
   });
+  if (parent) row = setParent(db, row, parent);
   setSelectedAgent(db, row.id, agent);
   if (!panels.includes('shell')) setShellStatus(db, row.id, null);
   for (const ref of expandedLinks) addIssue(db, row.id, ref);
 
-  if (expandedLinks.length) {
+  const associatedLinks = listIssues(db, row.id).map((issue) => issue.ref);
+  const briefing = combinedSeed(seed, linkedSessionSeed('repo', associatedLinks));
+  if (briefing) {
     try {
-      (context.writeSeed || writeSeed)(row, linkedSessionSeed('repo', expandedLinks));
+      (context.writeSeed || writeSeed)(row, briefing);
     } catch (error) {
       setStatus(db, row.id, 'paused');
       throw new ApiError(502, `workstream #${row.id} was created, but its agent seed could not be written: ${error.message}`, {
@@ -355,7 +405,10 @@ export function createRepoWorkstream(db, body = {}, context = {}) {
   return {
     ok: true,
     created: !existing,
-    tab: null,
+    browserWorkspace: { opened: true, panelMode: panelModeFor(panels) },
+    branchedOffParent: Boolean(sameRepoParent),
+    agentChanged: Boolean(existing && previousAgent !== agent),
+    seeded: Boolean(briefing),
     workstream: {
       type: 'repo',
       ...apiWorkstreamView(db, row, { cwd: context.cwd, config }),
@@ -373,7 +426,8 @@ export function createScratchpadWorkstream(db, body = {}, context = {}) {
   }
   const name = typeof body.name === 'string' ? body.name.trim() || undefined : undefined;
   const agent = requiredAgent(body.agent ?? config.agent);
-  const panels = requestedPanels(body.panels, config.panels);
+  const panels = requestedPanels(body.panels);
+  const seed = requestedSeed(body.seed);
   const links = body.links ?? [];
   if (!Array.isArray(links)) throw new ApiError(400, 'links must be an array');
 
@@ -403,9 +457,11 @@ export function createScratchpadWorkstream(db, body = {}, context = {}) {
   if (!panels.includes('shell')) setShellStatus(db, row.id, null);
   for (const ref of expandedLinks) addIssue(db, row.id, ref);
 
-  if (expandedLinks.length) {
+  const associatedLinks = listIssues(db, row.id).map((issue) => issue.ref);
+  const briefing = combinedSeed(seed, linkedSessionSeed('scratchpad', associatedLinks));
+  if (briefing) {
     try {
-      (context.writeSeed || writeSeed)(row, linkedSessionSeed('scratchpad', expandedLinks));
+      (context.writeSeed || writeSeed)(row, briefing);
     } catch (error) {
       setStatus(db, row.id, 'paused');
       throw new ApiError(502, `scratchpad #${row.id} was created, but its agent seed could not be written: ${error.message}`, {
@@ -418,7 +474,8 @@ export function createScratchpadWorkstream(db, body = {}, context = {}) {
   return {
     ok: true,
     created: true,
-    tab: null,
+    browserWorkspace: { opened: true, panelMode: panelModeFor(panels) },
+    seeded: Boolean(briefing),
     workstream: {
       type: 'scratchpad',
       ...apiWorkstreamView(db, row, { cwd: context.cwd, config }),
@@ -479,43 +536,30 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
   const configuredRow = configuredLocationRow(id, config);
   if (configuredRow) {
     if (command === 'archive' || command === 'close') {
-      throw new ApiError(400, `configured location "${id}" cannot be archived; pause its tab instead`);
+      throw new ApiError(400, `configured location "${id}" cannot be archived; pause its browser workspace instead`);
     }
-    if (!['pause', 'resume', 'focus-agent', 'focus-shell', 'panel-toggle', 'agent-set', 'terminal-reset'].includes(command)) {
-      throw new ApiError(400, `configured location "${id}" only supports pause, resume, open-path, focus-agent, focus-shell, panel-toggle, agent-set, and terminal-reset`);
+    if (!['pause', 'resume', 'agent-set', 'terminal-reset'].includes(command)) {
+      throw new ApiError(400, `configured location "${id}" only supports pause, resume, open-path, agent-set, and terminal-reset`);
     }
     let result = {};
     try {
       if (command === 'pause') {
         result = { browserTerminals: 'pause_requested' };
       } else if (command === 'resume') {
-        const panels = requestedPanels(body.panels, config.panels);
-        result = { browserTerminals: 'resume_requested', panels };
-        if (!panels.includes('shell')) setConfiguredLocationShellStatus(db, id, null);
-      } else if (command === 'focus-agent' || command === 'focus-shell') {
-        const focus = command === 'focus-shell'
-          ? (context.focusShell || focusShellInSession)
-          : (context.focusAgent || focusAgentInSession);
-        result = focus(configuredRow);
+        const panels = requestedPanels(body.panels);
+        const previous = selectedAgent(db, id, defaultAgent);
+        const agent = body.agent === undefined
+          ? previous
+          : requiredAgent(body.agent);
+        const seed = requestedSeed(body.seed);
+        setSelectedAgent(db, id, agent);
+        if (seed) (context.writeSeed || writeSeed)(configuredRow, seed);
         result = {
-          ...result,
-          terminalFocus: (context.focusTerminal || focusTerminalForZellij)(result.session),
+          browserTerminals: 'resume_requested', panels, agent,
+          ...(agent !== previous ? { agentChanged: true } : {}),
+          seeded: Boolean(seed),
         };
-      } else if (command === 'panel-toggle') {
-        const panel = requiredString(body.panel, 'panel');
-        if (!PANEL_ROLES.includes(panel)) {
-          throw new ApiError(400, `panel must be one of: ${PANEL_ROLES.join(', ')}`);
-        }
-        const opts = {
-          agent: selectedAgent(db, id, defaultAgent),
-          ...(configuredRow.weeklyNotes && panel === 'editor'
-            ? { editorFile: ensureWeeklyNote(configuredRow.path) }
-            : {}),
-        };
-        result = (context.togglePanel || togglePanelInSession)(configuredRow, panel, opts);
-        if (panel === 'shell' && result.open === false) {
-          setConfiguredLocationShellStatus(db, id, null);
-        }
+        if (!panels.includes('shell')) setConfiguredLocationShellStatus(db, id, null);
       } else if (command === 'terminal-reset') {
         setSelectedAgent(db, id, selectedAgent(db, id, defaultAgent));
         setConfiguredLocationShellStatus(db, id, null);
@@ -526,9 +570,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
         if (agent === previous) {
           result = { agent, previous, changed: false, replaced: false };
         } else {
-          result = (context.replaceAgent || replaceAgentInSession)(configuredRow, agent);
           setSelectedAgent(db, id, agent);
-          result = { ...result, agent, previous, changed: true };
+          result = { agent, previous, changed: true, replaced: false };
         }
       }
     } catch (error) {
@@ -537,13 +580,9 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
         ? 'pause browser terminals'
         : command === 'resume'
           ? 'resume browser terminals'
-          : command === 'focus-agent' || command === 'focus-shell'
-            ? `focus ${command === 'focus-shell' ? 'shell' : 'agent'} panel`
-            : command === 'panel-toggle'
-              ? 'toggle Zellij panel'
-              : command === 'terminal-reset'
-                ? 'reset browser terminals'
-              : 'change agent';
+          : command === 'terminal-reset'
+            ? 'reset browser terminals'
+            : 'change agent';
       throw new ApiError(502, `could not ${action}: ${error.message}`);
     }
     const terminalSessionIds = command === 'pause'
@@ -569,11 +608,22 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
           row.path = path;
         }
       }
-      const panels = requestedPanels(body.panels, config.panels);
+      const panels = requestedPanels(body.panels);
+      const previous = selectedAgent(db, row.id, defaultAgent);
+      const agent = body.agent === undefined
+        ? previous
+        : requiredAgent(body.agent);
+      const seed = requestedSeed(body.seed);
+      setSelectedAgent(db, row.id, agent);
+      if (seed) (context.writeSeed || writeSeed)(row, seed);
       if (!panels.includes('shell')) setShellStatus(db, row.id, null);
       if (row.status === 'closed') setStatus(db, row.id, 'paused', true);
       else touchLastJoined(db, row.id);
-      result = { browserTerminals: 'resume_requested', panels };
+      result = {
+        browserTerminals: 'resume_requested', panels, agent,
+        ...(agent !== previous ? { agentChanged: true } : {}),
+        seeded: Boolean(seed),
+      };
       break;
     }
     case 'terminal-reset':
@@ -601,18 +651,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
     }
     case 'rename': {
       const name = requiredString(body.name, 'name');
-      const oldTabName = computeTabName(row);
-      const newTabName = computeTabName({ ...row, label: name });
-      try {
-        result = {
-          tabRenamed: context.renameTab
-            ? context.renameTab(oldTabName, newTabName)
-            : false,
-        };
-      } catch (error) {
-        throw new ApiError(502, `could not rename Zellij tab: ${error.message}`);
-      }
       row = setWorkstreamLabel(db, row, name);
+      result = { renamed: true };
       break;
     }
     case 'log':
@@ -638,36 +678,6 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
     case 'issue-remove':
       result = removeIssue(db, row.id, requiredString(body.ref, 'ref'));
       break;
-    case 'panel-toggle': {
-      const panel = requiredString(body.panel, 'panel');
-      if (!PANEL_ROLES.includes(panel)) {
-        throw new ApiError(400, `panel must be one of: ${PANEL_ROLES.join(', ')}`);
-      }
-      try {
-        result = (context.togglePanel || togglePanelInSession)(row, panel, {
-          agent: selectedAgent(db, row.id, defaultAgent),
-        });
-      } catch (error) {
-        throw new ApiError(502, `could not toggle Zellij panel: ${error.message}`);
-      }
-      if (panel === 'shell' && result.open === false) setShellStatus(db, row.id, null);
-      break;
-    }
-    case 'focus-agent':
-    case 'focus-shell':
-      try {
-        const focus = command === 'focus-shell'
-          ? (context.focusShell || focusShellInSession)
-          : (context.focusAgent || focusAgentInSession);
-        result = focus(row);
-        result = {
-          ...result,
-          terminalFocus: (context.focusTerminal || focusTerminalForZellij)(result.session),
-        };
-      } catch (error) {
-        throw new ApiError(502, `could not focus ${command === 'focus-shell' ? 'shell' : 'agent'} panel: ${error.message}`);
-      }
-      break;
     case 'agent-set': {
       const agent = requiredAgent(body.agent);
       const previous = selectedAgent(db, row.id, defaultAgent);
@@ -675,13 +685,8 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
         result = { agent, previous, changed: false, replaced: false };
         break;
       }
-      try {
-        result = (context.replaceAgent || replaceAgentInSession)(row, agent);
-      } catch (error) {
-        throw new ApiError(502, `could not change agent: ${error.message}`);
-      }
       setSelectedAgent(db, row.id, agent);
-      result = { ...result, agent, previous, changed: true };
+      result = { agent, previous, changed: true, replaced: false };
       break;
     }
   }
@@ -696,6 +701,125 @@ export function executeWorkstreamCommand(db, id, command, body = {}, context = {
       ...apiWorkstreamView(db, row, { cwd: context.cwd, config }),
     },
   };
+}
+
+const briefWorkstream = (row) => ({
+  id: row.id, repo: `${row.org}/${row.repo}`, branch: row.branch,
+});
+
+const stackNode = (node) => ({
+  ...briefStackRow(node.row),
+  repo: isScratch(node.row) ? 'scratch' : `${node.row.org}/${node.row.repo}`,
+  stackedBy: node.children.map(stackNode),
+});
+
+function stackLinearity(db, row) {
+  try {
+    const chain = stackLine(db, row);
+    const check = stackCheck(chain);
+    return { chain, ...check };
+  } catch (error) {
+    return { chain: null, ok: false, reason: error.message };
+  }
+}
+
+export function workstreamStack(db, id) {
+  const row = commandRow(db, id);
+  const { chain, ok, reason, repo } = stackLinearity(db, row);
+  return {
+    workstream: briefWorkstream(row),
+    stackedOn: parentOf(db, row) ? briefStackRow(parentOf(db, row)) : null,
+    stack: stackNode(stackTree(db, row)),
+    linear: Boolean(chain),
+    bottomToTop: chain ? chain.map((item) => ({ ...briefStackRow(item), path: item.path })) : null,
+    canLinkOnGitHub: ok,
+    reason: ok ? undefined : reason,
+    githubRepo: ok ? repo : undefined,
+  };
+}
+
+export function setWorkstreamStack(db, id, body = {}) {
+  const row = commandRow(db, id);
+  if (body.clear) {
+    const previous = parentOf(db, row);
+    const updated = setParent(db, row, null);
+    return {
+      workstream: briefWorkstream(updated),
+      cleared: true,
+      wasStackedOn: previous ? briefStackRow(previous) : null,
+    };
+  }
+  const selector = requiredString(body.parent, 'parent');
+  const parent = resolveRow(db, selector);
+  if (!parent) throw new ApiError(404, `no workstream matching parent "${selector}"`);
+  let updated;
+  try {
+    updated = setParent(db, row, parent);
+  } catch (error) {
+    throw new ApiError(400, error.message);
+  }
+  return {
+    workstream: briefWorkstream(updated),
+    stackedOn: briefStackRow(parent),
+    stack: stackNode(stackTree(db, updated)),
+  };
+}
+
+export function linkWorkstreamStack(db, id, body = {}) {
+  const row = commandRow(db, id);
+  let chain;
+  try {
+    chain = stackLine(db, row);
+  } catch (error) {
+    throw new ApiError(409, error.message);
+  }
+  const check = stackCheck(chain);
+  if (!check.ok) throw new ApiError(409, check.reason);
+  let linked;
+  try {
+    linked = ghStackLink(chain, { open: body.open === true });
+  } catch (error) {
+    throw new ApiError(502, error.message);
+  }
+  return {
+    workstream: briefWorkstream(row),
+    repo: check.repo,
+    bottomToTop: chain.map((item) => item.branch),
+    command: linked.command,
+    ok: linked.ok,
+    output: linked.output,
+  };
+}
+
+export function createWorkstreamNote(db, id, body = {}, { notesRoot = CONFIG.paths.notes } = {}) {
+  const row = commandRow(db, id);
+  if (typeof body.body !== 'string' || body.body.trim() === '') {
+    throw new ApiError(400, 'body must be a non-empty string');
+  }
+  if (body.title !== undefined && typeof body.title !== 'string') {
+    throw new ApiError(400, 'title must be a string');
+  }
+  const { file, path } = addNote(row, body.body, { title: body.title, root: notesRoot });
+  return { workstream: briefWorkstream(row), file, path };
+}
+
+export function workstreamNotes(db, id, { notesRoot = CONFIG.paths.notes } = {}) {
+  const row = commandRow(db, id);
+  return { workstream: briefWorkstream(row), notes: listNotes(row, notesRoot) };
+}
+
+export function workstreamDigest(db, body = {}, { notesRoot = CONFIG.paths.notes } = {}) {
+  if (body.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(body.date)) {
+    throw new ApiError(400, 'date must use YYYY-MM-DD');
+  }
+  const activity = collectDayActivity(db, { date: body.date });
+  const markdown = renderDigest(activity);
+  const result = { date: activity.dateIso, markdown, workstreams: activity.workstreams };
+  if (body.write === true && markdown) {
+    const { file, heading } = appendDayEntry(markdown, activity.date, notesRoot);
+    result.written = { file, heading };
+  }
+  return result;
 }
 
 // The client may be talking to us cross-origin (the daemon-selector switches
@@ -830,13 +954,6 @@ export function createApiService({
   webRoot = WEB_ROOT,
   cwd = process.cwd(),
   pollInterval = config.server.pollInterval,
-  panelState = panelStatesInSession,
-  togglePanel = togglePanelInSession,
-  replaceAgent = replaceAgentInSession,
-  renameTab = renameTabInSession,
-  focusAgent = focusAgentInSession,
-  focusShell = focusShellInSession,
-  focusTerminal = focusTerminalForZellij,
   openPath = openPathWithXdg,
   checkGit = worktreeCleanAsync,
   checkPr = linkPrAsync,
@@ -908,6 +1025,25 @@ export function createApiService({
   };
   const broadcast = (message) => {
     for (const socket of clients) send(socket, message);
+  };
+  const setBrowserWorkspaceOpen = (sessionId, open, panels = DEFAULT_BROWSER_PANELS) => {
+    const id = String(sessionId);
+    const current = readBrowserUiState(db, 'workspaces').state;
+    const existing = Array.isArray(current.workspaces) ? current.workspaces : [];
+    const workspaces = existing.filter((workspace) => String(workspace?.id) !== id);
+    if (open) workspaces.push({ id, panelMode: panelModeFor(panels) });
+    const remembered = current.activeWorkspaceId == null ? null : String(current.activeWorkspaceId);
+    const activeWorkspaceId = open
+      ? id
+      : remembered === id
+        ? (workspaces.at(-1)?.id ?? null)
+        : workspaces.some((workspace) => String(workspace?.id) === remembered)
+          ? remembered
+          : (workspaces.at(-1)?.id ?? null);
+    const state = { ...current, workspaces, activeWorkspaceId };
+    const saved = writeBrowserUiState(db, 'workspaces', state, { updatedAt: clock() });
+    broadcast({ type: 'browser_state', scope: 'workspaces', clientId: 'service' });
+    return saved;
   };
   const broadcastChanges = () => {
     const events = workstreamEventsAfter(db, lastEventSequence);
@@ -1076,10 +1212,14 @@ export function createApiService({
     }
     if (owner) terminalOwners.delete(current.terminalSession);
     try {
-      ensureTerminalSession(current.identity, {
+      const ensured = ensureTerminalSession(current.identity, {
         command: current.command,
         cwd: current.cwd,
       });
+      if (ensured?.created && current.seedFile) {
+        try { unlinkSync(current.seedFile); } catch { /* the agent already has the inline prompt */ }
+        current.seedFile = null;
+      }
       const terminal = spawnTerminalAttach({
         session: current.terminalSession,
         configFile: terminalSessionConfigFile(),
@@ -1203,7 +1343,7 @@ export function createApiService({
 
   const prRefreshTarget = (id) => {
     const row = resolveRow(db, String(id));
-    return row && !isScratch(row) ? row : null;
+    return row && !isScratch(row) && !hasGitHubPullRequest(db, row.id) ? row : null;
   };
 
   const refreshPr = (id, { force = false } = {}) => {
@@ -1240,6 +1380,17 @@ export function createApiService({
 
   const schedulePrRefresh = (id) => {
     if (id !== null && id !== undefined) void refreshPr(id);
+  };
+
+  const discoverPullRequests = () => {
+    if (closing) return;
+    try {
+      for (const row of listWorkstreams(db, { all: true })) {
+        if (row.status !== 'closed') schedulePrRefresh(row.id);
+      }
+    } catch (error) {
+      if (!closing) process.stderr.write(`ai-workstream API PR discovery: ${error.message}\n`);
+    }
   };
 
   // ---------------------------------------------------------------- notes editor
@@ -1365,8 +1516,11 @@ export function createApiService({
           websocket: '/ws/events',
         });
       }
+      if (req.method === 'GET' && url.pathname === '/config') {
+        return json(res, 200, config);
+      }
       if (req.method === 'GET' && url.pathname === '/daemons') {
-        return json(res, 200, { daemons: Object.values(CONFIG.daemons) });
+        return json(res, 200, { daemons: Object.values(config.daemons || {}) });
       }
       if (req.method === 'GET' && url.pathname === '/browser/state') {
         return json(res, 200, readBrowserUiState(db, browserUiScope(url.searchParams.get('scope'))));
@@ -1412,6 +1566,13 @@ export function createApiService({
         broadcastMiscChanges();
         return json(res, 200, { ok: true, result });
       }
+      if (req.method === 'POST' && url.pathname === '/ws/refresh') {
+        await jsonBody(req);
+        const result = refreshWorkstreamStatuses(db, terminalSessionIds());
+        broadcastChanges();
+        broadcastMiscChanges();
+        return json(res, 200, { ok: true, result });
+      }
 
       if (url.pathname.startsWith('/notes/')) {
         return await notesRoute(req, res, url);
@@ -1421,6 +1582,35 @@ export function createApiService({
       }
 
       const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
+      if (req.method === 'POST' && parts[0] === 'ws' && parts[1] === 'digest' && parts.length === 2) {
+        const body = await jsonBody(req);
+        return json(res, 200, workstreamDigest(db, body, { notesRoot }));
+      }
+      if (req.method === 'GET' && parts[0] === 'ws' && parts[2] === 'stack' && parts.length === 3) {
+        return json(res, 200, workstreamStack(db, parts[1]));
+      }
+      if (req.method === 'POST' && parts[0] === 'ws' && parts[2] === 'stack-set' && parts.length === 3) {
+        const body = await jsonBody(req);
+        const result = setWorkstreamStack(db, parts[1], body);
+        const changed = new Set([
+          result.workstream.id, result.stackedOn?.id, result.wasStackedOn?.id,
+        ].filter((id) => id !== undefined));
+        for (const id of changed) broadcast({ id, type: 'update_session' });
+        return json(res, 200, result);
+      }
+      if (req.method === 'POST' && parts[0] === 'ws' && parts[2] === 'stack-link' && parts.length === 3) {
+        const body = await jsonBody(req);
+        return json(res, 200, linkWorkstreamStack(db, parts[1], body));
+      }
+      if (req.method === 'POST' && parts[0] === 'ws' && parts[2] === 'note' && parts.length === 3) {
+        const body = await jsonBody(req);
+        const result = createWorkstreamNote(db, parts[1], body, { notesRoot });
+        broadcast({ id: result.workstream.id, type: 'update_session' });
+        return json(res, 201, result);
+      }
+      if (req.method === 'GET' && parts[0] === 'ws' && parts[2] === 'notes' && parts.length === 3) {
+        return json(res, 200, workstreamNotes(db, parts[1], { notesRoot }));
+      }
       if (req.method === 'GET' && parts[0] === 'ws' && parts[1] === 'link-suggestions' && parts.length === 3) {
         const provider = parts[2];
         if (provider !== 'linear' && provider !== 'github') {
@@ -1440,7 +1630,7 @@ export function createApiService({
           scratchpadRoot: config.paths.scratchpads,
           recentRepositories: recentRepositories(db, { reference: clock() }),
           agent: config.agent,
-          panels: config.panels,
+          panels: DEFAULT_BROWSER_PANELS,
         });
       }
       if (req.method === 'GET' && parts[0] === 'ws' && parts.length <= 2) {
@@ -1451,18 +1641,6 @@ export function createApiService({
           perpage: url.searchParams.get('perpage') || undefined,
           status: url.searchParams.get('status') || undefined,
         }, { cwd, config, terminalSessionIds: terminalSessionIds() });
-        if (parts[1] && parts[1] !== 'all' && result.items[0]) {
-          const item = result.items[0];
-          const row = item.type === 'misc'
-            ? configuredLocationRow(String(item.id), config)
-            : resolveRow(db, String(item.id));
-          try {
-            result.items[0].panels = panelState(row);
-          } catch (error) {
-            result.items[0].panels = null;
-            result.items[0].panelError = error.message;
-          }
-        }
         json(res, 200, result);
         scheduleGitRefresh(result.items);
         return;
@@ -1477,10 +1655,11 @@ export function createApiService({
         if (linkedPr?.added) {
           const row = resolveRow(db, String(result.workstream.id));
           try {
-            writeSessionSeed(row, linkedSessionSeed(
-              'repo',
-              listIssues(db, row.id).map((issue) => issue.ref),
+            writeSessionSeed(row, combinedSeed(
+              requestedSeed(body.seed),
+              linkedSessionSeed('repo', listIssues(db, row.id).map((issue) => issue.ref)),
             ));
+            result.seeded = true;
           } catch (error) {
             throw new ApiError(
               502,
@@ -1493,7 +1672,16 @@ export function createApiService({
           id: result.workstream.id, status: 'all',
         }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
         result.workstream = await refreshGitBeforeResponse(result.workstream);
+        if (!result.created && (result.agentChanged || result.seeded)) {
+          closeBrowserTerminals(result.workstream.id, 'agent');
+          stopPersistentTerminalSessions(result.workstream.id, 'agent');
+        }
         broadcastChanges();
+        setBrowserWorkspaceOpen(
+          result.workstream.id,
+          true,
+          result.browserWorkspace.panelMode === 'three' ? PANEL_ROLES : DEFAULT_BROWSER_PANELS,
+        );
         json(res, result.created ? 201 : 200, result);
         return;
       }
@@ -1505,6 +1693,11 @@ export function createApiService({
         });
         result.workstream = await refreshGitBeforeResponse(result.workstream);
         broadcastChanges();
+        setBrowserWorkspaceOpen(
+          result.workstream.id,
+          true,
+          result.browserWorkspace.panelMode === 'three' ? PANEL_ROLES : DEFAULT_BROWSER_PANELS,
+        );
         json(res, 201, result);
         return;
       }
@@ -1514,12 +1707,12 @@ export function createApiService({
           && browserTerminalConnected(parts[1], 'agent');
         const result = executeWorkstreamCommand(db, parts[1], parts[2], body, {
           cwd, config, terminalSessionIds: terminalSessionIds(),
-          togglePanel,
-          replaceAgent: parts[2] === 'agent-set'
-            ? (_row, agent) => ({ agent, replaced: browserAgentConnected, browserTerminalRestart: browserAgentConnected })
-            : replaceAgent,
-          renameTab, focusAgent, focusShell, focusTerminal, openPath,
+          openPath,
         });
+        if (parts[2] === 'agent-set' && result.result.changed) {
+          result.result.replaced = browserAgentConnected;
+          result.result.browserTerminalRestart = browserAgentConnected;
+        }
         if (result.workstream.type === 'repo' && ['pause', 'resume', 'archive', 'close'].includes(parts[2])) {
           await refreshPr(result.workstream.id, { force: true });
           result.workstream = queryWorkstreams(db, {
@@ -1534,6 +1727,10 @@ export function createApiService({
           closeBrowserTerminals(parts[1], 'agent');
           stopPersistentTerminalSessions(parts[1], 'agent');
         }
+        if (parts[2] === 'resume' && (result.result.agentChanged || result.result.seeded)) {
+          closeBrowserTerminals(parts[1], 'agent');
+          stopPersistentTerminalSessions(parts[1], 'agent');
+        }
         if (parts[2] === 'terminal-reset') {
           closeBrowserTerminals(parts[1]);
           try {
@@ -1542,11 +1739,18 @@ export function createApiService({
             throw new ApiError(502, `could not reset browser terminals: ${error.message}`);
           }
         }
+        if (parts[2] === 'resume') {
+          setBrowserWorkspaceOpen(parts[1], true, result.result.panels);
+          result.browserWorkspace = {
+            opened: true,
+            panelMode: panelModeFor(result.result.panels),
+          };
+        } else if (parts[2] === 'pause' || parts[2] === 'archive' || parts[2] === 'close') {
+          setBrowserWorkspaceOpen(parts[1], false);
+          result.browserWorkspace = { opened: false };
+        }
         broadcastChanges();
         if (result.workstream.type === 'misc') broadcastMiscChanges();
-        if (parts[2] === 'panel-toggle') {
-          broadcast({ id: result.workstream.id, type: 'update_session' });
-        }
         json(res, 200, result);
         scheduleGitRefresh([result.workstream]);
         return;
@@ -1625,7 +1829,13 @@ export function createApiService({
           terminalSessionId = String(workstream.id);
           terminalCwd = workstream.path;
         }
-        const launch = browserTerminalLaunch(terminalRole, workstream, config);
+        const seedFile = terminalRole === 'agent' && workstream
+          ? join(dataDir, 'seeds', `${workstream.id}.md`)
+          : null;
+        const seedContent = seedFile && existsSync(seedFile)
+          ? readFileSync(seedFile, 'utf8')
+          : null;
+        const launch = browserTerminalLaunch(terminalRole, workstream, config, seedContent);
         const identity = { sessionId: terminalSessionId, role: terminalRole, terminalId };
         // The daemon is commonly launched from a desktop entry, where TERM is
         // either absent or "dumb". These commands run in a real xterm.js-backed
@@ -1635,8 +1845,7 @@ export function createApiService({
           'env',
           'TERM=xterm-256color',
           'COLORTERM=truecolor',
-          ...(terminalSessionId && terminalRole !== 'agent'
-            ? [`AI_WORKSTREAM_ID=${terminalSessionId}`] : []),
+          ...(terminalSessionId ? [`AI_WORKSTREAM_ID=${terminalSessionId}`] : []),
           launch.command,
           ...launch.args,
         ];
@@ -1647,6 +1856,7 @@ export function createApiService({
           identity,
           role: terminalRole,
           reconnectOwner,
+          seedFile: seedContent ? seedFile : null,
           sessionId: terminalSessionId,
           terminalSession: browserTerminalSessionName(identity),
         };
@@ -1739,6 +1949,11 @@ export function createApiService({
     }
   }, pollInterval) : null;
   timer?.unref();
+  const prTimer = prCheckIntervalMs > 0
+    ? setInterval(discoverPullRequests, prCheckIntervalMs)
+    : null;
+  prTimer?.unref();
+  setImmediate(discoverPullRequests);
 
   return {
     server,
@@ -1751,6 +1966,7 @@ export function createApiService({
     async close() {
       closing = true;
       if (timer) clearInterval(timer);
+      if (prTimer) clearInterval(prTimer);
       for (const socket of clients) socket.destroy();
       clients.clear();
       for (const [socket] of [...terminalClients]) {

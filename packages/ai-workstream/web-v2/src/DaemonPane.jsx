@@ -306,9 +306,6 @@ const DaemonPane = forwardRef(function DaemonPane({
       ? { ...body, panels: [...DEFAULT_WORKSPACE_ROLES] }
       : body;
     const result = await postCommand(item.id, command, payload, target);
-    if (result.result?.terminalFocus?.focused === false) {
-      throw new Error(`Zellij focused. ${result.result.terminalFocus.reason}.`);
-    }
     setRevision((value) => value + 1);
     if (command === 'resume' && result.workstream) activateSession(result.workstream);
     if (command === 'pause' || command === 'archive' || command === 'close') closeWorkspace(item.id);
@@ -386,6 +383,16 @@ const DaemonPane = forwardRef(function DaemonPane({
     bottomTabsRef.current?.close(id) || false
   ), []);
 
+  const groupStandalone = useCallback((sourceId, destinationId) => {
+    onRequestFullscreenExit();
+    return bottomTabsRef.current?.groupTerminals(sourceId, destinationId, 'right') || false;
+  }, [onRequestFullscreenExit]);
+
+  const minimizeStandalone = useCallback((id) => {
+    onRequestFullscreenExit();
+    return bottomTabsRef.current?.minimizeTerminal(id) || false;
+  }, [onRequestFullscreenExit]);
+
   const focusAfterStandaloneClose = useCallback(() => {
     if (!visible) return;
     if (!focusActiveWorkspace()) focusSessionsSidebar();
@@ -409,11 +416,13 @@ const DaemonPane = forwardRef(function DaemonPane({
     resetTerminals: resetDaemonTerminals,
     activateStandalone,
     closeStandalone,
+    groupStandalone,
+    minimizeStandalone,
     createTerminal: openNewBottomTerminal,
     focusActiveContent,
     openMarkdown,
-  }), [activateSession, activateStandalone, closeStandalone, focusActiveContent,
-    openMarkdown, openNewBottomTerminal, openSession, resetDaemonTerminals]);
+  }), [activateSession, activateStandalone, closeStandalone, focusActiveContent, groupStandalone,
+    minimizeStandalone, openMarkdown, openNewBottomTerminal, openSession, resetDaemonTerminals]);
 
   return (
     <TargetProvider value={target}>

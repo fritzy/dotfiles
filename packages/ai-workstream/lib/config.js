@@ -128,17 +128,6 @@ function envCommand(value) {
   return value;
 }
 
-function panelValue(value) {
-  const panels = typeof value === 'string' ? value.split(',').map((part) => part.trim()).filter(Boolean) : value;
-  if (!Array.isArray(panels) || panels.length === 0) {
-    throw new Error('panels must contain at least one of: shell, editor, agent');
-  }
-  const unique = [...new Set(panels)];
-  const invalid = unique.find((panel) => !PANEL_ROLES.includes(panel));
-  if (invalid) throw new Error(`unknown panel "${invalid}" (expected shell, editor, or agent)`);
-  return unique;
-}
-
 function modelValue(value, fallback) {
   const selected = value === undefined ? fallback : value;
   if (selected === null || selected === '') return null;
@@ -170,12 +159,6 @@ function branchValue(value, name) {
     throw new Error(`locations.${name}.branch must be a non-empty string`);
   }
   return branch.trim();
-}
-
-function booleanValue(value, fallback, name) {
-  const selected = value ?? fallback;
-  if (typeof selected !== 'boolean') throw new Error(`${name} must be true or false`);
-  return selected;
 }
 
 function daemonUrlValue(value, name) {
@@ -249,7 +232,6 @@ export function resolveConfig({
       path,
       branch: branchValue(location.branch, id),
       closeable: false,
-      weeklyNotes: booleanValue(location.weeklyNotes, false, `locations.${id}.weeklyNotes`),
     }];
   }));
 
@@ -266,11 +248,6 @@ export function resolveConfig({
     throw new Error(`unknown agent "${agent}" (expected claude or codex)`);
   }
 
-  const panels = panelValue(firstDefined(
-    env.AI_WORKSTREAM_PANELS,
-    env.WS_PANELS,
-    file.panels,
-  ));
   const commands = {
     shell: commandValue(firstDefined(envCommand(env.AI_WORKSTREAM_SHELL), envCommand(env.WS_SHELL), file.commands?.shell), undefined, 'shell'),
     editor: commandValue(firstDefined(envCommand(env.AI_WORKSTREAM_EDITOR), envCommand(env.WS_EDITOR), file.commands?.editor), undefined, 'editor'),
@@ -287,10 +264,6 @@ export function resolveConfig({
       scratch: modelValue(firstDefined(env.AI_WORKSTREAM_CODEX_SCRATCH_MODEL, env.WS_CODEX_SCRATCH_MODEL), file.models?.codex?.scratch),
     },
   };
-  const zellijSession = firstDefined(env.AI_WORKSTREAM_ZELLIJ_SESSION, env.WS_SESSION, file.zellijSession);
-  if (typeof zellijSession !== 'string' || zellijSession === '') {
-    throw new Error('zellijSession must be a non-empty string');
-  }
   const gitProtocol = firstDefined(env.AI_WORKSTREAM_GIT_PROTOCOL, env.WS_GIT_PROTOCOL, file.gitProtocol);
   if (!['ssh', 'https'].includes(gitProtocol)) {
     throw new Error('gitProtocol must be "ssh" or "https"');
@@ -320,11 +293,9 @@ export function resolveConfig({
     paths,
     locations,
     daemons,
-    panels,
     commands,
     agent,
     models,
-    zellijSession,
     gitProtocol,
     server,
   };
