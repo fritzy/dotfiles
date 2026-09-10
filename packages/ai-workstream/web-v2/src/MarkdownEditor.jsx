@@ -1,15 +1,17 @@
 import {
-  useCallback, useEffect, useMemo, useRef, useState,
+  useCallback, useEffect, useRef, useState,
 } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import {
   readMarkdownFile, readNotesFile, writeMarkdownFile, writeNotesFile,
 } from './api.js';
 import {
-  CalendarIcon, CollapseIcon, ExpandIcon, Spinner,
+  CalendarIcon, CollapseIcon, ExpandIcon, Spinner, XIcon,
 } from './icons.jsx';
 import {
-  appendUnderHeading, continueList, parseMarkdown, shiftIndent,
+  appendUnderHeading, continueList, shiftIndent,
 } from './markdown.js';
 import { useTarget } from './target-context.js';
 import { Button } from './ui.jsx';
@@ -18,77 +20,30 @@ const AUTOSAVE_MS = 1200;
 const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 24;
 
-function Spans({ spans }) {
-  return spans.map((span, index) => {
-    if (span.type === 'code') return <code key={index} className="rounded bg-primary/10 px-1 py-0.5 text-[0.9em]">{span.text}</code>;
-    if (span.type === 'strong') return <strong key={index} className="font-bold">{span.text}</strong>;
-    if (span.type === 'em') return <em key={index} className="italic">{span.text}</em>;
-    if (span.type === 'image') {
-      return (
-        <img
-          key={index}
-          src={span.href}
-          alt={span.text}
-          title={span.text || span.href}
-          loading="lazy"
-          className="my-2 block max-h-96 max-w-full rounded-md border border-primary/30"
-        />
-      );
-    }
-    if (span.type === 'link') {
-      return <a key={index} href={span.href} target="_blank" rel="noreferrer noopener" className="text-primary underline decoration-primary/40 underline-offset-2 hover:text-accent">{span.text}</a>;
-    }
-    return <span key={index}>{span.text}</span>;
-  });
-}
+const MARKDOWN_COMPONENTS = {
+  a: ({ node: _node, ...props }) => (
+    <a {...props} target="_blank" rel="noreferrer noopener" />
+  ),
+  img: ({ node: _node, ...props }) => <img {...props} loading="lazy" />,
+  table: ({ node: _node, ...props }) => (
+    <div className="markdown-table-wrap">
+      <table {...props} />
+    </div>
+  ),
+};
 
-function Items({ items, ordered }) {
-  const ListTag = ordered ? 'ol' : 'ul';
+export function MarkdownPreview({ children }) {
   return (
-    <ListTag className={`ml-5 space-y-1 ${ordered ? 'list-decimal' : 'list-disc'} marker:text-primary/60`}>
-      {items.map((item, index) => (
-        <li key={index} className={item.checked === null ? '' : 'list-none -ml-5'}>
-          {item.checked !== null && (
-            <input
-              type="checkbox"
-              checked={item.checked}
-              readOnly
-              tabIndex={-1}
-              className="mr-2 align-middle accent-accent"
-              aria-hidden="true"
-            />
-          )}
-          <span className={item.checked ? 'text-muted line-through decoration-muted/60' : ''}><Spans spans={item.spans} /></span>
-          {item.children.length > 0 && <Items items={item.children} ordered={item.children[0].ordered} />}
-        </li>
-      ))}
-    </ListTag>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+      {children}
+    </ReactMarkdown>
   );
-}
-
-const HEADING_CLASS = [
-  'text-2xl font-bold', 'text-xl font-bold', 'text-lg font-bold',
-  'text-base font-bold', 'text-sm font-bold', 'text-sm font-semibold uppercase tracking-wide',
-];
-
-function Blocks({ blocks }) {
-  return blocks.map((block, index) => {
-    if (block.type === 'heading') {
-      const Tag = `h${Math.min(block.level + 1, 6)}`;
-      return <Tag key={index} className={`mt-4 first:mt-0 text-primary ${HEADING_CLASS[block.level - 1]}`}><Spans spans={block.spans} /></Tag>;
-    }
-    if (block.type === 'list') return <Items key={index} items={block.items} ordered={block.ordered} />;
-    if (block.type === 'code') return <pre key={index} className="overflow-x-auto rounded-md border border-primary/30 bg-primary/5 p-3 text-xs"><code>{block.code}</code></pre>;
-    if (block.type === 'quote') return <blockquote key={index} className="space-y-2 border-l-4 border-primary/40 pl-3 text-muted"><Blocks blocks={block.blocks} /></blockquote>;
-    if (block.type === 'hr') return <hr key={index} className="border-primary/30" />;
-    return <p key={index}><Spans spans={block.spans} /></p>;
-  });
 }
 
 export default function MarkdownEditor({
   path, name, source = 'notes', focused, fontFamily, fontSize = 14, fullscreen = false,
   onDirtyChange, onFocusRequest, onFontSizeChange,
-  onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar, onNewTerminal,
+  onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar, onNewTerminal, onClose,
 }) {
   const target = useTarget();
   const [content, setContent] = useState('');
@@ -104,8 +59,6 @@ export default function MarkdownEditor({
   const previewRef = useRef(null);
   const stateRef = useRef({ content: '', version: null });
   const dirty = content !== saved;
-  const blocks = useMemo(() => (preview ? parseMarkdown(content) : []), [content, preview]);
-
   stateRef.current = { content, version };
 
   useEffect(() => { onDirtyChange?.(path, dirty); }, [dirty, onDirtyChange, path]);
@@ -168,7 +121,7 @@ export default function MarkdownEditor({
 
   // Neither element exists while the file is loading, so this has to run again
   // once the content lands — otherwise focus stays wherever it was (usually a
-  // workspace terminal or another bottom tab) and the note swallows none of the
+  // workstream terminal or another standalone session) and the note swallows none of the
   // navigation keys. Preview mode swaps the textarea for a read-only div, which
   // must be focused instead — a note left in Preview from an earlier visit must
   // still be reachable by keyboard navigation, not just visually "brought up".
@@ -196,11 +149,13 @@ export default function MarkdownEditor({
   }
 
   // The same control bindings LocalTerminal exposes, so panel navigation, the
-  // sidebar, and fullscreen work identically from a note.
+  // sidebar, and fullscreen work identically from a note. Ctrl-E is local to
+  // Markdown tabs and toggles between the source editor and rendered preview.
   function navigationKey(event) {
     if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
     const key = event.key.toLowerCase();
     const handlers = {
+      e: () => setPreview((value) => !value),
       f: onToggleFullscreen,
       p: onToggleSidebar,
       t: onNewTerminal,
@@ -209,7 +164,7 @@ export default function MarkdownEditor({
       l: () => onPanelNavigate?.(1),
     };
     if (key === 'j') {
-      // There is nothing below the drawer; swallow it so the browser stays put.
+      // Standalone sessions have no vertical neighbor; keep the browser in place.
       event.preventDefault();
       return true;
     }
@@ -295,6 +250,7 @@ export default function MarkdownEditor({
                 type="button"
                 className={`rounded px-2 py-0.5 text-xs font-semibold transition-colors ${preview === value ? 'bg-accent text-on-accent' : 'text-primary hover:bg-soft hover:text-on-soft'}`}
                 aria-pressed={preview === value}
+                title={`Switch to ${label} (Ctrl-E toggles)`}
                 onClick={() => setPreview(value)}
               >{label}</button>
             ))}
@@ -326,6 +282,15 @@ export default function MarkdownEditor({
             aria-pressed={fullscreen}
             onClick={() => onToggleFullscreen?.()}
           >{fullscreen ? <CollapseIcon className="size-3.5" /> : <ExpandIcon className="size-3.5" />}</button>
+          {onClose && (
+            <button
+              type="button"
+              className="flex size-6 items-center justify-center rounded-md border border-primary bg-page text-primary transition-colors hover:bg-soft hover:text-on-soft"
+              aria-label={`Close ${name}`}
+              title={`Close ${name}`}
+              onClick={onClose}
+            ><XIcon className="size-3.5" /></button>
+          )}
         </div>
       </div>
 
@@ -346,11 +311,11 @@ export default function MarkdownEditor({
           ref={previewRef}
           tabIndex={-1}
           aria-label={`${name} markdown preview`}
-          className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm text-ink outline-none"
-          style={{ fontFamily }}
+          className="markdown-preview min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm text-ink outline-none"
+          style={{ fontFamily, fontSize: `${fontSize}px` }}
           onKeyDown={navigationKey}
         >
-          <Blocks blocks={blocks} />
+          <MarkdownPreview>{content}</MarkdownPreview>
         </div>
       ) : (
         <textarea

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  completeMarkdownPath,
   NotesFileError,
   dayHeadingLine,
   ensureDayHeading,
@@ -150,6 +151,41 @@ test('general markdown files resolve anywhere and retain conflict protection', (
   assert.equal(saved.version, readMarkdownFile(path).version);
   assert.throws(() => readMarkdownFile(join(project, 'missing.md')), (error) => error.status === 404);
   assert.throws(() => writeMarkdownFile(join(project, 'missing.md'), '# New'), (error) => error.status === 404);
+});
+
+test('general markdown paths complete directories and markdown filenames', (t) => {
+  const { dir } = roots(t);
+  const project = join(dir, 'project');
+  mkdirSync(join(project, 'src'), { recursive: true });
+  mkdirSync(join(project, 'Documents'));
+  writeFileSync(join(project, 'README.md'), '# readme');
+  writeFileSync(join(project, 'RELEASE.md'), '# release');
+  writeFileSync(join(project, 'ignored.txt'), 'ignored');
+  writeFileSync(join(project, '.private.md'), '# private');
+  writeFileSync(join(project, 'src', 'guide.md'), '# guide');
+
+  const ambiguous = completeMarkdownPath('R', { cwd: project });
+  assert.equal(ambiguous.completion, 'RE');
+  assert.deepEqual(ambiguous.matches.map((match) => match.path), ['README.md', 'RELEASE.md']);
+  assert.equal(ambiguous.matches.every((match) => match.type === 'file'), true);
+
+  const file = completeMarkdownPath('REA', { cwd: project });
+  assert.equal(file.completion, 'README.md');
+  assert.deepEqual(file.matches, [{ path: 'README.md', name: 'README.md', type: 'file' }]);
+
+  const directory = completeMarkdownPath('s', { cwd: project });
+  assert.equal(directory.completion, 'src/');
+  assert.deepEqual(directory.matches, [{ path: 'src/', name: 'src', type: 'directory' }]);
+  assert.equal(completeMarkdownPath('./src/g', { cwd: project }).completion, './src/guide.md');
+  assert.equal(completeMarkdownPath('~/Doc', { home: project }).completion, '~/Documents/');
+  assert.equal(completeMarkdownPath('$HOME', { home: project }).completion, '$HOME/');
+  assert.deepEqual(completeMarkdownPath('missing/', { cwd: project }).matches, []);
+
+  const visible = completeMarkdownPath('', { cwd: project }).matches.map((match) => match.name);
+  assert.equal(visible.includes('ignored.txt'), false);
+  assert.equal(visible.includes('.private.md'), false);
+  assert.deepEqual(completeMarkdownPath('.', { cwd: project }).matches.map((match) => match.name), ['.private.md']);
+  assert.throws(() => completeMarkdownPath(null), (error) => error.status === 400);
 });
 
 test('markdown files are listed newest first, skipping dot and vendor directories', (t) => {

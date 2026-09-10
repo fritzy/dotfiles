@@ -1,5 +1,5 @@
 import {
-  useCallback, useEffect, useRef, useState,
+  forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState,
 } from 'react';
 
 import {
@@ -11,7 +11,6 @@ import {
 } from './constants.js';
 import BottomTabs from './BottomTabs.jsx';
 import { browserClientId } from './browser-client.js';
-import ActiveSessionsSidebar from './ActiveSessionsSidebar.jsx';
 import NewSessionModal from './NewSessionModal.jsx';
 import SessionDetailModal from './SessionDetailModal.jsx';
 import SessionWorkspace from './SessionWorkspace.jsx';
@@ -30,16 +29,12 @@ function Connection({ state }) {
   return <span className="inline-flex items-center gap-2 text-xs font-semibold text-primary"><span className={`size-2.5 rounded-full ${color}`} aria-hidden="true" />{label}</span>;
 }
 
-export default function DaemonPane({
+const DaemonPane = forwardRef(function DaemonPane({
   target, visible, terminalMode, fontFamily,
-  targets, currentTargetId, connections, onTargetChange,
-  theme, onThemeChange, onTerminalModeChange, terminalFont, onTerminalFontChange,
-  syncWindowFullscreen, onSyncWindowFullscreenChange,
-  sidebarOpen, sidebarWidth, sidebarWidthPixels, sidebarResizing,
-  onSidebarResizeStart, onSidebarResize, onSidebarResizeEnd, onShowSidebar,
+  sidebarOpen, onShowSidebar,
   focusedPanel, onPanelFocus, onFullscreenChange, fullscreenExitRevision, onRequestFullscreenExit,
-  onToggleSidebar, leftOffset, onConnectionChange,
-}) {
+  onToggleSidebar, leftOffset, onConnectionChange, onSidebarStateChange,
+}, controllerRef) {
   const targetId = target?.id || 'local';
   const sidebarSessionsPanel = `sidebar-${targetId}-sessions`;
   const workspacePanelId = (id, role) => `workspace-${targetId}-${id}-${role}`;
@@ -59,6 +54,7 @@ export default function DaemonPane({
   const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
   const [workspaceStateRevision, setWorkspaceStateRevision] = useState(0);
   const [bottomTerminalStateRevision, setBottomTerminalStateRevision] = useState(0);
+  const [standaloneSessions, setStandaloneSessions] = useState({ items: [], activeId: null });
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
@@ -68,6 +64,7 @@ export default function DaemonPane({
   const activeWorkspaceSession = workspaceSessions.find(
     (item) => String(item.id) === activeWorkspaceId,
   ) || null;
+  const activeStandaloneId = standaloneSessions.activeId;
 
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   useEffect(() => { onConnectionChange?.(targetId, connection); }, [connection, onConnectionChange, targetId]);
@@ -155,6 +152,11 @@ export default function DaemonPane({
     setActiveWorkspaceId(selected);
     onPanelFocus(workspacePanelId(item.id, DEFAULT_WORKSPACE_ROLES[0]));
   }, [onPanelFocus, onRequestFullscreenExit, targetId]);
+
+  const activateStandalone = useCallback((id) => {
+    onRequestFullscreenExit();
+    return bottomTabsRef.current?.activate(id) || false;
+  }, [onRequestFullscreenExit]);
 
   const closeWorkspace = useCallback((id) => {
     const selected = String(id);
@@ -338,6 +340,23 @@ export default function DaemonPane({
     return result;
   }, [target]);
 
+  const reportStandaloneSessions = useCallback((state) => {
+    setStandaloneSessions(state);
+  }, []);
+
+  useEffect(() => {
+    onSidebarStateChange?.(targetId, {
+      items: activeSessions,
+      loading: activeSessionsLoading,
+      error: activeSessionsError,
+      selectedId: activeStandaloneId ? null : activeWorkspaceId,
+      standaloneSessions: standaloneSessions.items,
+      activeStandaloneId,
+      keyboardEnabled: !sessionId && !newKind,
+    });
+  }, [activeSessions, activeSessionsError, activeSessionsLoading, activeStandaloneId,
+    activeWorkspaceId, newKind, onSidebarStateChange, sessionId, standaloneSessions.items, targetId]);
+
   const focusSessionsSidebar = useCallback(() => {
     onShowSidebar();
     onPanelFocus(sidebarSessionsPanel);
@@ -349,19 +368,28 @@ export default function DaemonPane({
     return true;
   }, [activeWorkspaceSession, onPanelFocus, targetId]);
 
-  const focusVisibleSidebar = useCallback(() => {
-    if (!sidebarOpen) return false;
-    onPanelFocus(sidebarSessionsPanel);
-    return true;
-  }, [onPanelFocus, sidebarOpen, sidebarSessionsPanel]);
-
-  const focusLastBottomTerminal = useCallback(() => (
-    bottomTabsRef.current?.focusLastUsed() || false
-  ), []);
+  const focusActiveContent = useCallback(() => {
+    if (activeStandaloneId) return bottomTabsRef.current?.activate(activeStandaloneId) || false;
+    return focusActiveWorkspace();
+  }, [activeStandaloneId, focusActiveWorkspace]);
 
   const openNewBottomTerminal = useCallback(() => (
     bottomTabsRef.current?.createTerminal() || false
   ), []);
+
+  const openMarkdown = useCallback(() => {
+    bottomTabsRef.current?.openMarkdown();
+    return true;
+  }, []);
+
+  const closeStandalone = useCallback((id) => (
+    bottomTabsRef.current?.close(id) || false
+  ), []);
+
+  const focusAfterStandaloneClose = useCallback(() => {
+    if (!visible) return;
+    if (!focusActiveWorkspace()) focusSessionsSidebar();
+  }, [focusActiveWorkspace, focusSessionsSidebar, visible]);
 
   useEffect(() => {
     if (focusedPanel?.startsWith('workspace-')) bottomTabsRef.current?.hide();
@@ -374,81 +402,54 @@ export default function DaemonPane({
     openSession(item.id);
   }
 
+  useImperativeHandle(controllerRef, () => ({
+    activateSession,
+    openSession,
+    openNewSession: setNewKind,
+    resetTerminals: resetDaemonTerminals,
+    activateStandalone,
+    closeStandalone,
+    createTerminal: openNewBottomTerminal,
+    focusActiveContent,
+    openMarkdown,
+  }), [activateSession, activateStandalone, closeStandalone, focusActiveContent,
+    openMarkdown, openNewBottomTerminal, openSession, resetDaemonTerminals]);
+
   return (
     <TargetProvider value={target}>
       <div
         className={`${visible ? 'block' : 'hidden'} absolute inset-0 min-h-screen w-full`}
         aria-hidden={!visible}
         inert={!visible}
+        data-daemon-pane={targetId}
       >
-        <div
-          className={`grid min-h-screen min-w-0 items-stretch ${sidebarResizing ? '' : 'transition-[grid-template-columns] duration-300 ease-in-out'}`}
-          style={{ gridTemplateColumns: `${sidebarWidth} minmax(0, 1fr)` }}
-        >
-          <ActiveSessionsSidebar
-            items={activeSessions}
-            loading={activeSessionsLoading}
-            error={activeSessionsError}
-            open={sidebarOpen}
-            selectedId={activeWorkspaceId}
-            onActivate={activateSession}
-            onOpenDetails={openSession}
-            onToggle={onToggleSidebar}
-            onNewRepo={() => setNewKind('repo')}
-            onNewScratchpad={() => setNewKind('scratchpad')}
-            targets={targets}
-            currentTargetId={currentTargetId}
-            connections={connections}
-            onTargetChange={onTargetChange}
-            theme={theme}
-            onThemeChange={onThemeChange}
-            terminalMode={terminalMode}
-            onTerminalModeChange={onTerminalModeChange}
-            terminalFont={terminalFont}
-            onTerminalFontChange={onTerminalFontChange}
-            onResetTerminals={resetDaemonTerminals}
-            syncWindowFullscreen={syncWindowFullscreen}
-            onSyncWindowFullscreenChange={onSyncWindowFullscreenChange}
-            onWorkspaceFocus={focusActiveWorkspace}
-            focusedPanel={focusedPanel}
-            onPanelFocus={onPanelFocus}
-            keyboardEnabled={visible && !sessionId && !newKind}
-            sidebarWidth={sidebarWidth}
-            sidebarWidthPixels={sidebarWidthPixels}
-            sidebarResizing={sidebarResizing}
-            onSidebarResizeStart={onSidebarResizeStart}
-            onSidebarResize={onSidebarResize}
-            onSidebarResizeEnd={onSidebarResizeEnd}
-          />
-          <div className="relative min-h-screen min-w-0 overflow-hidden">
-            {workspaceSessions.map((workspaceSession) => (
-              <SessionWorkspace
-                key={workspaceSession.id}
-                session={workspaceSession}
-                target={target}
-                visible={String(workspaceSession.id) === activeWorkspaceId}
-                focusedPanel={focusedPanel}
-                onPanelFocus={onPanelFocus}
-                onDetails={openSession}
-                onArchive={archiveWorkspace}
-                onClose={() => closeWorkspace(workspaceSession.id)}
-                onAgentChange={changeWorkspaceAgent}
-                onReset={resetWorkspaceTerminals}
-                panelMode={workspaceSession.panelMode}
-                onPanelModeChange={(panelMode) => changeWorkspacePanelMode(workspaceSession, panelMode)}
-                onOpenNotes={openWorkspaceNotes}
-                terminalMode={terminalMode}
-                fontFamily={fontFamily}
-                onSidebarFocus={focusSessionsSidebar}
-                onBottomTerminalFocus={focusLastBottomTerminal}
-                onFullscreenChange={onFullscreenChange}
-                fullscreenExitRevision={fullscreenExitRevision}
-                onToggleSidebar={onToggleSidebar}
-                onNewTerminal={openNewBottomTerminal}
-              />
-            ))}
-            {!activeWorkspaceSession && <div className="min-h-screen min-w-0" aria-hidden="true" />}
-          </div>
+        <div className="relative min-h-screen min-w-0 overflow-hidden">
+          {workspaceSessions.map((workspaceSession) => (
+            <SessionWorkspace
+              key={workspaceSession.id}
+              session={workspaceSession}
+              target={target}
+              visible={!activeStandaloneId && String(workspaceSession.id) === activeWorkspaceId}
+              focusedPanel={focusedPanel}
+              onPanelFocus={onPanelFocus}
+              onDetails={openSession}
+              onArchive={archiveWorkspace}
+              onClose={() => closeWorkspace(workspaceSession.id)}
+              onAgentChange={changeWorkspaceAgent}
+              onReset={resetWorkspaceTerminals}
+              panelMode={workspaceSession.panelMode}
+              onPanelModeChange={(panelMode) => changeWorkspacePanelMode(workspaceSession, panelMode)}
+              onOpenNotes={openWorkspaceNotes}
+              terminalMode={terminalMode}
+              fontFamily={fontFamily}
+              onSidebarFocus={focusSessionsSidebar}
+              onFullscreenChange={onFullscreenChange}
+              fullscreenExitRevision={fullscreenExitRevision}
+              onToggleSidebar={onToggleSidebar}
+              onNewTerminal={openNewBottomTerminal}
+            />
+          ))}
+          {!activeWorkspaceSession && !activeStandaloneId && <div className="min-h-screen min-w-0" aria-hidden="true" />}
         </div>
 
         <div className="fixed right-2 bottom-2 z-[60] rounded-full border border-primary/40 bg-page/95 px-2.5 py-1.5 shadow-lg backdrop-blur-sm">
@@ -480,17 +481,19 @@ export default function DaemonPane({
           focusedPanel={focusedPanel}
           onPanelFocus={onPanelFocus}
           leftOffset={leftOffset}
-          layoutResizing={sidebarResizing}
           terminalMode={terminalMode}
           fontFamily={fontFamily}
           onFullscreenChange={onFullscreenChange}
           fullscreenExitRevision={fullscreenExitRevision}
           stateRevision={bottomTerminalStateRevision}
-          onSidebarFocus={focusVisibleSidebar}
-          onWorkspaceFocus={focusActiveWorkspace}
+          onSidebarFocus={focusSessionsSidebar}
           onToggleSidebar={onToggleSidebar}
+          onSessionsChange={reportStandaloneSessions}
+          onCloseActive={focusAfterStandaloneClose}
         />
       </div>
     </TargetProvider>
   );
-}
+});
+
+export default DaemonPane;

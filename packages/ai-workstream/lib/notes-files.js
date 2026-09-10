@@ -18,6 +18,7 @@ const MAX_LISTED_FILES = 400;
 const MAX_LIST_DEPTH = 5;
 const MAX_MARKDOWN_BYTES = 1024 * 1024;
 const MAX_OPEN_TABS = 24;
+const MAX_PATH_COMPLETIONS = 80;
 // `workstream` holds the per-session notes `ws note` writes; those are not what the
 // editor is for, so they stay out of the picker.
 const SKIPPED_DIRECTORIES = new Set(['.git', 'node_modules', '__pycache__', '.obsidian', 'workstream']);
@@ -48,6 +49,17 @@ function existingRealPath(path) {
 
 const contains = (root, path) => path === root || path.startsWith(root + sep);
 
+function expandHomePath(requested, home) {
+  let expanded = requested;
+  for (const prefix of ['${HOME}', '$HOME']) {
+    if (expanded === prefix) expanded = home;
+    else if (expanded.startsWith(`${prefix}/`)) expanded = join(home, expanded.slice(prefix.length + 1));
+  }
+  if (expanded === '~') expanded = home;
+  else if (expanded.startsWith('~/')) expanded = join(home, expanded.slice(2));
+  return expanded;
+}
+
 // Resolve a client-supplied path (relative to the notes root, or absolute inside
 // it) to an absolute markdown path, or null when it escapes the root.
 export function resolveNotesFile(root, requested) {
@@ -70,15 +82,79 @@ export function resolveMarkdownFile(requested, {
   cwd = process.cwd(), home = homedir(),
 } = {}) {
   if (typeof requested !== 'string' || requested.trim() === '' || requested.includes('\0')) return null;
-  let expanded = requested.trim();
-  for (const prefix of ['${HOME}', '$HOME']) {
-    if (expanded === prefix) expanded = home;
-    else if (expanded.startsWith(`${prefix}/`)) expanded = join(home, expanded.slice(prefix.length + 1));
-  }
-  if (expanded === '~') expanded = home;
-  else if (expanded.startsWith('~/')) expanded = join(home, expanded.slice(2));
+  const expanded = expandHomePath(requested.trim(), home);
   const target = isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
   return target.toLowerCase().endsWith('.md') ? target : null;
+}
+
+function sharedPrefix(values) {
+  if (values.length === 0) return '';
+  let prefix = values[0];
+  for (const value of values.slice(1)) {
+    let index = 0;
+    while (index < prefix.length && prefix[index] === value[index]) index += 1;
+    prefix = prefix.slice(0, index);
+    if (!prefix) break;
+  }
+  return prefix;
+}
+
+// Complete one path segment at a time, like shell completion. Directories are
+// always offered so the user can keep traversing; terminal matches are confined
+// to Markdown files because those are the only files this editor can open.
+// Returned paths preserve the spelling the user chose (`~/`, `$HOME/`, relative,
+// or absolute), while filesystem lookup happens against the expanded path on the
+// daemon machine.
+export function completeMarkdownPath(requested, {
+  cwd = process.cwd(), home = homedir(), limit = MAX_PATH_COMPLETIONS,
+} = {}) {
+  if (typeof requested !== 'string' || requested.includes('\0')) {
+    throw new NotesFileError(400, 'completion path must be a string');
+  }
+  const query = requested.trim();
+  if (['~', '$HOME', '${HOME}'].includes(query)) {
+    const path = `${query}/`;
+    return { query, completion: path, matches: [{ path, name: path, type: 'directory' }] };
+  }
+
+  const slash = query.lastIndexOf('/');
+  const displayDirectory = slash === -1 ? '' : query.slice(0, slash + 1);
+  const namePrefix = slash === -1 ? query : query.slice(slash + 1);
+  const expandedDirectory = expandHomePath(displayDirectory || '.', home);
+  const directory = isAbsolute(expandedDirectory)
+    ? resolve(expandedDirectory)
+    : resolve(cwd, expandedDirectory);
+
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return { query, completion: query, matches: [] };
+  }
+
+  const matches = [];
+  for (const entry of entries) {
+    if (!entry.name.startsWith(namePrefix)) continue;
+    if (entry.name.startsWith('.') && !namePrefix.startsWith('.')) continue;
+    const path = join(directory, entry.name);
+    let type = entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : null;
+    if (!type && entry.isSymbolicLink()) {
+      try {
+        const stats = statSync(path);
+        type = stats.isDirectory() ? 'directory' : stats.isFile() ? 'file' : null;
+      } catch { /* Ignore broken or inaccessible links. */ }
+    }
+    if (!type || (type === 'file' && !entry.name.toLowerCase().endsWith('.md'))) continue;
+    matches.push({
+      path: `${displayDirectory}${entry.name}${type === 'directory' ? '/' : ''}`,
+      name: entry.name,
+      type,
+    });
+  }
+  matches.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'directory' ? -1 : 1));
+  const completion = sharedPrefix(matches.map((match) => match.path)) || query;
+  const boundedLimit = Math.max(1, Math.min(Number(limit) || MAX_PATH_COMPLETIONS, MAX_PATH_COMPLETIONS));
+  return { query, completion, matches: matches.slice(0, boundedLimit) };
 }
 
 export const notesRelativePath = (root, path) => relative(resolve(root), path) || basename(path);

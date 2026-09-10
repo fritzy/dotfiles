@@ -3,11 +3,10 @@ import { forwardRef, useState } from 'react';
 import BottomTabs from '../../web-v2/src/BottomTabs.jsx';
 
 // Mirrors how App.jsx owns focusedPanel/onPanelFocus for BottomTabs, so tests
-// exercise the same feedback loop the real app relies on (e.g. the effect that
-// hides the drawer once focusedPanel points somewhere else).
+// exercise the same focus feedback loop the real app relies on.
 const BottomTabsHarness = forwardRef(function BottomTabsHarness({
-  onSidebarFocus = () => false, onWorkspaceFocus = () => false, onToggleSidebar = () => {},
-  onFocusedPanelChange,
+  onSidebarFocus = () => false, onToggleSidebar = () => {},
+  onFocusedPanelChange, onSessionsChange,
 }, ref) {
   const [focusedPanel, setFocusedPanel] = useState(null);
   return (
@@ -18,8 +17,12 @@ const BottomTabsHarness = forwardRef(function BottomTabsHarness({
         setFocusedPanel(panel);
         onFocusedPanelChange?.(panel);
       }}
-      onSidebarFocus={onSidebarFocus}
-      onWorkspaceFocus={onWorkspaceFocus}
+      onSidebarFocus={() => {
+        setFocusedPanel('sidebar-local-sessions');
+        onFocusedPanelChange?.('sidebar-local-sessions');
+        return onSidebarFocus();
+      }}
+      onSessionsChange={onSessionsChange}
       onToggleSidebar={onToggleSidebar}
     />
   );

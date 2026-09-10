@@ -89,10 +89,9 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.match(index, /rel="icon" type="image\/svg\+xml"/);
   assert.match(index, /data:image\/svg\+xml/);
 
-  // Local and Workstation are always-mounted DaemonPane instances, toggled by
-  // visibility rather than unmounted, so neither one's sockets ever drop when
-  // you switch the inline connection tabs to the other.
-  const connectionTabs = read('web-v2/src/DaemonTabs.jsx');
+  // Local and Workstation share one collapsible sidebar while their DaemonPane
+  // and BottomTabs instances remain mounted, so switching machines drops no
+  // sockets and does not mix their terminal actions or persisted tab state.
   const targetContext = read('web-v2/src/target-context.js');
   // LOCAL_TARGET is hoisted so its identity is stable across renders — otherwise
   // every target-keyed effect (LocalTerminal's socket, DaemonPane's events socket)
@@ -106,13 +105,13 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.match(app, /targets\.map\(\(target\) => \(/);
   assert.match(app, /visible=\{target\.id === currentTargetId\}/);
   assert.match(app, /setFocusedPanel\(`sidebar-\$\{id\}-sessions`\)/);
-  assert.match(sidebar, /import DaemonTabs from '\.\/DaemonTabs\.jsx'/);
-  assert.match(sidebar, /<DaemonTabs[\s\S]*<h2[^>]*>Active &amp; Paused<\/h2>/);
-  assert.match(connectionTabs, /aria-label="Connections"/);
-  assert.match(connectionTabs, /role="tablist"/);
-  assert.match(connectionTabs, /targets\.map\(\(target\) => \{/);
-  assert.match(connectionTabs, /onClick=\{\(\) => onChange\(target\.id\)\}/);
-  assert.doesNotMatch(connectionTabs, /h-screen|w-16/);
+  assert.match(app, /<ActiveSessionsSidebar/);
+  assert.match(app, /sections=\{targetSections\}/);
+  assert.match(sidebar, /targetSections\.map\(\(section\) =>/);
+  assert.match(sidebar, /data-sidebar-target=\{sectionId\}/);
+  assert.match(sidebar, /aria-expanded=\{!collapsed\}/);
+  assert.match(sidebar, /onClick=\{\(\) => chooseTargetSection\(sectionId\)\}/);
+  assert.doesNotMatch(sidebar, /DaemonTabs/);
   assert.match(targetContext, /export function useTarget\(\)/);
   assert.match(daemonPane, /<TargetProvider value=\{target\}>/);
 });
@@ -169,7 +168,8 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.doesNotMatch(daemonPane, /listWorkstreams/);
   assert.doesNotMatch(app, /Items per page/);
   assert.doesNotMatch(app, /Pagination/);
-  assert.match(daemonPane, /<ActiveSessionsSidebar/);
+  assert.match(app, /<ActiveSessionsSidebar/);
+  assert.doesNotMatch(daemonPane, /<ActiveSessionsSidebar/);
   assert.match(daemonPane, /<SessionWorkspace/);
   assert.doesNotMatch(app, /roles=\{panelsForMode\(panelMode\)\}/);
   assert.doesNotMatch(app, /PANEL_MODE_STORAGE_KEY/);
@@ -180,12 +180,13 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(daemonPane, /writeBrowserState\(WORKSPACE_STATE_SCOPE/);
   assert.match(daemonPane, /panelMode: item\.panelMode === 'three' \? 'three' : 'two'/);
   assert.match(daemonPane, /key=\{workspaceSession\.id\}/);
-  assert.match(daemonPane, /visible=\{String\(workspaceSession\.id\) === activeWorkspaceId\}/);
+  assert.match(daemonPane, /visible=\{!activeStandaloneId && String\(workspaceSession\.id\) === activeWorkspaceId\}/);
   assert.match(daemonPane, /onArchive=\{archiveWorkspace\}/);
   assert.match(daemonPane, /mutate\(item, 'terminal-reset'\)/);
   assert.match(daemonPane, /resetAllTerminalSessions\(target\)/);
   assert.match(daemonPane, /onReset=\{resetWorkspaceTerminals\}/);
-  assert.match(daemonPane, /onResetTerminals=\{resetDaemonTerminals\}/);
+  assert.match(daemonPane, /resetTerminals: resetDaemonTerminals/);
+  assert.match(app, /onResetTerminals=\{resetCurrentTargetTerminals\}/);
   assert.match(daemonPane, /onClose=\{\(\) => closeWorkspace\(workspaceSession\.id\)\}/);
   assert.match(daemonPane, /command === 'resume' && result\.workstream/);
   assert.match(daemonPane, /command === 'pause' \|\| command === 'archive' \|\| command === 'close'/);
@@ -213,9 +214,10 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(app, /current === 'temporarily-hidden' \? 'shown' : current/);
   assert.match(app, /current === 'shown' \? 'manually-hidden' : 'shown'/);
   assert.doesNotMatch(app, /setSidebarOpen/);
-  // Each DaemonPane lays out its own sidebar+content grid at the shared width;
-  // App.jsx adds no second column beside it.
-  assert.match(daemonPane, /gridTemplateColumns: `\$\{sidebarWidth\}/);
+  // App owns the one shared sidebar+content grid; each daemon pane owns that
+  // machine's workstreams and standalone sessions.
+  assert.match(app, /gridTemplateColumns: `\$\{sidebarWidth\}/);
+  assert.doesNotMatch(daemonPane, /gridTemplateColumns/);
   assert.match(app, /const leftOffset = sidebarWidth/);
   assert.match(app, /SIDEBAR_WIDTH_STORAGE_KEY/);
   assert.match(app, /localStorage\.setItem\(SIDEBAR_WIDTH_STORAGE_KEY/);
@@ -229,10 +231,16 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(app, /useState\('sidebar-local-sessions'\)/);
   assert.doesNotMatch(app, /data-panel="main"/);
   assert.doesNotMatch(app, /setFocusedPanel\('main'\)/);
-  // BottomTabs is fixed-positioned against the viewport, so its left offset is
-  // exactly the existing sidebar width.
-  assert.match(daemonPane, /<BottomTabs[\s\S]*leftOffset=\{leftOffset\}[\s\S]*layoutResizing=\{sidebarResizing\}/);
+  // The machine-owned session host reports its selectors to the one shared sidebar.
+  assert.match(daemonPane, /<BottomTabs[\s\S]*leftOffset=\{leftOffset\}/);
   assert.match(daemonPane, /ref=\{bottomTabsRef\}/);
+  assert.match(bottomTabs, /data-standalone-sessions=\{targetId\}/);
+  assert.match(bottomTabs, /onSessionsChange\?\.\(\{/);
+  assert.match(daemonPane, /onSessionsChange=\{reportStandaloneSessions\}/);
+  assert.match(app, /standaloneSessions: sidebarStates\[target\.id\]\?\.standaloneSessions \|\| \[\]/);
+  assert.match(app, /onActivateStandalone=\{activateStandalone\}/);
+  assert.match(app, /onCreateTerminal=\{createTerminal\}/);
+  assert.match(app, /onOpenMarkdown=\{openMarkdown\}/);
   assert.match(daemonPane, /REFRESH_DEBOUNCE_MS/);
   assert.doesNotMatch(daemonPane, /listRequestRef/);
   assert.match(daemonPane, /activeSessionsRequestRef\.current !== requestId/);
@@ -280,15 +288,15 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(activeSidebar, /\(currentIndex \+ direction \+ SIDEBAR_VIEWS\.length\) % SIDEBAR_VIEWS\.length/);
   assert.match(activeSidebar, /onPanelFocus\(panelName\(nextView\)\)/);
   assert.match(activeSidebar, /key === 'l' && !event\.repeat/);
-  assert.match(activeSidebar, /onWorkspaceFocus\(\)/);
+  assert.match(activeSidebar, /onContentFocus\(\)/);
   assert.match(activeSidebar, /panelRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(activeSidebar, /\['j', 'k', 'h', 'l', 'Enter'\]/);
   assert.match(activeSidebar, /kind: 'group'/);
   assert.match(activeSidebar, /kind: 'session'/);
   assert.match(activeSidebar, /event\.key === 'h'/);
-  assert.match(activeSidebar, /setGroupCollapsed\(current\.groupLabel, true\)/);
+  assert.match(activeSidebar, /setGroupCollapsed\(current\.targetId, current\.groupKind, current\.groupLabel, true\)/);
   assert.match(activeSidebar, /event\.key === 'l'/);
-  assert.match(activeSidebar, /setGroupCollapsed\(current\.groupLabel, false\)/);
+  assert.match(activeSidebar, /setGroupCollapsed\(current\.targetId, current\.groupKind, current\.groupLabel, false\)/);
   assert.match(activeSidebar, /data-sidebar-group=\{group\.label\}/);
   assert.match(activeSidebar, /text-left text-sm font-bold transition-colors/);
   assert.match(activeSidebar, /text-left font-mono text-sm transition-colors/);
@@ -310,8 +318,8 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(activeSidebar, /data-panel=\{currentPanel\}/);
   assert.match(activeSidebar, /onPointerEnter=\{\(\) => onPanelFocus\(currentPanel\)\}/);
   assert.doesNotMatch(activeSidebar, /grid-cols-2 gap-1 px-1\.5 pt-1/);
-  // Sidebar panel/DOM ids are prefixed per target, since Local and Workstation
-  // are both mounted at once and must not collide.
+  // The shared sidebar tracks the selected target in its panel id so focus can
+  // move into the corresponding machine's selected content.
   assert.match(activeSidebar, /const panelName = \(forView\) => `sidebar-\$\{targetId\}-\$\{forView\}`/);
   assert.match(activeSidebar, /\$\{panelName\('settings'\)\}-view/);
   assert.doesNotMatch(activeSidebar, /PanelModeToggle/);
@@ -339,93 +347,70 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(detail, /Reset terminals/);
   assert.match(daemonPane, /<NewSessionModal/);
   assert.match(daemonPane, /<BottomTabs/);
-  assert.match(bottomTabs, /aria-label="Terminals and Markdown files"/);
   assert.match(bottomTabs, /forwardRef\(function BottomTabs/);
   assert.match(bottomTabs, /useImperativeHandle\(ref/);
   assert.match(bottomTabs, /focusLastUsed/);
-  assert.match(bottomTabs, /const hideDrawer = useCallback/);
-  assert.match(bottomTabs, /const collapseDrawer = useCallback/);
-  assert.match(bottomTabs, /if \(!hideDrawer\(\)\) return false/);
-  assert.match(bottomTabs, /hide: hideDrawer/);
+  assert.match(bottomTabs, /hide: deactivate/);
+  assert.match(bottomTabs, /activate,/);
+  assert.match(bottomTabs, /close: closeTab/);
+  assert.match(bottomTabs, /openMarkdown: \(\) => setPickerOpen\(true\)/);
   assert.match(bottomTabs, /const lastUsedRef = useRef\(null\)/);
-  assert.match(bottomTabs, /function navigateTab\(id, direction\)/);
-  assert.match(bottomTabs, /onPanelNavigate=\{\(direction\) => navigateTab\(tab\.id, direction\)\}/);
-  assert.match(bottomTabs, /onNavigateUp=\{focusWorkspace\}/);
+  assert.match(bottomTabs, /function navigatePanel\(direction\)/);
+  assert.match(bottomTabs, /onPanelNavigate=\{navigatePanel\}/);
   assert.match(bottomTabs, /onToggleSidebar=\{onToggleSidebar\}/);
   assert.match(bottomTabs, /onExit=\{\(\) => closeTab\(tab\.id\)\}/);
-  assert.match(bottomTabs, /function AddButton/);
-  assert.match(bottomTabs, /label="New terminal"/);
-  assert.match(bottomTabs, /relative z-10 flex h-10[\s\S]*<AddButton label="New terminal" Icon=\{ShellIcon\} onClick=\{createTerminal\} \/>/);
-  assert.match(bottomTabs, /<AddButton label="Open Markdown" Icon=\{EditorIcon\}/);
-  // One strip, inside the sliding container: every tab rides up and down with the
-  // panel instead of the unselected ones staying pinned to the viewport.
-  assert.match(bottomTabs, /const TAB_WIDTH = 'w-40'/);
-  assert.equal(bottomTabs.match(/\$\{TAB_WIDTH\}/g).length, 1);
-  assert.equal(bottomTabs.match(/<TabButton/g).length, 1);
-  assert.doesNotMatch(bottomTabs, /z-50/);
-  assert.match(bottomTabs, /selected=\{active === tab\.id\}/);
-  assert.match(bottomTabs, /<Icon className="size-4" \/>/);
+  assert.doesNotMatch(bottomTabs, /function TabButton/);
+  assert.doesNotMatch(bottomTabs, /role="tablist"/);
+  assert.doesNotMatch(bottomTabs, /translate-y/);
+  assert.match(activeSidebar, /function StandaloneSessionRow/);
+  assert.match(activeSidebar, /data-sidebar-standalone=\{item\.id\}/);
+  assert.match(activeSidebar, /label: 'Terminals', kind: 'standalone'/);
+  assert.match(activeSidebar, /label: 'Markdown', kind: 'standalone'/);
+  assert.match(activeSidebar, /aria-label=\{`New \$\{section\.target\.name\} terminal`\}/);
+  assert.match(activeSidebar, /aria-label=\{`Open \$\{section\.target\.name\} Markdown`\}/);
+  assert.match(activeSidebar, /onActivateStandalone\(sectionId, item\.id\)/);
+  assert.match(activeSidebar, /onCloseStandalone\(sectionId, item\.id\)/);
   assert.match(bottomTabs, /const \[tabs, setTabs\] = useState\(\[\]\)/);
   assert.match(bottomTabs, /const nextTerminalNumber = useRef\(1\)/);
   assert.match(bottomTabs, /id: newTerminalId\(\)/);
   assert.match(bottomTabs, /setTabs\(\(current\) => \[\.\.\.current, terminal\]\)/);
-  assert.match(bottomTabs, /return chooseTab\(terminal\.id\)/);
   assert.match(bottomTabs, /const createTerminal = useCallback/);
-  assert.match(bottomTabs, /return id \? focusTab\(id\) : createTerminal\(\)/);
-  // Bottom-drawer panel/tab ids are also prefixed per target for the same reason.
-  assert.match(bottomTabs, /const panelId = \(id\) => `bottom-\$\{targetId\}-\$\{id\}`/);
-  assert.match(bottomTabs, /aria-controls=\{`\$\{domId\}-panel`\}/);
-  // The tab strip is inside the sliding container, so it moves with the panel.
-  assert.match(bottomTabs, /fixed right-0 bottom-0 z-40 flex flex-col[\s\S]*relative z-10 flex h-10 shrink-0 items-end/);
-  assert.match(bottomTabs, /focusedPanel\?\.startsWith\('workspace-'\)/);
-  assert.match(bottomTabs, /opacity-20 hover:opacity-100 focus-within:opacity-100/);
-  assert.match(bottomTabs, /fixed top-0 right-0 bottom-0 z-30 cursor-default bg-transparent/);
+  assert.match(bottomTabs, /return id \? activate\(id\) : createTerminal\(\)/);
+  assert.match(bottomTabs, /const panelId = \(id\) => `standalone-\$\{targetId\}-\$\{id\}`/);
+  assert.match(bottomTabs, /absolute inset-0 z-20 min-h-0 flex-col/);
   assert.match(bottomTabs, /active === tab\.id/);
-  assert.match(bottomTabs, /transition-\[translate,left\]/);
-  assert.match(bottomTabs, /queuedTab\.current = id/);
-  assert.match(bottomTabs, /reducedMotion \? 0 : TAB_SWITCH_MS/);
-  assert.match(bottomTabs, /const pendingRemoval = useRef\(null\)/);
-  assert.match(bottomTabs, /withoutTab\(current, removed\)/);
-  assert.match(bottomTabs, /function closeTab\(id\)/);
-  assert.match(bottomTabs, /onClose=\{closeTab\}/);
-  assert.match(bottomTabs, /aria-label=\{`Close \$\{tab\.label\}`\}/);
+  assert.match(bottomTabs, /const closeTab = useCallback/);
+  assert.match(bottomTabs, /aria-label=\{`Close \$\{activeTab\.label\}`\}/);
   assert.match(bottomTabs, /<XIcon className="size-3\.5" \/>/);
-  assert.match(bottomTabs, /current\.filter\(\(tab\) => tab\.id !== id\)/);
-  assert.doesNotMatch(bottomTabs, /<header/);
-  assert.doesNotMatch(bottomTabs, /<h2/);
+  assert.match(bottomTabs, /tabs\.filter\(\(item\) => item\.id !== id\)/);
+  assert.match(bottomTabs, /<header/);
+  assert.match(bottomTabs, /<h2/);
   assert.doesNotMatch(bottomTabs, /IconButton/);
   assert.match(bottomTabs, /bg-page\/90 shadow-md backdrop-blur-sm/);
   assert.match(bottomTabs, /opacity-20 transition-opacity hover:opacity-100 focus-within:opacity-100/);
-  assert.match(bottomTabs, /rounded-t-2xl border-2 bg-page pb-1/);
   assert.doesNotMatch(bottomTabs, /Lorem ipsum/);
   assert.doesNotMatch(bottomTabs, /test 1/);
   assert.match(bottomTabs, /<LocalTerminal/);
   assert.match(bottomTabs, /tabs\.map\(\(tab\) =>/);
   assert.match(bottomTabs, /visible=\{tabVisible\}/);
   assert.equal((bottomTabs.match(/focused=\{tabVisible && focusedPanel === panelId\(tab\.id\)\}/g) || []).length, 2);
-  assert.match(bottomTabs, /onPanelFocus\(null\)/);
   assert.match(bottomTabs, /data-panel=\{activePanel \|\| undefined\}/);
   assert.match(bottomTabs, /leftOffset = '0rem'/);
-  assert.match(bottomTabs, /transition-\[translate,left\]/);
-  assert.match(bottomTabs, /style=\{\{ left: leftOffset \}\}/);
   assert.match(bottomTabs, /onPointerEnter=\{\(\) => \{ if \(activePanel\) onPanelFocus\(activePanel\); \}\}/);
   assert.match(bottomTabs, /fontSize=\{tab\.fontSize\}/);
   assert.match(bottomTabs, /fullscreen: false/);
   assert.match(bottomTabs, /function toggleFullscreen\(id\)/);
-  // The fullscreen-tracking key is also prefixed per target, alongside panel ids.
-  assert.match(bottomTabs, /const fullscreenSource = `bottom-terminals-\$\{targetId\}`/);
+  assert.match(bottomTabs, /const fullscreenSource = `standalone-\$\{targetId\}`/);
   assert.match(bottomTabs, /onFullscreenChange\?\.\(fullscreenSource, !tab\.fullscreen\)/);
   assert.match(bottomTabs, /const leaveFullscreen = useCallback/);
   assert.match(bottomTabs, /fullscreenExitRevision/);
   assert.match(bottomTabs, /fullscreen: !item\.fullscreen/);
-  assert.match(bottomTabs, /activeFullscreen \? 'h-screen' : 'h-\[calc\(75vh\+2\.5rem\)\]'/);
   assert.match(bottomTabs, /data-terminal-fullscreen=\{activeFullscreen\}/);
   assert.match(bottomTabs, /onToggleFullscreen=\{\(\) => toggleFullscreen\(tab\.id\)\}/);
-  assert.match(bottomTabs, /const fullscreenVisible = drawerOpen && activeFullscreen/);
+  assert.match(bottomTabs, /const fullscreenVisible = visible && Boolean\(activeTab\) && activeFullscreen/);
   assert.match(bottomTabs, /onFullscreenChange\?\.\(fullscreenSource, fullscreenVisible\)/);
   assert.match(bottomTabs, /onFullscreenChange\?\.\(fullscreenSource, false\)/);
-  // BottomTabs is fully mounted for every target at once, so it must hide (and go
-  // inert) on its own when its target is not the one currently shown.
+  // Every target keeps its standalone session host mounted but inert while hidden.
   assert.match(bottomTabs, /visible = true, focusedPanel/);
   assert.match(bottomTabs, /className=\{visible \? 'contents' : 'hidden'\}[\s\S]*inert=\{!visible\}/);
   assert.match(bottomTabs, /themeMode=\{terminalMode\}/);
@@ -531,31 +516,31 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(sessionWorkspace, /visible=\{visible && !suppressed\}/);
   assert.match(sessionWorkspace, /focused=\{visible && !suppressed && focused\}/);
   assert.match(sessionWorkspace, /onPanelNavigate=\{\(direction\) => navigatePanel\(index, direction\)\}/);
-  assert.match(sessionWorkspace, /onNavigateDown=\{focusBottomTerminal\}/);
+  assert.doesNotMatch(sessionWorkspace, /onNavigateDown=/);
   assert.match(sessionWorkspace, /onToggleSidebar=\{onToggleSidebar\}/);
   assert.match(sessionWorkspace, /roles\[index \+ direction\]/);
   assert.match(sessionWorkspace, /index === 0 && direction === -1/);
   assert.match(sessionWorkspace, /onSidebarFocus\(\)/);
-  assert.match(daemonPane, /onWorkspaceFocus=\{focusActiveWorkspace\}/);
-  assert.match(daemonPane, /bottomTabsRef\.current\?\.focusLastUsed\(\)/);
-  assert.match(daemonPane, /onBottomTerminalFocus=\{focusLastBottomTerminal\}/);
-  assert.match(daemonPane, /onSidebarFocus=\{focusVisibleSidebar\}/);
+  assert.match(daemonPane, /const focusActiveContent = useCallback/);
+  assert.match(daemonPane, /bottomTabsRef\.current\?\.activate\(activeStandaloneId\)/);
+  assert.match(daemonPane, /activateStandalone,/);
+  assert.match(daemonPane, /createTerminal: openNewBottomTerminal/);
+  assert.equal((daemonPane.match(/onSidebarFocus=\{focusSessionsSidebar\}/g) || []).length, 2);
   // App.jsx still owns the single Ctrl+P shortcut and hands every pane the same
   // toggleSidebar/reportTerminalFullscreen callbacks.
   assert.match(app, /event\.key\.toLowerCase\(\) !== 'p'/);
   assert.match(app, /target\?\.closest\('\.xterm'\)/);
   assert.match(app, /onToggleSidebar=\{toggleSidebar\}/);
   assert.match(app, /onFullscreenChange=\{reportTerminalFullscreen\}/);
-  assert.match(daemonPane, /onSidebarFocus=\{focusSessionsSidebar\}/);
   assert.match(daemonPane, /onOpenNotes=\{openWorkspaceNotes\}/);
   assert.match(daemonPane, /mutate\(item, 'open-notes'\)/);
   assert.match(sessionWorkspace, /visible \? 'flex' : 'hidden'/);
   assert.match(sessionWorkspace, /useLayoutEffect/);
   assert.doesNotMatch(app, /<h1[^>]*>FritzWorks<\/h1>/);
   assert.match(activeSidebar, /<h1[^>]*>FritzWorks<\/h1>/);
-  assert.match(activeSidebar, /aria-label="New repository session"/);
+  assert.match(activeSidebar, /aria-label=\{`New repository session on/);
   assert.match(activeSidebar, /<AssetIcon name="git-branch"/);
-  assert.match(activeSidebar, /aria-label="New scratchpad session"/);
+  assert.match(activeSidebar, /aria-label=\{`New scratchpad session on/);
   assert.match(activeSidebar, /<AssetIcon name="folder"/);
   assert.match(detail, /'agent-set'/);
   assert.match(detail, /'panel-toggle'/);
@@ -578,55 +563,6 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(icons, /export function ArchiveIcon/);
   assert.match(table, /focus-\$\{panel\}/);
   assert.match(table, /open-notes/);
-});
-
-test('v2 markdown preview parses the shapes the notes skill actually writes', async () => {
-  const { parseMarkdown, parseInline } = await import('../web-v2/src/markdown.js');
-  const blocks = parseMarkdown([
-    '## Thursday, June 25th, 2026',
-    '',
-    '- [x] Shipped the **editor**',
-    '    - https://github.com/example/project/pull/41',
-    '    - [ ] follow-up still to do',
-    '- [x] Another item',
-    '',
-    '> a quoted aside',
-    '',
-    '```js',
-    'const answer = 42;',
-    '```',
-    '',
-    'Trailing `code` paragraph.',
-  ].join('\n'));
-
-  assert.deepEqual(blocks.map((block) => block.type), ['heading', 'list', 'quote', 'code', 'paragraph']);
-  assert.equal(blocks[0].level, 2);
-  assert.equal(blocks[1].items.length, 2);
-  assert.equal(blocks[1].items[0].checked, true);
-  assert.deepEqual(blocks[1].items[0].spans.map((span) => span.type), ['text', 'strong']);
-  assert.equal(blocks[1].items[0].children.length, 2);
-  assert.equal(blocks[1].items[0].children[0].spans[0].href, 'https://github.com/example/project/pull/41');
-  assert.equal(blocks[1].items[0].children[1].checked, false);
-  assert.equal(blocks[3].lang, 'js');
-  assert.equal(blocks[3].code, 'const answer = 42;');
-
-  const link = parseInline('see [the plan](https://linear.app/eco-1) now');
-  assert.deepEqual(link.map((span) => span.type), ['text', 'link', 'text']);
-  assert.equal(link[1].href, 'https://linear.app/eco-1');
-  assert.equal(link[1].text, 'the plan');
-
-  // An image match starts one character before a link would, so `![...]` must not
-  // fall through to the link branch and leave a stray "!" behind.
-  const image = parseInline('before ![desc](https://example.com/a/fritzworks.png) after');
-  assert.deepEqual(image.map((span) => span.type), ['text', 'image', 'text']);
-  assert.equal(image[1].href, 'https://example.com/a/fritzworks.png');
-  assert.equal(image[1].text, 'desc');
-  assert.equal(image[0].text, 'before ');
-  assert.deepEqual(parseInline('![](https://example.com/b.png)').map((span) => span.type), ['image']);
-  // A bare image line is still a paragraph holding a single image span.
-  const [block] = parseMarkdown('![shot](https://example.com/c.png)');
-  assert.equal(block.type, 'paragraph');
-  assert.equal(block.spans[0].type, 'image');
 });
 
 test('v2 markdown editing helpers continue lists, indent, and log the day', async () => {
@@ -658,7 +594,7 @@ test('v2 markdown editing helpers continue lists, indent, and log the day', asyn
   assert.equal(appendUnderHeading('# no day headings', heading), null);
 });
 
-test('v2 bottom drawer hosts Markdown tabs backed by notes and general-file endpoints', () => {
+test('v2 standalone sessions host Markdown files backed by notes and general-file endpoints', () => {
   const bottomTabs = read('web-v2/src/BottomTabs.jsx');
   const editor = read('web-v2/src/MarkdownEditor.jsx');
   const picker = read('web-v2/src/NotePicker.jsx');
@@ -669,7 +605,7 @@ test('v2 bottom drawer hosts Markdown tabs backed by notes and general-file endp
   assert.match(api, /'\/notes\/weekly'/);
   assert.match(api, /`\/markdown\/file\?path=\$\{encodeURIComponent\(path\)\}`/);
   assert.match(api, /`\/notes\/tabs\?scope=\$\{encodeURIComponent\(scope\)\}`/);
-  // Open tabs live server-side so the strip survives a reload.
+  // Open sessions live server-side so the sidebar inventory survives a reload.
   assert.match(bottomTabs, /readEditorTabs\(EDITOR_TAB_SCOPE/);
   assert.match(bottomTabs, /writeEditorTabs\(EDITOR_TAB_SCOPE/);
   assert.match(bottomTabs, /readBrowserState\(TERMINAL_STATE_SCOPE/);
@@ -678,11 +614,12 @@ test('v2 bottom drawer hosts Markdown tabs backed by notes and general-file endp
   assert.match(bottomTabs, /terminalControlsRef\.current\.get\(id\)\?\.terminate\(\)/);
   assert.match(bottomTabs, /kind === 'editor'/);
   assert.match(bottomTabs, /<MarkdownEditor/);
-  assert.match(editor, /parseMarkdown/);
+  assert.match(editor, /ReactMarkdown/);
+  assert.match(editor, /remarkPlugins=\{\[remarkGfm\]\}/);
   assert.match(editor, /writeNotesFile/);
   assert.match(editor, /writeMarkdownFile/);
-  assert.match(editor, /span\.type === 'image'/);
-  assert.match(editor, /<img[\s\S]*src=\{span\.href\}[\s\S]*alt=\{span\.text\}/);
+  assert.match(editor, /target="_blank"/);
+  assert.match(editor, /className="markdown-table-wrap"/);
   assert.match(picker, /openWeeklyNote/);
   assert.match(picker, /readMarkdownFile/);
   assert.match(picker, /source: 'file'/);
@@ -693,13 +630,11 @@ test('v2 bottom drawer hosts Markdown tabs backed by notes and general-file endp
   assert.match(picker, /\{missingWeekly\.length > 0 && \(/);
   assert.doesNotMatch(picker, /create \$\{week\}/);
 
-  // Ctrl-H/L must only ever move between existing tabs. A terminal is spawned only
-  // when the drawer is empty, so navigating into a strip of restored notes cannot
-  // keep creating terminals.
+  // A terminal is spawned only when the standalone session inventory is empty.
   assert.match(bottomTabs, /const id = tabs\.some\(\(tab\) => tab\.id === remembered\) \? remembered : tabs\.at\(-1\)\?\.id;/);
   assert.equal(bottomTabs.match(/createTerminal\(\)/g).length, 1);
   assert.match(bottomTabs, /if \(remembered\) lastUsedRef\.current = remembered\.id/);
-  assert.match(bottomTabs, /if \(key !== 'h' && key !== 'l' && key !== 'k'\) return;/);
+  assert.match(bottomTabs, /if \(!\['h', 'j', 'k', 'l'\]\.includes\(key\)\) return;/);
   assert.match(bottomTabs, /event\.defaultPrevented \|\| !event\.ctrlKey/);
   // Neither the textarea nor the preview pane exists until the file has loaded,
   // so focus has to be reapplied — and it must land on whichever of the two is
@@ -708,14 +643,13 @@ test('v2 bottom drawer hosts Markdown tabs backed by notes and general-file endp
   assert.match(editor, /\(preview \? previewRef : textareaRef\)\.current\?\.focus\(\);/);
   assert.match(editor, /\}, \[focused, loading, preview\]\);/);
 
-  // The drawer slides away as soon as it stops being the focused panel, whatever
-  // moved focus, and a tab switch mid-animation is not mistaken for focus loss.
-  assert.match(bottomTabs, /if \(!drawerOpen \|\| closing \|\| !activeTab\) return;/);
-  assert.match(bottomTabs, /if \(focusedPanel !== panelId\(activeTab\.id\)\) hideDrawer\(\);/);
-  assert.match(bottomTabs, /\[activeTab, closing, drawerOpen, focusedPanel, hideDrawer\]/);
+  assert.match(bottomTabs, /items: tabs\.map\(\(tab\) => \(\{/);
+  assert.match(bottomTabs, /activeId: active/);
+  assert.match(bottomTabs, /if \(direction >= 0\) return false;/);
+  assert.match(bottomTabs, /onSidebarFocus\(\)/);
 });
 
-test('v2 terminals copy, paste, and open a new terminal tab from the keyboard', () => {
+test('v2 terminals copy, paste, and open a new standalone terminal from the keyboard', () => {
   const localTerminal = read('web-v2/src/LocalTerminal.jsx');
   const editor = read('web-v2/src/MarkdownEditor.jsx');
   const bottomTabs = read('web-v2/src/BottomTabs.jsx');
@@ -727,8 +661,9 @@ test('v2 terminals copy, paste, and open a new terminal tab from the keyboard', 
   // (e.g. a DevTools inspector shortcut) ever sees them.
   assert.match(localTerminal, /const controlShift = event\.ctrlKey && event\.shiftKey && !event\.altKey && !event\.metaKey;/);
   assert.match(localTerminal, /key === 'c' && controlShift/);
-  assert.match(localTerminal, /terminal\.getSelection\(\)/);
-  assert.match(localTerminal, /navigator\.clipboard\?\.writeText\(selection\)/);
+  assert.match(localTerminal, /trackOsc52Clipboard\(terminal\)/);
+  assert.match(localTerminal, /fallbackText: osc52Clipboard\.text/);
+  assert.match(localTerminal, /copyEventHandlesFallback: true/);
   assert.match(localTerminal, /key === 'p' && controlShift/);
   assert.match(localTerminal, /navigator\.clipboard\?\.readText\(\)/);
   assert.match(localTerminal, /terminal\.paste\(text\)/);
@@ -740,16 +675,16 @@ test('v2 terminals copy, paste, and open a new terminal tab from the keyboard', 
   assert.match(localTerminal, /Take over this terminal/);
   assert.match(localTerminal, /JSON\.stringify\(\{ type: 'terminate' \}\)/);
 
-  // Ctrl+T opens a new lower terminal tab from a terminal or a note. LocalTerminal
+  // Ctrl+T opens a new standalone terminal from a terminal or a note. LocalTerminal
   // handles it directly (mirroring the other Ctrl-key bindings below it); the
   // markdown editor's own navigation-key map handles it for notes.
   assert.match(localTerminal, /key === 't' && controlOnly && typeof newTerminalRef\.current === 'function'/);
   assert.match(editor, /t: onNewTerminal,/);
 
-  // BottomTabs owns createTerminal, so its own terminal/note tabs wire it in
+  // BottomTabs owns createTerminal, so its own terminal/note sessions wire it in
   // directly; DaemonPane exposes it to the main workspace terminals through the
-  // same bottomTabsRef used for focusLastUsed.
-  assert.match(bottomTabs, /createTerminal,\n\s*\}\), \[createTerminal, focusLastUsed, hideDrawer, openNote\]\);/);
+  // same machine-owned controller.
+  assert.match(bottomTabs, /createTerminal,\n\s*focusLastUsed,/);
   assert.match(bottomTabs, /onNewTerminal=\{createTerminal\}/);
   assert.equal((bottomTabs.match(/onNewTerminal=\{createTerminal\}/g) || []).length, 2);
   assert.match(daemonPane, /bottomTabsRef\.current\?\.createTerminal\(\) \|\| false/);

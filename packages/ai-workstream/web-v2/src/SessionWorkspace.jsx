@@ -164,7 +164,7 @@ function SplitHandle({
 
 export default function SessionWorkspace({
   session, target, visible, focusedPanel, onPanelFocus, onDetails, onArchive, onClose, onAgentChange, onReset,
-  panelMode = 'two', onPanelModeChange, onOpenNotes, terminalMode, fontFamily, onSidebarFocus, onBottomTerminalFocus,
+  panelMode = 'two', onPanelModeChange, onOpenNotes, terminalMode, fontFamily, onSidebarFocus,
   onFullscreenChange, fullscreenExitRevision, onToggleSidebar, onNewTerminal,
 }) {
   const roles = useMemo(() => panelsForMode(panelMode), [panelMode]);
@@ -259,11 +259,6 @@ export default function SessionWorkspace({
     onFullscreenChange?.(fullscreenSource, false);
     setFullscreenRole(null);
     return true;
-  }
-
-  function focusBottomTerminal() {
-    leaveFullscreen();
-    return onBottomTerminalFocus();
   }
 
   async function changeAgent(agent) {
@@ -435,7 +430,6 @@ export default function SessionWorkspace({
                     autoFocus={index === 0}
                     focused={visible && !suppressed && focused}
                     onPanelNavigate={(direction) => navigatePanel(index, direction)}
-                    onNavigateDown={focusBottomTerminal}
                     onToggleFullscreen={() => toggleFullscreen(role)}
                     onToggleSidebar={onToggleSidebar}
                     onNewTerminal={onNewTerminal}

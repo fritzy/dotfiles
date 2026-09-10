@@ -6,6 +6,8 @@ import '@xterm/xterm/css/xterm.css';
 
 import { wsUrl } from './api.js';
 import { browserClientId } from './browser-client.js';
+import { copyTerminalSelection } from './clipboard.js';
+import { trackOsc52Clipboard } from './osc52-clipboard.js';
 import { useTarget } from './target-context.js';
 import { websocketReconnectDelay } from './websocket-retry.js';
 
@@ -114,6 +116,7 @@ export default function LocalTerminal({
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
+    const osc52Clipboard = trackOsc52Clipboard(terminal);
     terminal.attachCustomKeyEventHandler((event) => {
       const key = event.key.toLowerCase();
       const controlOnly = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
@@ -126,8 +129,10 @@ export default function LocalTerminal({
         event.preventDefault();
         event.stopPropagation();
         if (event.type === 'keydown' && !event.repeat) {
-          const selection = terminal.getSelection();
-          if (selection) navigator.clipboard?.writeText(selection).catch(() => {});
+          copyTerminalSelection(terminal, {
+            fallbackText: osc52Clipboard.text,
+            copyEventHandlesFallback: true,
+          });
         }
         return false;
       }
@@ -289,6 +294,7 @@ export default function LocalTerminal({
       clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
       input.dispose();
+      osc52Clipboard.dispose();
       onControlReady?.(null);
       socket?.close();
       terminal.dispose();

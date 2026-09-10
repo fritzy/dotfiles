@@ -368,6 +368,145 @@
   overflow-y: auto !important;
 }
 
+.markdown-preview {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.markdown-preview > :first-child {
+  margin-top: 0;
+}
+
+.markdown-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-preview :is(p, ul, ol, blockquote, pre, .markdown-table-wrap) {
+  margin-block: 0.75em;
+}
+
+.markdown-preview :is(h1, h2, h3, h4, h5, h6) {
+  margin-block: 1.2em 0.45em;
+  color: var(--primary);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.markdown-preview h1 { font-size: 1.75em; }
+.markdown-preview h2 { font-size: 1.45em; }
+.markdown-preview h3 { font-size: 1.2em; }
+.markdown-preview h4 { font-size: 1.05em; }
+.markdown-preview h5 { font-size: 0.95em; }
+.markdown-preview h6 {
+  font-size: 0.85em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.markdown-preview :is(ul, ol) {
+  padding-left: 1.6em;
+}
+
+.markdown-preview ul { list-style: disc; }
+.markdown-preview ol { list-style: decimal; }
+.markdown-preview li { margin-block: 0.2em; }
+.markdown-preview li > :is(ul, ol) { margin-block: 0.2em; }
+
+.markdown-preview .contains-task-list {
+  padding-left: 0.25em;
+  list-style: none;
+}
+
+.markdown-preview .task-list-item {
+  list-style: none;
+}
+
+.markdown-preview input[type="checkbox"] {
+  margin: 0 0.45em 0 0;
+  accent-color: var(--accent);
+  vertical-align: middle;
+}
+
+.markdown-preview a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
+.markdown-preview a:hover {
+  color: var(--accent);
+}
+
+.markdown-preview blockquote {
+  padding-left: 0.9em;
+  border-left: 0.25em solid color-mix(in srgb, var(--primary) 45%, transparent);
+  color: var(--muted);
+}
+
+.markdown-preview hr {
+  margin-block: 1.25em;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+.markdown-preview :not(pre) > code {
+  padding: 0.12em 0.35em;
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  font-size: 0.9em;
+}
+
+.markdown-preview pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.9em 1em;
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.markdown-preview pre code {
+  font-size: 0.88em;
+  white-space: pre;
+}
+
+.markdown-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-preview table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.markdown-preview :is(th, td) {
+  padding: 0.45em 0.65em;
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  text-align: left;
+}
+
+.markdown-preview th {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.markdown-preview tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+}
+
+.markdown-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 24rem;
+  margin-block: 0.75em;
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: 0.375rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

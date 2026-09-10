@@ -15,7 +15,6 @@ const MarkdownEditor = lazy(() => import('./MarkdownEditor.jsx'));
 const DEFAULT_FONT_SIZE = 14;
 const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 24;
-const TAB_SWITCH_MS = 300;
 const TAB_SAVE_DEBOUNCE_MS = 400;
 const EDITOR_TAB_SCOPE = 'global';
 const TERMINAL_STATE_SCOPE = 'bottom-terminals';
@@ -29,11 +28,6 @@ function newTerminalId() {
   fallbackTerminalId += 1;
   return `terminal-${Date.now().toString(36)}-${fallbackTerminalId}`;
 }
-
-// A fixed tab width keeps the strip from reflowing as notes with longer filenames
-// are opened and closed.
-const TAB_WIDTH = 'w-40';
-const ADD_BUTTON_WIDTH = 'w-14';
 
 const editorTabId = (path, source = 'notes') => `editor:${source}:${path}`;
 
@@ -53,50 +47,6 @@ function editorTab({ path, name, source = 'notes' }) {
     fontSize: DEFAULT_FONT_SIZE,
     fullscreen: false,
   };
-}
-
-function TabButton({ tab, domId, selected, dirty, onChoose, onClose }) {
-  const Icon = tab.kind === 'editor' ? EditorIcon : ShellIcon;
-  return (
-    <div className={`pointer-events-auto relative -mb-px h-10 ${TAB_WIDTH}`}>
-      <button
-        id={`${domId}-tab`}
-        type="button"
-        role="tab"
-        aria-selected={selected}
-        aria-controls={`${domId}-panel`}
-        title={tab.kind === 'editor' ? tab.path : tab.label}
-        className={`relative inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-t-xl border border-b-0 pr-9 pl-4 text-sm font-semibold shadow-[0_-0.25rem_0.75rem_rgb(0_0_0/0.12)] transition-colors before:absolute before:-bottom-px before:-left-2 before:size-2 before:content-[''] after:absolute after:-right-2 after:-bottom-px after:size-2 after:content-[''] focus-visible:z-20 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${selected ? "z-10 border-primary bg-accent text-on-accent before:bg-accent before:[clip-path:polygon(100%_0,100%_100%,0_100%)] after:bg-accent after:[clip-path:polygon(0_0,100%_100%,0_100%)]" : 'border-primary/60 bg-page text-primary before:hidden after:hidden hover:bg-soft hover:text-on-soft'}`}
-        onClick={() => onChoose(tab.id)}
-      >
-        <Icon />
-        <span className="truncate">{tab.label}</span>
-        {dirty && <span className="size-1.5 shrink-0 rounded-full bg-current" title="Unsaved changes" aria-label="Unsaved changes" />}
-      </button>
-      <button
-        type="button"
-        className={`absolute top-1/2 right-1 z-30 flex size-6 -translate-y-1/2 items-center justify-center rounded transition-colors focus-visible:outline-2 focus-visible:outline-accent ${selected ? 'text-on-accent/70 hover:bg-on-accent/15 hover:text-on-accent' : 'text-primary/70 hover:bg-soft hover:text-on-soft'}`}
-        aria-label={`Close ${tab.label}`}
-        title={`Close ${tab.label}`}
-        onClick={() => onClose(tab.id)}
-      ><XIcon className="size-3.5" /></button>
-    </div>
-  );
-}
-
-function AddButton({ label, Icon, onClick }) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      className={`pointer-events-auto mb-1 inline-flex h-9 ${ADD_BUTTON_WIDTH} items-center justify-center gap-0.5 rounded-full border border-primary bg-page px-3 text-primary shadow-lg transition-[color,background-color,transform] hover:-translate-y-0.5 hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent`}
-      onClick={onClick}
-    >
-      <span className="text-base font-bold leading-none" aria-hidden="true">+</span>
-      <Icon className="size-4" />
-    </button>
-  );
 }
 
 function FontSizeControls({ tab, onChange }) {
@@ -123,45 +73,40 @@ function FontSizeControls({ tab, onChange }) {
   );
 }
 
+// Standalone terminals and Markdown files used to be selected from a tab strip
+// attached to a bottom drawer. Their state still belongs to the target daemon,
+// but their selectors now live in the shared sidebar and the selected session
+// occupies the same main content area as a workstream.
 const BottomTabs = forwardRef(function BottomTabs({
-  visible = true, focusedPanel, onPanelFocus, leftOffset = '0rem', layoutResizing = false,
+  visible = true, focusedPanel, onPanelFocus,
   terminalMode = 'dark', fontFamily = '"Roboto Mono", monospace', onFullscreenChange,
-  fullscreenExitRevision, onSidebarFocus, onWorkspaceFocus, onToggleSidebar,
-  stateRevision = 0,
+  fullscreenExitRevision, onSidebarFocus, onToggleSidebar, onSessionsChange,
+  onCloseActive, leftOffset = '0rem', stateRevision = 0,
 }, ref) {
   const target = useTarget();
   const targetId = target?.id || 'local';
-  const panelId = (id) => `bottom-${targetId}-${id}`;
-  const fullscreenSource = `bottom-terminals-${targetId}`;
+  const panelId = (id) => `standalone-${targetId}-${id}`;
+  const fullscreenSource = `standalone-${targetId}`;
   const [tabs, setTabs] = useState([]);
   const [active, setActive] = useState(null);
-  const [displayed, setDisplayed] = useState(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [closing, setClosing] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [dirtyPaths, setDirtyPaths] = useState(() => new Set());
   const [lastEditorPath, setLastEditorPath] = useState(null);
   const [tabsRestored, setTabsRestored] = useState(false);
   const [terminalTabsRestored, setTerminalTabsRestored] = useState(false);
-  const queuedTab = useRef(null);
-  const pendingRemoval = useRef(null);
   const nextTerminalNumber = useRef(1);
   const lastUsedRef = useRef(null);
   const activeRef = useRef(active);
   const terminalControlsRef = useRef(new Map());
   const fullscreenReportedRef = useRef(false);
   const skipTerminalStateSaveRef = useRef(false);
-  const activeTab = tabs.find((tab) => tab.id === displayed) || null;
+  const activeTab = tabs.find((tab) => tab.id === active) || null;
   const activePanel = activeTab ? panelId(activeTab.id) : null;
   const activeFullscreen = Boolean(activeTab?.fullscreen);
   activeRef.current = active;
-  const tabOpacity = focusedPanel?.startsWith('workspace-')
-    ? 'opacity-20 hover:opacity-100 focus-within:opacity-100'
-    : 'opacity-100';
 
-  // Terminal definitions live in the daemon DB. Restoring a tab mounts its
-  // LocalTerminal even with the drawer closed, which immediately attempts to
-  // claim and reattach the corresponding background Zellij session.
+  // Restoring a terminal mounts it even when it is not selected, allowing it to
+  // reclaim its persistent background Zellij session immediately.
   useEffect(() => {
     setTerminalTabsRestored(false);
     const controller = new AbortController();
@@ -185,27 +130,17 @@ const BottomTabs = forwardRef(function BottomTabs({
           }));
         skipTerminalStateSaveRef.current = true;
         setTabs((current) => [...restored, ...current.filter((tab) => tab.kind === 'editor')]);
+        const restoredIds = new Set(restored.map((tab) => tab.id));
+        if (activeRef.current && !activeRef.current.startsWith('editor:')
+            && !restoredIds.has(activeRef.current)) setActive(null);
         if (restored.length) {
-          const restoredIds = new Set(restored.map((tab) => tab.id));
           const remembered = restored.some((tab) => tab.id === state.displayedId)
             ? state.displayedId : restored.at(-1).id;
-          setDisplayed((current) => current?.startsWith('editor:') || restoredIds.has(current)
-            ? current : remembered);
-          if (activeRef.current && !activeRef.current.startsWith('editor:')
-              && !restoredIds.has(activeRef.current)) {
-            setActive(null);
-            setDrawerOpen(false);
-          }
           if (!lastUsedRef.current) lastUsedRef.current = remembered;
           nextTerminalNumber.current = Math.max(
             nextTerminalNumber.current,
             ...restored.map((tab) => Number(tab.label.match(/^terminal (\d+)$/)?.[1]) + 1 || 1),
           );
-        } else {
-          const activeIsEditor = activeRef.current?.startsWith('editor:');
-          setDisplayed((current) => current?.startsWith('editor:') ? current : null);
-          setActive((current) => current?.startsWith('editor:') ? current : null);
-          setDrawerOpen((open) => open && Boolean(activeIsEditor));
         }
       })
       .catch(() => { /* older daemons simply start without remembered terminals */ })
@@ -228,14 +163,12 @@ const BottomTabs = forwardRef(function BottomTabs({
           label: tab.label,
           fontSize: tab.fontSize,
         })),
-        displayedId: terminals.some((tab) => tab.id === displayed) ? displayed : null,
+        displayedId: terminals.some((tab) => tab.id === active) ? active : null,
       }, target).catch(() => { /* remembering terminals is best-effort */ });
     }, TAB_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [displayed, tabs, target, terminalTabsRestored]);
+  }, [active, tabs, target, terminalTabsRestored]);
 
-  // Which notes were open is remembered server-side, so the tab strip comes back
-  // after a reload (closed, not reopened — the drawer stays out of the way).
   useEffect(() => {
     const controller = new AbortController();
     readEditorTabs(EDITOR_TAB_SCOPE, controller.signal, target)
@@ -244,8 +177,6 @@ const BottomTabs = forwardRef(function BottomTabs({
         const restored = (state.tabs || []).map(editorTab);
         if (restored.length) setTabs((current) => [...current, ...restored]);
         if (state.activePath) setLastEditorPath(state.activePath);
-        // Seed the last-used tab too, so navigating down into the drawer returns to
-        // the remembered note rather than treating the strip as empty.
         const remembered = restored.find((tab) => tab.path === state.activePath) || restored.at(-1);
         if (remembered) lastUsedRef.current = remembered.id;
       })
@@ -266,11 +197,24 @@ const BottomTabs = forwardRef(function BottomTabs({
   }, [lastEditorPath, tabs, tabsRestored, target]);
 
   useEffect(() => {
-    const fullscreenVisible = drawerOpen && activeFullscreen;
+    onSessionsChange?.({
+      items: tabs.map((tab) => ({
+        id: tab.id,
+        kind: tab.kind,
+        label: tab.label,
+        path: tab.path,
+        dirty: tab.kind === 'editor' && dirtyPaths.has(tab.path),
+      })),
+      activeId: active,
+    });
+  }, [active, dirtyPaths, onSessionsChange, tabs]);
+
+  useEffect(() => {
+    const fullscreenVisible = visible && Boolean(activeTab) && activeFullscreen;
     if (fullscreenReportedRef.current === fullscreenVisible) return;
     fullscreenReportedRef.current = fullscreenVisible;
     onFullscreenChange?.(fullscreenSource, fullscreenVisible);
-  }, [activeFullscreen, drawerOpen, fullscreenSource, onFullscreenChange]);
+  }, [activeFullscreen, activeTab, fullscreenSource, onFullscreenChange, visible]);
 
   useEffect(() => () => {
     if (fullscreenReportedRef.current) onFullscreenChange?.(fullscreenSource, false);
@@ -288,70 +232,27 @@ const BottomTabs = forwardRef(function BottomTabs({
     leaveFullscreen();
   }, [fullscreenExitRevision]);
 
-  const hideDrawer = useCallback(() => {
-    if (!drawerOpen && !closing) return false;
-    leaveFullscreen();
-    queuedTab.current = null;
-    setDrawerOpen(false);
-    if (drawerOpen) setClosing(true);
-    return true;
-  }, [closing, drawerOpen, leaveFullscreen]);
-
-  const collapseDrawer = useCallback(() => {
-    if (!hideDrawer()) return false;
-    onPanelFocus(null);
-    return true;
-  }, [hideDrawer, onPanelFocus]);
-
   const remember = useCallback((id) => {
     lastUsedRef.current = id;
     const path = editorPathFromId(id);
     if (path) setLastEditorPath(path);
   }, []);
 
-  const focusTab = useCallback((id) => {
-    if (!id) return false;
-    if (id !== active) leaveFullscreen();
+  const activate = useCallback((id) => {
+    if (!id || !tabs.some((tab) => tab.id === id)) return false;
+    if (id !== activeRef.current) leaveFullscreen();
     remember(id);
-    if (closing) {
-      queuedTab.current = id;
-      onPanelFocus(panelId(id));
-      return true;
-    }
-    queuedTab.current = null;
-    setDisplayed(id);
     setActive(id);
-    setDrawerOpen(true);
     onPanelFocus(panelId(id));
     return true;
-  }, [active, closing, leaveFullscreen, onPanelFocus, remember, targetId]);
+  }, [leaveFullscreen, onPanelFocus, remember, tabs, targetId]);
 
-  const chooseTab = useCallback((id) => {
-    remember(id);
-    if (id !== active || (drawerOpen && active === id)) leaveFullscreen();
-    if (closing) {
-      queuedTab.current = id;
-      onPanelFocus(panelId(id));
-      return true;
-    }
-    if (drawerOpen && active === id) {
-      collapseDrawer();
-      return true;
-    }
-    if (drawerOpen) {
-      queuedTab.current = id;
-      setDrawerOpen(false);
-      setClosing(true);
-      onPanelFocus(panelId(id));
-      return true;
-    }
-    queuedTab.current = null;
-    setDisplayed(id);
-    setActive(id);
-    setDrawerOpen(true);
-    onPanelFocus(panelId(id));
+  const deactivate = useCallback(() => {
+    if (!activeRef.current) return false;
+    leaveFullscreen();
+    setActive(null);
     return true;
-  }, [active, closing, collapseDrawer, drawerOpen, leaveFullscreen, onPanelFocus, remember, targetId]);
+  }, [leaveFullscreen]);
 
   const createTerminal = useCallback(() => {
     const number = nextTerminalNumber.current;
@@ -364,30 +265,27 @@ const BottomTabs = forwardRef(function BottomTabs({
       fullscreen: false,
     };
     setTabs((current) => [...current, terminal]);
-    return chooseTab(terminal.id);
-  }, [chooseTab]);
+    remember(terminal.id);
+    setActive(terminal.id);
+    onPanelFocus(panelId(terminal.id));
+    return true;
+  }, [onPanelFocus, remember, targetId]);
 
   const openNote = useCallback((file) => {
     setPickerOpen(false);
     const id = editorTabId(file.path, file.source);
     setTabs((current) => (current.some((tab) => tab.id === id) ? current : [...current, editorTab(file)]));
-    return chooseTab(id);
-  }, [chooseTab]);
+    remember(id);
+    setActive(id);
+    onPanelFocus(panelId(id));
+    return true;
+  }, [onPanelFocus, remember, targetId]);
 
-  // Falls back to whatever tab is last in the strip, note or terminal. A new
-  // terminal is spawned only when the drawer is genuinely empty.
   const focusLastUsed = useCallback(() => {
     const remembered = lastUsedRef.current;
     const id = tabs.some((tab) => tab.id === remembered) ? remembered : tabs.at(-1)?.id;
-    return id ? focusTab(id) : createTerminal();
-  }, [createTerminal, focusTab, tabs]);
-
-  useImperativeHandle(ref, () => ({
-    focusLastUsed,
-    hide: hideDrawer,
-    openNote,
-    createTerminal,
-  }), [createTerminal, focusLastUsed, hideDrawer, openNote]);
+    return id ? activate(id) : createTerminal();
+  }, [activate, createTerminal, tabs]);
 
   const markDirty = useCallback((path, dirty) => {
     setDirtyPaths((current) => {
@@ -398,42 +296,40 @@ const BottomTabs = forwardRef(function BottomTabs({
     });
   }, []);
 
-  function withoutTab(current, id) {
-    const remaining = current.filter((tab) => tab.id !== id);
-    if (lastUsedRef.current === id) lastUsedRef.current = remaining.at(-1)?.id || null;
-    return remaining;
-  }
-
-  function closeTab(id) {
+  const closeTab = useCallback((id) => {
     const tab = tabs.find((item) => item.id === id);
-    if (tab?.kind === 'editor') {
+    if (!tab) return false;
+    if (tab.kind === 'editor') {
       if (dirtyPaths.has(tab.path)
-          && !window.confirm(`${tab.label} has unsaved changes. Close it anyway?`)) return;
+          && !window.confirm(`${tab.label} has unsaved changes. Close it anyway?`)) return false;
       markDirty(tab.path, false);
       if (lastEditorPath === tab.path) {
         const nextEditor = tabs.filter((item) => item.kind === 'editor' && item.id !== id).at(-1);
         setLastEditorPath(nextEditor?.path || null);
       }
     }
-    if (tab?.kind === 'terminal') terminalControlsRef.current.get(id)?.terminate();
-    const displayedTab = id === displayed;
-    if (displayedTab && (drawerOpen || closing)) {
-      pendingRemoval.current = id;
-      if (!closing) {
-        queuedTab.current = null;
-        setDrawerOpen(false);
-        setClosing(true);
-      }
-      onPanelFocus(null);
-      return;
-    }
-    if (queuedTab.current === id) queuedTab.current = null;
-    setTabs((current) => withoutTab(current, id));
-    if (displayedTab) {
-      setDisplayed(null);
+    if (tab.kind === 'terminal') terminalControlsRef.current.get(id)?.terminate();
+    const wasActive = activeRef.current === id;
+    const remaining = tabs.filter((item) => item.id !== id);
+    if (lastUsedRef.current === id) lastUsedRef.current = remaining.at(-1)?.id || null;
+    setTabs(remaining);
+    if (wasActive) {
+      leaveFullscreen();
       setActive(null);
+      onCloseActive?.();
     }
-  }
+    return true;
+  }, [dirtyPaths, lastEditorPath, leaveFullscreen, markDirty, onCloseActive, tabs]);
+
+  useImperativeHandle(ref, () => ({
+    activate,
+    close: closeTab,
+    createTerminal,
+    focusLastUsed,
+    hide: deactivate,
+    openMarkdown: () => setPickerOpen(true),
+    openNote,
+  }), [activate, closeTab, createTerminal, deactivate, focusLastUsed, openNote]);
 
   function changeFontSize(id, amount) {
     setTabs((current) => current.map((tab) => (tab.id === id
@@ -444,7 +340,6 @@ const BottomTabs = forwardRef(function BottomTabs({
   function toggleFullscreen(id) {
     const tab = tabs.find((item) => item.id === id);
     if (!tab) return;
-    // Report during the input event so requestFullscreen retains user activation.
     onFullscreenChange?.(fullscreenSource, !tab.fullscreen);
     setTabs((current) => current.map((item) => (item.id === id
       ? { ...item, fullscreen: !item.fullscreen }
@@ -452,196 +347,124 @@ const BottomTabs = forwardRef(function BottomTabs({
     onPanelFocus(panelId(id));
   }
 
-  function navigateTab(id, direction) {
-    const index = tabs.findIndex((tab) => tab.id === id);
-    if (index < 0) return false;
-    const next = tabs[index + direction];
-    if (next) return focusTab(next.id);
-    if (direction === -1 && index === 0) {
-      leaveFullscreen();
-      return typeof onSidebarFocus === 'function' ? onSidebarFocus() : false;
-    }
-    return true;
-  }
-
-  function focusWorkspace() {
+  function navigatePanel(direction) {
+    if (direction >= 0) return false;
     leaveFullscreen();
-    return onWorkspaceFocus();
+    return typeof onSidebarFocus === 'function' ? onSidebarFocus() : false;
   }
 
   useEffect(() => {
-    if (!closing) return undefined;
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-    const timer = window.setTimeout(() => {
-      const removed = pendingRemoval.current;
-      pendingRemoval.current = null;
-      if (removed) setTabs((current) => withoutTab(current, removed));
-      const next = queuedTab.current;
-      queuedTab.current = null;
-      setClosing(false);
-      if (next && next !== removed) {
-        setDisplayed(next);
-        setActive(next);
-        setDrawerOpen(true);
-      } else {
-        setActive(null);
-        if (removed) setDisplayed(null);
-      }
-    }, reducedMotion ? 0 : TAB_SWITCH_MS);
-    return () => window.clearTimeout(timer);
-  }, [closing]);
-
-  // Panel navigation also has to work when DOM focus has drifted out of the drawer
-  // (a note that was still loading, a control button). Terminals and the markdown
-  // source both preventDefault first, so exactly one handler ever acts.
-  useEffect(() => {
-    if (!drawerOpen || !activeTab) return undefined;
-    const panel = panelId(activeTab.id);
+    if (!activeTab || focusedPanel !== activePanel) return undefined;
     function onKeyDown(event) {
       if (event.defaultPrevented || !event.ctrlKey || event.altKey || event.metaKey
-          || event.shiftKey || event.repeat || focusedPanel !== panel) return;
+          || event.shiftKey || event.repeat) return;
       const key = event.key.toLowerCase();
-      if (key !== 'h' && key !== 'l' && key !== 'k') return;
+      if (!['h', 'j', 'k', 'l'].includes(key)) return;
       event.preventDefault();
-      if (key === 'k') focusWorkspace();
-      else navigateTab(activeTab.id, key === 'h' ? -1 : 1);
+      event.stopPropagation();
+      if (key === 'h') navigatePanel(-1);
     }
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [activeTab, drawerOpen, focusedPanel, onSidebarFocus, onWorkspaceFocus, tabs]);
-
-  // Losing focus slides the drawer away, the same as focusing a session terminal
-  // used to. `closing` is excluded so a tab switch, which briefly points the focused
-  // panel at the incoming tab while the outgoing one animates out, is not cut short.
-  useEffect(() => {
-    if (!drawerOpen || closing || !activeTab) return;
-    if (focusedPanel !== panelId(activeTab.id)) hideDrawer();
-  }, [activeTab, closing, drawerOpen, focusedPanel, hideDrawer]);
-
-  useEffect(() => {
-    if (!drawerOpen) return undefined;
-    function onKeyDown(event) {
-      if (event.key !== 'Escape') return;
-      // Terminals and the markdown source both own Escape while they have focus.
-      const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('.xterm') || target instanceof HTMLTextAreaElement
-          || target instanceof HTMLInputElement) return;
-      collapseDrawer();
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [collapseDrawer, drawerOpen]);
+  }, [activePanel, activeTab, focusedPanel, onSidebarFocus, tabs]);
 
   const openEditorPaths = new Set(tabs.filter((tab) => tab.kind === 'editor').map((tab) => tab.path));
+  const ActiveIcon = activeTab?.kind === 'editor' ? EditorIcon : ShellIcon;
 
   return (
-    <div className={visible ? 'contents' : 'hidden'} role="tablist" aria-label="Terminals and Markdown files" inert={!visible}>
-      {drawerOpen && activeTab && (
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-label={`Collapse ${activeTab.label}`}
-          className={`fixed top-0 right-0 bottom-0 z-30 cursor-default bg-transparent motion-reduce:transition-none ${layoutResizing ? '' : 'transition-[left] duration-300 ease-in-out'}`}
-          style={{ left: leftOffset }}
-          onClick={collapseDrawer}
-        />
-      )}
-
-      <div
-        className={`fixed right-0 bottom-0 z-40 flex flex-col duration-300 ease-in-out motion-reduce:transition-none ${activeFullscreen ? 'h-screen' : 'h-[calc(75vh+2.5rem)]'} ${layoutResizing ? 'transition-[translate]' : 'transition-[translate,left]'} ${drawerOpen && activeTab ? 'translate-y-0' : 'translate-y-[calc(100%-2.5rem)]'}`}
-        style={{ left: leftOffset }}
+    <div
+      className={visible ? 'contents' : 'hidden'}
+      aria-label={`${target?.name || 'Local'} standalone terminal and Markdown sessions`}
+      data-standalone-sessions={targetId}
+      inert={!visible}
+    >
+      <section
+        id={activePanel ? `${activePanel}-panel` : undefined}
+        aria-label={activeTab ? `${activeTab.label} standalone session` : undefined}
+        aria-hidden={!activeTab}
+        className={`${activeTab ? 'flex' : 'hidden'} absolute inset-0 z-20 min-h-0 flex-col overflow-hidden bg-page text-ink ring-inset ${focusedPanel === activePanel ? 'ring-2 ring-accent/60' : ''}`}
+        data-panel={activePanel || undefined}
+        data-panel-focused={Boolean(activePanel && focusedPanel === activePanel)}
+        data-terminal-fullscreen={activeFullscreen}
+        onPointerEnter={() => { if (activePanel) onPanelFocus(activePanel); }}
+        onPointerDownCapture={() => { if (activePanel) onPanelFocus(activePanel); }}
+        onFocusCapture={() => { if (activePanel) onPanelFocus(activePanel); }}
       >
-        <div className={`pointer-events-none relative z-10 flex h-10 shrink-0 items-end gap-1 px-2 transition-opacity duration-200 motion-reduce:transition-none ${tabOpacity}`}>
-          <AddButton label="New terminal" Icon={ShellIcon} onClick={createTerminal} />
-          <AddButton label="Open Markdown" Icon={EditorIcon} onClick={() => setPickerOpen((open) => !open)} />
-          {tabs.map((tab) => (
-            <TabButton
-              key={tab.id}
-              tab={tab}
-              domId={panelId(tab.id)}
-              selected={active === tab.id}
-              dirty={dirtyPaths.has(tab.path)}
-              onChoose={chooseTab}
-              onClose={closeTab}
-            />
-          ))}
-        </div>
-
-        <section
-          id={activePanel ? `${activePanel}-panel` : undefined}
-          role="tabpanel"
-          aria-labelledby={activePanel ? `${activePanel}-tab` : undefined}
-          aria-hidden={!drawerOpen || !activeTab}
-          className={`flex shrink-0 flex-col overflow-hidden rounded-t-2xl border-2 bg-page pb-1 text-ink shadow-[0_-1rem_3rem_rgb(0_0_0/0.25)] ${activeFullscreen ? 'h-[calc(100vh-2.5rem)]' : 'h-[75vh]'} ${focusedPanel === activePanel ? 'border-accent' : 'border-primary'} ${drawerOpen && activeTab ? '' : 'pointer-events-none'}`}
-          data-panel={activePanel || undefined}
-          data-panel-focused={Boolean(activePanel && focusedPanel === activePanel)}
-          data-terminal-fullscreen={activeFullscreen}
-          onPointerEnter={() => { if (activePanel) onPanelFocus(activePanel); }}
-          onPointerDownCapture={() => { if (activePanel) onPanelFocus(activePanel); }}
-          onFocusCapture={() => { if (activePanel) onPanelFocus(activePanel); }}
-        >
-          {activeTab && (
-            <div className="relative flex min-h-0 flex-1 p-1">
-              {activeTab.kind === 'terminal' && (
-                <div className="absolute top-3 right-3 z-20 opacity-20 transition-opacity hover:opacity-100 focus-within:opacity-100">
-                  <FontSizeControls tab={activeTab} onChange={changeFontSize} />
-                </div>
-              )}
-              <div className="relative min-h-0 flex-1">
-                <Suspense fallback={<div className="flex h-full items-center justify-center gap-2 text-primary"><span className="size-5 animate-spin rounded-full border-2 border-current/25 border-t-current" /> Loading…</div>}>
-                  {tabs.map((tab) => {
-                    const tabVisible = drawerOpen && active === tab.id;
-                    return (
-                      <div key={tab.id} className={`absolute inset-0 min-h-0 ${tabVisible ? 'flex' : 'hidden'}`}>
-                        {tab.kind === 'editor' ? (
-                          <MarkdownEditor
-                            path={tab.path}
-                            name={tab.label}
-                            source={tab.source}
-                            focused={tabVisible && focusedPanel === panelId(tab.id)}
-                            fontFamily={fontFamily}
-                            fontSize={tab.fontSize}
-                            fullscreen={tab.fullscreen}
-                            onFontSizeChange={(delta) => changeFontSize(tab.id, delta)}
-                            onDirtyChange={markDirty}
-                            onFocusRequest={() => onPanelFocus(panelId(tab.id))}
-                            onPanelNavigate={(direction) => navigateTab(tab.id, direction)}
-                            onNavigateUp={focusWorkspace}
-                            onToggleFullscreen={() => toggleFullscreen(tab.id)}
-                            onToggleSidebar={onToggleSidebar}
-                            onNewTerminal={createTerminal}
-                          />
-                        ) : (
-                          <LocalTerminal
-                            terminalId={tab.id}
-                            onControlReady={(controls) => {
-                              if (controls) terminalControlsRef.current.set(tab.id, controls);
-                              else terminalControlsRef.current.delete(tab.id);
-                            }}
-                            visible={tabVisible}
-                            autoFocus={false}
-                            focused={tabVisible && focusedPanel === panelId(tab.id)}
-                            onPanelNavigate={(direction) => navigateTab(tab.id, direction)}
-                            onNavigateUp={focusWorkspace}
-                            onToggleFullscreen={() => toggleFullscreen(tab.id)}
-                            onToggleSidebar={onToggleSidebar}
-                            onNewTerminal={createTerminal}
-                            onExit={() => closeTab(tab.id)}
-                            label={tab.label}
-                            themeMode={terminalMode}
-                            fontFamily={fontFamily}
-                            fontSize={tab.fontSize}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-                </Suspense>
-              </div>
+        {activeTab?.kind === 'terminal' && !activeFullscreen && (
+          <header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-primary/40 px-3 py-1.5">
+            <ActiveIcon className="size-4 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate font-mono text-sm font-bold text-primary">{activeTab.label}</h2>
+              {activeTab.path && <p className="truncate font-mono text-xs text-muted" title={activeTab.path}>{activeTab.path}</p>}
             </div>
-          )}
-        </section>
-      </div>
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-md border border-primary bg-page text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+              aria-label={`Close ${activeTab.label}`}
+              title={`Close ${activeTab.label}`}
+              onClick={() => closeTab(activeTab.id)}
+            ><XIcon className="size-3.5" /></button>
+          </header>
+        )}
+
+        <div className={`relative min-h-0 flex-1 p-1 ${activeTab ? 'flex' : 'hidden'}`}>
+            {activeTab?.kind === 'terminal' && (
+              <div className="absolute top-3 right-3 z-20 opacity-20 transition-opacity hover:opacity-100 focus-within:opacity-100">
+                <FontSizeControls tab={activeTab} onChange={changeFontSize} />
+              </div>
+            )}
+            <div className="relative min-h-0 flex-1">
+              <Suspense fallback={<div className="flex h-full items-center justify-center gap-2 text-primary"><span className="size-5 animate-spin rounded-full border-2 border-current/25 border-t-current" /> Loading…</div>}>
+                {tabs.map((tab) => {
+                  const tabVisible = visible && active === tab.id;
+                  return (
+                    <div key={tab.id} className={`absolute inset-0 min-h-0 ${tabVisible ? 'flex' : 'hidden'}`}>
+                      {tab.kind === 'editor' ? (
+                        <MarkdownEditor
+                          path={tab.path}
+                          name={tab.label}
+                          source={tab.source}
+                          focused={tabVisible && focusedPanel === panelId(tab.id)}
+                          fontFamily={fontFamily}
+                          fontSize={tab.fontSize}
+                          fullscreen={tab.fullscreen}
+                          onFontSizeChange={(delta) => changeFontSize(tab.id, delta)}
+                          onDirtyChange={markDirty}
+                          onFocusRequest={() => onPanelFocus(panelId(tab.id))}
+                          onPanelNavigate={navigatePanel}
+                          onToggleFullscreen={() => toggleFullscreen(tab.id)}
+                          onToggleSidebar={onToggleSidebar}
+                          onNewTerminal={createTerminal}
+                          onClose={() => closeTab(tab.id)}
+                        />
+                      ) : (
+                        <LocalTerminal
+                          terminalId={tab.id}
+                          onControlReady={(controls) => {
+                            if (controls) terminalControlsRef.current.set(tab.id, controls);
+                            else terminalControlsRef.current.delete(tab.id);
+                          }}
+                          visible={tabVisible}
+                          autoFocus={false}
+                          focused={tabVisible && focusedPanel === panelId(tab.id)}
+                          onPanelNavigate={navigatePanel}
+                          onToggleFullscreen={() => toggleFullscreen(tab.id)}
+                          onToggleSidebar={onToggleSidebar}
+                          onNewTerminal={createTerminal}
+                          onExit={() => closeTab(tab.id)}
+                          label={tab.label}
+                          themeMode={terminalMode}
+                          fontFamily={fontFamily}
+                          fontSize={tab.fontSize}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </Suspense>
+            </div>
+        </div>
+      </section>
 
       <NotePicker
         open={pickerOpen}

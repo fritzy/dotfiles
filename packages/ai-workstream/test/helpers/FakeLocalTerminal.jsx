@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 // Stands in for the real LocalTerminal (xterm.js/canvas aren't meaningful under
-// jsdom) in bottom-drawer navigation tests. Mirrors just the focus and Ctrl-key
+// jsdom) in standalone-session navigation tests. Mirrors just the focus and Ctrl-key
 // navigation contract LocalTerminal implements via attachCustomKeyEventHandler,
 // so BottomTabs' orchestration can be exercised end-to-end with real DOM focus.
 export default function FakeLocalTerminal({

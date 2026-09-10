@@ -9,7 +9,9 @@ import {
   TERMINAL_FONT_STORAGE_KEY, TERMINAL_MODE_STORAGE_KEY,
   THEMES, THEME_STORAGE_KEY,
 } from './constants.js';
+import ActiveSessionsSidebar from './ActiveSessionsSidebar.jsx';
 import DaemonPane from './DaemonPane.jsx';
+import { TargetProvider } from './target-context.js';
 
 const DEFAULT_SIDEBAR_WIDTH = 264;
 const MIN_SIDEBAR_WIDTH = 208;
@@ -38,6 +40,9 @@ export default function App() {
   // never triggers a reload, so both stay connected in the background.
   const [currentTargetId, setCurrentTargetId] = useState('local');
   const [connections, setConnections] = useState({});
+  const [sidebarStates, setSidebarStates] = useState({});
+  const paneControllers = useRef(new Map());
+  const paneControllerRefs = useRef(new Map());
   const [sidebarVisibility, setSidebarVisibility] = useState('shown');
   const fullscreenSourcesRef = useRef(new Set());
   const browserFullscreenWantedRef = useRef(false);
@@ -169,6 +174,73 @@ export default function App() {
     setFocusedPanel(`sidebar-${id}-sessions`);
   }, []);
 
+  const reportSidebarState = useCallback((id, state) => {
+    setSidebarStates((current) => {
+      const previous = current[id];
+      if (previous?.items === state.items
+          && previous.loading === state.loading
+          && previous.error === state.error
+          && previous.selectedId === state.selectedId
+          && previous.standaloneSessions === state.standaloneSessions
+          && previous.activeStandaloneId === state.activeStandaloneId
+          && previous.keyboardEnabled === state.keyboardEnabled) return current;
+      return { ...current, [id]: state };
+    });
+  }, []);
+
+  function controllerRefFor(id) {
+    if (!paneControllerRefs.current.has(id)) {
+      paneControllerRefs.current.set(id, (controller) => {
+        if (controller) paneControllers.current.set(id, controller);
+        else paneControllers.current.delete(id);
+      });
+    }
+    return paneControllerRefs.current.get(id);
+  }
+
+  const activateSession = useCallback((targetId, item) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.activateSession(item);
+  }, [selectTarget]);
+
+  const openSessionDetails = useCallback((targetId, id) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.openSession(id);
+  }, [selectTarget]);
+
+  const openNewSession = useCallback((kind) => {
+    paneControllers.current.get(currentTargetId)?.openNewSession(kind);
+  }, [currentTargetId]);
+
+  const activateStandalone = useCallback((targetId, id) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.activateStandalone(id);
+  }, [selectTarget]);
+
+  const closeStandalone = useCallback((targetId, id) => {
+    paneControllers.current.get(targetId)?.closeStandalone(id);
+  }, []);
+
+  const createTerminal = useCallback((targetId) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.createTerminal();
+  }, [selectTarget]);
+
+  const openMarkdown = useCallback((targetId) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.openMarkdown();
+  }, [selectTarget]);
+
+  const resetCurrentTargetTerminals = useCallback(() => {
+    const controller = paneControllers.current.get(currentTargetId);
+    if (!controller) return Promise.reject(new Error('The selected machine is not ready.'));
+    return controller.resetTerminals();
+  }, [currentTargetId]);
+
+  const focusCurrentContent = useCallback(() => (
+    paneControllers.current.get(currentTargetId)?.focusActiveContent() || false
+  ), [currentTargetId]);
+
   const resizeSidebar = useCallback((width) => {
     setSidebarWidthPixels(clampSidebarWidth(width));
   }, []);
@@ -182,46 +254,85 @@ export default function App() {
 
   const sidebarWidth = sidebarOpen ? `${sidebarWidthPixels}px` : '0px';
   const leftOffset = sidebarWidth;
+  const currentTarget = targets.find((target) => target.id === currentTargetId) || LOCAL_TARGET;
+  const targetSections = useMemo(() => targets.map((target) => ({
+    target,
+    connection: connections[target.id] || 'connecting',
+    items: sidebarStates[target.id]?.items || [],
+    loading: sidebarStates[target.id]?.loading ?? true,
+    error: sidebarStates[target.id]?.error || '',
+    selectedId: sidebarStates[target.id]?.selectedId ?? null,
+    standaloneSessions: sidebarStates[target.id]?.standaloneSessions || [],
+    activeStandaloneId: sidebarStates[target.id]?.activeStandaloneId ?? null,
+  })), [connections, sidebarStates, targets]);
 
   return (
     <div className="min-h-screen w-full">
       <div className="relative min-h-screen min-w-0 overflow-hidden">
-        {targets.map((target) => (
-          <DaemonPane
-            key={target.id}
-            target={target}
-            visible={target.id === currentTargetId}
-            targets={targets}
-            currentTargetId={currentTargetId}
-            connections={connections}
-            onTargetChange={selectTarget}
-            terminalMode={terminalMode}
-            fontFamily={TERMINAL_FONTS[terminalFont].family}
-            theme={theme}
-            onThemeChange={setTheme}
-            onTerminalModeChange={setTerminalMode}
-            terminalFont={terminalFont}
-            onTerminalFontChange={setTerminalFont}
-            syncWindowFullscreen={syncWindowFullscreen}
-            onSyncWindowFullscreenChange={setSyncWindowFullscreen}
-            sidebarOpen={sidebarOpen}
-            sidebarWidth={sidebarWidth}
-            sidebarWidthPixels={sidebarWidthPixels}
-            sidebarResizing={sidebarResizing}
-            onSidebarResizeStart={() => setSidebarResizing(true)}
-            onSidebarResize={resizeSidebar}
-            onSidebarResizeEnd={finishSidebarResize}
-            onShowSidebar={onShowSidebar}
-            focusedPanel={focusedPanel}
-            onPanelFocus={setFocusedPanel}
-            onFullscreenChange={reportTerminalFullscreen}
-            fullscreenExitRevision={fullscreenExitRevision}
-            onRequestFullscreenExit={requestTerminalFullscreenExit}
-            onToggleSidebar={toggleSidebar}
-            leftOffset={leftOffset}
-            onConnectionChange={handleConnectionChange}
-          />
-        ))}
+        <div
+          className={`grid min-h-screen min-w-0 items-stretch ${sidebarResizing ? '' : 'transition-[grid-template-columns] duration-300 ease-in-out'}`}
+          style={{ gridTemplateColumns: `${sidebarWidth} minmax(0, 1fr)` }}
+        >
+          <TargetProvider value={currentTarget}>
+            <ActiveSessionsSidebar
+              sections={targetSections}
+              open={sidebarOpen}
+              currentTargetId={currentTargetId}
+              onTargetChange={selectTarget}
+              onActivate={activateSession}
+              onOpenDetails={openSessionDetails}
+              onActivateStandalone={activateStandalone}
+              onCloseStandalone={closeStandalone}
+              onCreateTerminal={createTerminal}
+              onOpenMarkdown={openMarkdown}
+              onToggle={toggleSidebar}
+              onNewRepo={() => openNewSession('repo')}
+              onNewScratchpad={() => openNewSession('scratchpad')}
+              theme={theme}
+              onThemeChange={setTheme}
+              terminalMode={terminalMode}
+              onTerminalModeChange={setTerminalMode}
+              terminalFont={terminalFont}
+              onTerminalFontChange={setTerminalFont}
+              onResetTerminals={resetCurrentTargetTerminals}
+              syncWindowFullscreen={syncWindowFullscreen}
+              onSyncWindowFullscreenChange={setSyncWindowFullscreen}
+              onContentFocus={focusCurrentContent}
+              focusedPanel={focusedPanel}
+              onPanelFocus={setFocusedPanel}
+              keyboardEnabled={sidebarStates[currentTargetId]?.keyboardEnabled ?? true}
+              sidebarWidth={sidebarWidth}
+              sidebarWidthPixels={sidebarWidthPixels}
+              sidebarResizing={sidebarResizing}
+              onSidebarResizeStart={() => setSidebarResizing(true)}
+              onSidebarResize={resizeSidebar}
+              onSidebarResizeEnd={finishSidebarResize}
+            />
+          </TargetProvider>
+          <div className="relative min-h-screen min-w-0 overflow-hidden">
+            {targets.map((target) => (
+              <DaemonPane
+                ref={controllerRefFor(target.id)}
+                key={target.id}
+                target={target}
+                visible={target.id === currentTargetId}
+                terminalMode={terminalMode}
+                fontFamily={TERMINAL_FONTS[terminalFont].family}
+                sidebarOpen={sidebarOpen}
+                onShowSidebar={onShowSidebar}
+                focusedPanel={focusedPanel}
+                onPanelFocus={setFocusedPanel}
+                onFullscreenChange={reportTerminalFullscreen}
+                fullscreenExitRevision={fullscreenExitRevision}
+                onRequestFullscreenExit={requestTerminalFullscreenExit}
+                onToggleSidebar={toggleSidebar}
+                leftOffset={leftOffset}
+                onConnectionChange={handleConnectionChange}
+                onSidebarStateChange={reportSidebarState}
+              />
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );

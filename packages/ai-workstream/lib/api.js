@@ -73,6 +73,7 @@ import {
   linearWorkSuggestions,
 } from './suggestions.js';
 import {
+  completeMarkdownPath,
   NotesFileError,
   listNotesFiles,
   notesRelativePath,
@@ -1302,6 +1303,9 @@ export function createApiService({
   const markdownRoute = async (req, res, url) => {
     const segment = url.pathname.slice('/markdown/'.length);
     try {
+      if (req.method === 'GET' && segment === 'complete') {
+        return json(res, 200, completeMarkdownPath(url.searchParams.get('path'), { cwd }));
+      }
       if (req.method === 'GET' && segment === 'file') {
         return json(res, 200, readMarkdownFile(url.searchParams.get('path'), { cwd }));
       }

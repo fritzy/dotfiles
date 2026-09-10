@@ -1,5 +1,5 @@
 // Minimal jsdom + React rendering harness for behavioral tests of the web-v2
-// components. The rest of the suite only checks source text; the bottom-drawer
+// components. The rest of the suite only checks source text; the standalone-session
 // keyboard navigation bugs this exists for (focus silently not moving) can only
 // be caught by actually mounting the components and inspecting document.activeElement.
 import { readFileSync } from 'node:fs';
@@ -53,11 +53,11 @@ export function setupJsdom({ url = 'http://localhost/' } = {}) {
     globalThis[key] = window[key];
   }
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);
+  window.HTMLElement.prototype.scrollIntoView ||= () => {};
   globalThis.requestAnimationFrame = (cb) => window.setTimeout(() => cb(Date.now()), 0);
   globalThis.cancelAnimationFrame = (id) => window.clearTimeout(id);
   globalThis.localStorage = window.localStorage;
-  // Collapses BottomTabs' tab-switch animation to 0ms so tests don't need to
-  // wait out a real 300ms timer to observe the settled state.
+  // Keep animation media queries deterministic for mounted components.
   window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   return dom;
@@ -85,7 +85,7 @@ export async function mountReact(element) {
   };
 }
 
-// Lets pending timers (BottomTabs' tab-switch animation) and effects settle,
+// Lets pending timers and effects settle,
 // wrapped in act() so React doesn't warn about updates it didn't see.
 export async function flush(ms = 0) {
   const React = await import('react');

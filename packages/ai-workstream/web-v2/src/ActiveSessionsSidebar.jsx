@@ -3,10 +3,9 @@ import {
 } from 'react';
 
 import {
-  AssetIcon, ChevronIcon, GearIcon, MaskIcon, ProviderIcon, ShellIcon, Spinner,
+  AssetIcon, ChevronIcon, EditorIcon, GearIcon, MaskIcon, ProviderIcon, ShellIcon, Spinner, XIcon,
 } from './icons.jsx';
 import BrandLogo from './BrandLogo.jsx';
-import DaemonTabs from './DaemonTabs.jsx';
 import { TERMINAL_FONTS, THEMES } from './constants.js';
 import { useTarget } from './target-context.js';
 import {
@@ -65,8 +64,16 @@ function SessionActivity({ item }) {
   );
 }
 
-const groupNavigationKey = (label) => `group:${label}`;
-const sessionNavigationKey = (id) => `session:${id}`;
+const CONNECTION_DOT_CLASS = {
+  open: 'bg-accent',
+  connecting: 'bg-soft',
+  closed: 'bg-danger',
+};
+
+const targetNavigationKey = (targetId) => `target:${targetId}`;
+const groupNavigationKey = (targetId, kind, label) => `group:${targetId}:${kind}:${label}`;
+const sessionNavigationKey = (targetId, id) => `session:${targetId}:${id}`;
+const standaloneNavigationKey = (targetId, id) => `standalone:${targetId}:${id}`;
 const SIDEBAR_VIEWS = ['sessions', 'settings'];
 
 function SessionRow({
@@ -94,6 +101,41 @@ function SessionRow({
       <span className="truncate">{displayName}</span>
       <SessionActivity item={item} />
     </button>
+  );
+}
+
+function StandaloneSessionRow({
+  item, selected, highlighted, navigationKey, onHighlight, onActivate, onClose, rowRef,
+}) {
+  const Icon = item.kind === 'editor' ? EditorIcon : ShellIcon;
+  const type = item.kind === 'editor' ? 'Markdown' : 'terminal';
+  return (
+    <div
+      className={`group/standalone grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center rounded-md transition-colors ${selected ? 'bg-row-highlight text-on-row-highlight' : highlighted ? 'outline-2 -outline-offset-2 outline-accent' : 'hover:bg-soft hover:text-on-soft'}`}
+      data-sidebar-standalone={item.id}
+    >
+      <button
+        ref={rowRef}
+        type="button"
+        className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-mono text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        title={item.path || item.label}
+        aria-label={`Open ${item.label} ${type} session`}
+        aria-current={selected ? 'true' : undefined}
+        onClick={onActivate}
+        onFocus={() => onHighlight(navigationKey)}
+      >
+        <Icon className="size-3.5 shrink-0" />
+        <span className="truncate">{item.label}</span>
+        {item.dirty && <span className="size-1.5 shrink-0 rounded-full bg-current" title="Unsaved changes" aria-label="Unsaved changes" />}
+      </button>
+      <button
+        type="button"
+        className="mr-1 flex size-6 items-center justify-center rounded text-current opacity-60 transition-opacity hover:bg-page/30 hover:opacity-100 focus-visible:outline-2 focus-visible:outline-accent"
+        aria-label={`Close ${item.label}`}
+        title={`Close ${item.label}`}
+        onClick={onClose}
+      ><XIcon className="size-3.5" /></button>
+    </div>
   );
 }
 
@@ -176,21 +218,39 @@ function SidebarResizeHandle({
 }
 
 export default function ActiveSessionsSidebar({
-  items, loading, error, open, selectedId, onActivate, onOpenDetails, onToggle, onNewRepo, onNewScratchpad,
-  targets, currentTargetId, connections, onTargetChange,
+  sections, open, onActivate, onOpenDetails,
+  onActivateStandalone, onCloseStandalone, onCreateTerminal, onOpenMarkdown,
+  onToggle, onNewRepo, onNewScratchpad,
+  currentTargetId, onTargetChange,
   theme, onThemeChange,
   terminalMode, onTerminalModeChange,
   terminalFont, onTerminalFontChange,
   onResetTerminals,
   syncWindowFullscreen, onSyncWindowFullscreenChange,
-  onWorkspaceFocus,
+  onContentFocus,
   focusedPanel, onPanelFocus, keyboardEnabled, sidebarWidth, sidebarWidthPixels, sidebarResizing,
   onSidebarResizeStart, onSidebarResize, onSidebarResizeEnd,
 }) {
   const target = useTarget();
   const targetId = target?.id || 'local';
-  const groups = useMemo(() => groupActiveSessionsByRepo(items), [items]);
+  const targetSections = useMemo(() => sections.map((section) => {
+    const workstreamGroups = groupActiveSessionsByRepo(section.items)
+      .map((group) => ({ ...group, kind: 'workstream' }));
+    const terminals = section.standaloneSessions.filter((item) => item.kind === 'terminal');
+    const markdown = section.standaloneSessions.filter((item) => item.kind === 'editor');
+    const standaloneGroups = [
+      terminals.length ? { label: 'Terminals', kind: 'standalone', items: terminals } : null,
+      markdown.length ? { label: 'Markdown', kind: 'standalone', items: markdown } : null,
+    ].filter(Boolean);
+    return {
+      ...section,
+      workstreamGroups,
+      groups: [...workstreamGroups, ...standaloneGroups],
+    };
+  }), [sections]);
+  const [collapsedTargets, setCollapsedTargets] = useState(() => new Set());
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const seenTargets = useRef(new Set());
   const [view, setView] = useState('sessions');
   const [terminalsResetting, setTerminalsResetting] = useState(false);
   const [terminalResetError, setTerminalResetError] = useState('');
@@ -201,14 +261,44 @@ export default function ActiveSessionsSidebar({
   const panelName = (forView) => `sidebar-${targetId}-${forView}`;
   const currentPanel = panelName(view);
   const sessionsPanel = panelName('sessions');
-  const navigationItems = useMemo(() => groups.flatMap((group) => [
-    {
-      kind: 'group', key: groupNavigationKey(group.label), groupLabel: group.label,
-    },
-    ...(collapsedGroups.has(group.label) ? [] : group.items.map((item) => ({
-      kind: 'session', key: sessionNavigationKey(item.id), groupLabel: group.label, item,
-    }))),
-  ]), [collapsedGroups, groups]);
+  const navigationItems = useMemo(() => targetSections.flatMap((section) => {
+    const sectionId = section.target.id;
+    const targetItem = {
+      kind: 'target', key: targetNavigationKey(sectionId), targetId: sectionId,
+    };
+    if (collapsedTargets.has(sectionId)) return [targetItem];
+    return [targetItem, ...section.groups.flatMap((group) => {
+      const groupItem = {
+        kind: 'group', key: groupNavigationKey(sectionId, group.kind, group.label),
+        targetId: sectionId, groupKind: group.kind, groupLabel: group.label,
+      };
+      if (collapsedGroups.has(groupItem.key)) return [groupItem];
+      return [groupItem, ...group.items.map((item) => (group.kind === 'standalone' ? {
+        kind: 'standalone', key: standaloneNavigationKey(sectionId, item.id),
+        targetId: sectionId, groupKind: group.kind, groupLabel: group.label, item,
+      } : {
+        kind: 'session', key: sessionNavigationKey(sectionId, item.id),
+        targetId: sectionId, groupKind: group.kind, groupLabel: group.label, item,
+      }))];
+    })];
+  }), [collapsedGroups, collapsedTargets, targetSections]);
+
+  useEffect(() => {
+    setCollapsedTargets((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const section of targetSections) {
+        const id = section.target.id;
+        if (seenTargets.current.has(id)) continue;
+        seenTargets.current.add(id);
+        if (id !== currentTargetId) {
+          next.add(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [currentTargetId, targetSections]);
 
   useEffect(() => {
     setHighlightedNavigationKey((current) => (
@@ -226,6 +316,18 @@ export default function ActiveSessionsSidebar({
   }, [focusedPanel, sessionsPanel, view]);
 
   useEffect(() => {
+    if (focusedPanel !== sessionsPanel) return;
+    const section = targetSections.find((item) => item.target.id === currentTargetId);
+    if (!section) return;
+    const selectedKey = section.activeStandaloneId
+      ? standaloneNavigationKey(currentTargetId, section.activeStandaloneId)
+      : section.selectedId != null ? sessionNavigationKey(currentTargetId, section.selectedId) : null;
+    if (selectedKey && navigationItems.some((item) => item.key === selectedKey)) {
+      setHighlightedNavigationKey(selectedKey);
+    }
+  }, [currentTargetId, focusedPanel, navigationItems, sessionsPanel, targetSections]);
+
+  useEffect(() => {
     if (!open || focusedPanel !== currentPanel) return undefined;
     const frame = requestAnimationFrame(() => panelRef.current?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(frame);
@@ -240,11 +342,12 @@ export default function ActiveSessionsSidebar({
       event.preventDefault();
       event.stopPropagation();
       if ((key === 'j' || key === 'k') && !event.repeat) navigateView(key === 'j' ? 1 : -1);
-      if (key === 'l' && !event.repeat) onWorkspaceFocus();
+      if (key === 'l' && !event.repeat) focusContent();
     }
     document.addEventListener('keydown', controlNavigation);
     return () => document.removeEventListener('keydown', controlNavigation);
-  }, [currentPanel, focusedPanel, keyboardEnabled, onWorkspaceFocus, open]);
+  }, [currentPanel, focusedPanel, highlightedNavigationKey, keyboardEnabled,
+    navigationItems, onActivate, onActivateStandalone, onContentFocus, open]);
 
   useEffect(() => {
     if (!open || view !== 'sessions' || focusedPanel !== sessionsPanel || !keyboardEnabled) return undefined;
@@ -269,38 +372,80 @@ export default function ActiveSessionsSidebar({
       const current = navigationItems[currentIndex];
       if (event.key === 'h') {
         event.preventDefault();
-        const groupKey = groupNavigationKey(current.groupLabel);
-        setHighlightedNavigationKey(groupKey);
-        setGroupCollapsed(current.groupLabel, true);
-        requestAnimationFrame(() => navigationRows.current.get(groupKey)?.focus());
+        if (current.kind === 'session' || current.kind === 'standalone') {
+          const groupKey = groupNavigationKey(current.targetId, current.groupKind, current.groupLabel);
+          setHighlightedNavigationKey(groupKey);
+          setGroupCollapsed(current.targetId, current.groupKind, current.groupLabel, true);
+          requestAnimationFrame(() => navigationRows.current.get(groupKey)?.focus());
+        } else {
+          const machineKey = targetNavigationKey(current.targetId);
+          setHighlightedNavigationKey(machineKey);
+          setTargetCollapsed(current.targetId, true);
+          requestAnimationFrame(() => navigationRows.current.get(machineKey)?.focus());
+        }
         return;
       }
       if (event.key === 'l') {
-        if (current.kind !== 'group') return;
+        if (current.kind === 'session' || current.kind === 'standalone') return;
         event.preventDefault();
-        setGroupCollapsed(current.groupLabel, false);
+        if (current.kind === 'target') setTargetCollapsed(current.targetId, false);
+        else setGroupCollapsed(current.targetId, current.groupKind, current.groupLabel, false);
         return;
       }
       if (target?.closest('button')) return;
       event.preventDefault();
-      if (current.kind === 'group') toggleGroup(current.groupLabel);
-      else onActivate(current.item);
+      if (current.kind === 'target') chooseTargetSection(current.targetId);
+      else if (current.kind === 'group') toggleGroup(current.targetId, current.groupKind, current.groupLabel);
+      else if (current.kind === 'standalone') onActivateStandalone(current.targetId, current.item.id);
+      else onActivate(current.targetId, current.item);
     }
     document.addEventListener('keydown', shortcuts);
     return () => document.removeEventListener('keydown', shortcuts);
-  }, [focusedPanel, highlightedNavigationKey, keyboardEnabled, navigationItems, onActivate, onWorkspaceFocus, open, sessionsPanel, view]);
+  }, [currentTargetId, focusedPanel, highlightedNavigationKey, keyboardEnabled, navigationItems,
+    onActivate, onActivateStandalone, onTargetChange, open, sessionsPanel, view]);
 
-  function setGroupCollapsed(label, collapsed) {
-    setCollapsedGroups((current) => {
-      if (current.has(label) === collapsed) return current;
+  function focusContent() {
+    const highlighted = navigationItems.find((item) => item.key === highlightedNavigationKey);
+    if (highlighted?.kind === 'standalone') {
+      onActivateStandalone(highlighted.targetId, highlighted.item.id);
+      return;
+    }
+    if (highlighted?.kind === 'session') {
+      onActivate(highlighted.targetId, highlighted.item);
+      return;
+    }
+    onContentFocus();
+  }
+
+  function setTargetCollapsed(id, collapsed) {
+    setCollapsedTargets((current) => {
+      if (current.has(id) === collapsed) return current;
       const next = new Set(current);
-      if (collapsed) next.add(label); else next.delete(label);
+      if (collapsed) next.add(id); else next.delete(id);
       return next;
     });
   }
 
-  function toggleGroup(label) {
-    setGroupCollapsed(label, !collapsedGroups.has(label));
+  function chooseTargetSection(id) {
+    const collapsed = collapsedTargets.has(id);
+    onTargetChange(id);
+    if (collapsed) setTargetCollapsed(id, false);
+    else if (id === currentTargetId) setTargetCollapsed(id, true);
+  }
+
+  function setGroupCollapsed(sectionId, kind, label, collapsed) {
+    const key = groupNavigationKey(sectionId, kind, label);
+    setCollapsedGroups((current) => {
+      if (current.has(key) === collapsed) return current;
+      const next = new Set(current);
+      if (collapsed) next.add(key); else next.delete(key);
+      return next;
+    });
+  }
+
+  function toggleGroup(sectionId, kind, label) {
+    const key = groupNavigationKey(sectionId, kind, label);
+    setGroupCollapsed(sectionId, kind, label, !collapsedGroups.has(key));
   }
 
   function chooseView(nextView) {
@@ -359,69 +504,133 @@ export default function ActiveSessionsSidebar({
               <h1 className="truncate text-2xl font-black tracking-tight">FritzWorks</h1>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button className="min-w-10 gap-1 px-2" aria-label="New repository session" title="New repository session" onClick={onNewRepo}>
+              <Button className="min-w-10 gap-1 px-2" aria-label={`New repository session on ${target?.name || 'Local'}`} title={`New repository session on ${target?.name || 'Local'}`} onClick={onNewRepo}>
                 <span className="text-lg leading-none" aria-hidden="true">+</span><AssetIcon name="git-branch" />
               </Button>
-              <Button className="min-w-10 gap-1 px-2" aria-label="New scratchpad session" title="New scratchpad session" onClick={onNewScratchpad}>
+              <Button className="min-w-10 gap-1 px-2" aria-label={`New scratchpad session on ${target?.name || 'Local'}`} title={`New scratchpad session on ${target?.name || 'Local'}`} onClick={onNewScratchpad}>
                 <span className="text-lg leading-none" aria-hidden="true">+</span><AssetIcon name="folder" />
               </Button>
             </div>
           </div>
           {view === 'sessions' ? (
             <div id={`${sessionsPanel}-view`} role="tabpanel" aria-labelledby={`${sessionsPanel}-tab`} className="grid min-w-0 content-start gap-1">
-              <DaemonTabs
-                targets={targets}
-                currentTargetId={currentTargetId}
-                connections={connections}
-                onChange={onTargetChange}
-              />
               <div className="flex min-h-9 items-center justify-between gap-2 px-2">
-                <h2 className="truncate text-sm font-bold text-primary">Active &amp; Paused</h2>
-                {loading && <Spinner className="size-3.5" />}
+                <h2 className="truncate text-sm font-bold text-primary">Sessions</h2>
               </div>
-              {error && <p className="m-1 rounded border border-danger/40 bg-danger/10 p-2 text-xs text-danger">{error}</p>}
-              {!loading && !error && groups.length === 0 && <p className="px-2 py-4 text-xs text-muted">No active or paused sessions.</p>}
-              {groups.map((group) => {
-                const collapsed = collapsedGroups.has(group.label);
-                const navigationKey = groupNavigationKey(group.label);
+              {targetSections.map((section) => {
+                const sectionId = section.target.id;
+                const collapsed = collapsedTargets.has(sectionId);
+                const navigationKey = targetNavigationKey(sectionId);
                 const highlighted = highlightedNavigationKey === navigationKey;
+                const selected = sectionId === currentTargetId;
+                const connectionLabel = section.connection === 'open'
+                  ? 'connected' : section.connection === 'connecting' ? 'connecting' : 'reconnecting';
                 return (
-                  <section key={group.label} className="min-w-0">
+                  <section key={sectionId} className="min-w-0" data-sidebar-target={sectionId}>
                     <button
                       ref={(node) => {
                         if (node) navigationRows.current.set(navigationKey, node); else navigationRows.current.delete(navigationKey);
                       }}
                       type="button"
-                      data-sidebar-group={group.label}
-                      className={`flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-sm font-bold transition-colors focus-visible:outline-2 focus-visible:outline-accent ${highlighted ? 'bg-row-highlight text-on-row-highlight outline-2 -outline-offset-2 outline-accent' : 'text-primary hover:bg-soft hover:text-on-soft'}`}
+                      className={`flex min-h-9 w-full items-center gap-1.5 border-y border-primary/30 px-2 py-1.5 text-left text-sm font-black transition-colors focus-visible:outline-2 focus-visible:outline-accent ${highlighted ? 'bg-row-highlight text-on-row-highlight outline-2 -outline-offset-2 outline-accent' : selected ? 'bg-soft text-on-soft' : 'text-primary hover:bg-soft hover:text-on-soft'}`}
                       aria-expanded={!collapsed}
-                      onClick={() => toggleGroup(group.label)}
+                      aria-label={`${section.target.name}; ${connectionLabel}; ${section.items.length + section.standaloneSessions.length} sessions`}
+                      onClick={() => chooseTargetSection(sectionId)}
                       onFocus={() => setHighlightedNavigationKey(navigationKey)}
                     >
                       <ChevronIcon className={`size-3.5 transition-transform ${collapsed ? '-rotate-90' : ''}`} />
-                      <span className="truncate">{group.label}</span>
-                      <span className={`ml-auto text-[0.65rem] font-normal tabular-nums ${highlighted ? 'text-on-row-highlight/70' : 'text-muted'}`}>{group.items.length}</span>
+                      <span className={`size-2 shrink-0 rounded-full ${CONNECTION_DOT_CLASS[section.connection] || CONNECTION_DOT_CLASS.connecting}`} aria-hidden="true" />
+                      <span className="truncate">{section.target.name}</span>
+                      {section.loading
+                        ? <Spinner className="ml-auto size-3.5" />
+                        : <span className={`ml-auto text-[0.65rem] font-normal tabular-nums ${highlighted ? 'text-on-row-highlight/70' : 'text-muted'}`}>{section.items.length + section.standaloneSessions.length}</span>}
                     </button>
                     <div className={`grid transition-[grid-template-rows,opacity] duration-200 ${collapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}>
                       <div className="min-h-0 overflow-hidden">
-                        <div className="grid gap-0.5 pb-1 pl-2">
-                          {group.items.map((item) => (
-                            <SessionRow
-                              key={item.id}
-                              item={item}
-                              selected={String(selectedId) === String(item.id)}
-                              navigationKey={sessionNavigationKey(item.id)}
-                              highlighted={highlightedNavigationKey === sessionNavigationKey(item.id)}
-                              onHighlight={setHighlightedNavigationKey}
-                              onActivate={onActivate}
-                              onOpenDetails={onOpenDetails}
-                              rowRef={(node) => {
-                                const key = sessionNavigationKey(item.id);
-                                if (node) navigationRows.current.set(key, node); else navigationRows.current.delete(key);
-                              }}
-                            />
-                          ))}
+                        <div className="flex items-center gap-1.5 px-2 py-1.5" data-sidebar-session-actions={sectionId}>
+                          <button
+                            type="button"
+                            className="inline-flex min-h-7 flex-1 items-center justify-center gap-1 rounded-md border border-primary/60 px-2 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+                            aria-label={`New ${section.target.name} terminal`}
+                            title={`New ${section.target.name} terminal`}
+                            onClick={() => onCreateTerminal(sectionId)}
+                          ><span className="text-sm font-bold" aria-hidden="true">+</span><ShellIcon className="size-3.5" /> Terminal</button>
+                          <button
+                            type="button"
+                            className="inline-flex min-h-7 flex-1 items-center justify-center gap-1 rounded-md border border-primary/60 px-2 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+                            aria-label={`Open ${section.target.name} Markdown`}
+                            title={`Open ${section.target.name} Markdown`}
+                            onClick={() => onOpenMarkdown(sectionId)}
+                          ><span className="text-sm font-bold" aria-hidden="true">+</span><EditorIcon className="size-3.5" /> Markdown</button>
                         </div>
+                        {section.error && <p className="m-1 rounded border border-danger/40 bg-danger/10 p-2 text-xs text-danger">{section.error}</p>}
+                        {!section.loading && !section.error && section.workstreamGroups.length === 0 && <p className="px-3 py-2 text-xs text-muted">No active or paused workstreams.</p>}
+                        {section.groups.map((group) => {
+                          const groupKey = groupNavigationKey(sectionId, group.kind, group.label);
+                          const groupCollapsed = collapsedGroups.has(groupKey);
+                          const groupHighlighted = highlightedNavigationKey === groupKey;
+                          return (
+                            <section key={`${group.kind}:${group.label}`} className="min-w-0 pl-2">
+                              <button
+                                ref={(node) => {
+                                  if (node) navigationRows.current.set(groupKey, node); else navigationRows.current.delete(groupKey);
+                                }}
+                                type="button"
+                                data-sidebar-group={group.label}
+                                className={`flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-sm font-bold transition-colors focus-visible:outline-2 focus-visible:outline-accent ${groupHighlighted ? 'bg-row-highlight text-on-row-highlight outline-2 -outline-offset-2 outline-accent' : 'text-primary hover:bg-soft hover:text-on-soft'}`}
+                                aria-expanded={!groupCollapsed}
+                                onClick={() => toggleGroup(sectionId, group.kind, group.label)}
+                                onFocus={() => setHighlightedNavigationKey(groupKey)}
+                              >
+                                <ChevronIcon className={`size-3.5 transition-transform ${groupCollapsed ? '-rotate-90' : ''}`} />
+                                <span className="truncate">{group.label}</span>
+                                <span className={`ml-auto text-[0.65rem] font-normal tabular-nums ${groupHighlighted ? 'text-on-row-highlight/70' : 'text-muted'}`}>{group.items.length}</span>
+                              </button>
+                              <div className={`grid transition-[grid-template-rows,opacity] duration-200 ${groupCollapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}>
+                                <div className="min-h-0 overflow-hidden">
+                                  <div className="grid gap-0.5 pb-1 pl-2">
+                                    {group.items.map((item) => {
+                                      if (group.kind === 'standalone') {
+                                        const itemKey = standaloneNavigationKey(sectionId, item.id);
+                                        return (
+                                          <StandaloneSessionRow
+                                            key={item.id}
+                                            item={item}
+                                            selected={String(section.activeStandaloneId) === String(item.id)}
+                                            navigationKey={itemKey}
+                                            highlighted={highlightedNavigationKey === itemKey}
+                                            onHighlight={setHighlightedNavigationKey}
+                                            onActivate={() => onActivateStandalone(sectionId, item.id)}
+                                            onClose={() => onCloseStandalone(sectionId, item.id)}
+                                            rowRef={(node) => {
+                                              if (node) navigationRows.current.set(itemKey, node); else navigationRows.current.delete(itemKey);
+                                            }}
+                                          />
+                                        );
+                                      }
+                                      const itemKey = sessionNavigationKey(sectionId, item.id);
+                                      return (
+                                        <SessionRow
+                                          key={item.id}
+                                          item={item}
+                                          selected={String(section.selectedId) === String(item.id)}
+                                          navigationKey={itemKey}
+                                          highlighted={highlightedNavigationKey === itemKey}
+                                          onHighlight={setHighlightedNavigationKey}
+                                          onActivate={() => onActivate(sectionId, item)}
+                                          onOpenDetails={() => onOpenDetails(sectionId, item.id)}
+                                          rowRef={(node) => {
+                                            if (node) navigationRows.current.set(itemKey, node); else navigationRows.current.delete(itemKey);
+                                          }}
+                                        />
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              </div>
+                            </section>
+                          );
+                        })}
                       </div>
                     </div>
                   </section>

@@ -6,6 +6,7 @@
 // exiting, so callers decide how to surface the problem.
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -688,10 +689,22 @@ export function closePane(row, kind, { run = zellij } = {}) {
 // indistinguishable in xterm from a bare pty.
 
 const BROWSER_TERMINAL_CONFIG_FILE = join(tmpdir(), 'ws-browser-terminal-config.kdl');
+const BROWSER_TERMINAL_SESSION_MAX_BYTES = 48;
+
+function compactBrowserTerminalSessionName(session, prefix) {
+  if (Buffer.byteLength(session) <= BROWSER_TERMINAL_SESSION_MAX_BYTES) return session;
+  const digest = createHash('sha256').update(session).digest('hex').slice(0, 24);
+  return `${prefix}h-${digest}`;
+}
 
 export function browserTerminalSessionName({ sessionId = null, role = 'shell', terminalId = 'default' } = {}) {
-  if (sessionId !== null && sessionId !== undefined) return `ws-browser-${role}-${sessionId}`;
-  return `ws-browser-terminal-${terminalId}`;
+  const prefix = sessionId !== null && sessionId !== undefined
+    ? `ws-browser-${role}-`
+    : 'ws-browser-terminal-';
+  const session = `${prefix}${sessionId !== null && sessionId !== undefined ? sessionId : terminalId}`;
+  // Zellij places the session name below its runtime/contract directories.
+  // Keep long browser IDs from overflowing Unix's small sockaddr_un path.
+  return compactBrowserTerminalSessionName(session, prefix);
 }
 
 export function browserAgentSessionName(id) {

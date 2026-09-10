@@ -137,6 +137,10 @@ export function readMarkdownFile(path, signal, target) {
   return request(`/markdown/file?path=${encodeURIComponent(path)}`, { signal }, target);
 }
 
+export function completeMarkdownPath(path, signal, target) {
+  return request(`/markdown/complete?path=${encodeURIComponent(path)}`, { signal }, target);
+}
+
 export function writeMarkdownFile({ path, content, version }, target) {
   return request('/markdown/file', {
     method: 'PUT',

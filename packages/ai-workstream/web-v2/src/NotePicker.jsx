@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { listNotesFiles, openWeeklyNote, readMarkdownFile } from './api.js';
+import {
+  completeMarkdownPath, listNotesFiles, openWeeklyNote, readMarkdownFile,
+} from './api.js';
 import { CalendarIcon, EditorIcon, Spinner, XIcon } from './icons.jsx';
 import { useTarget } from './target-context.js';
 import { inputClass } from './ui.jsx';
@@ -14,7 +16,12 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
   const [busy, setBusy] = useState('');
   const [query, setQuery] = useState('');
   const [markdownPath, setMarkdownPath] = useState('');
+  const [pathMatches, setPathMatches] = useState([]);
+  const [selectedPathMatch, setSelectedPathMatch] = useState(-1);
+  const [completionStatus, setCompletionStatus] = useState('');
+  const [completingPath, setCompletingPath] = useState(false);
   const pathRef = useRef(null);
+  const completionRequest = useRef(0);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -75,6 +82,75 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
     }
   }
 
+  function clearPathMatches() {
+    completionRequest.current += 1;
+    setPathMatches([]);
+    setSelectedPathMatch(-1);
+    setCompletionStatus('');
+    setCompletingPath(false);
+  }
+
+  function usePathMatch(match) {
+    setMarkdownPath(match.path);
+    setPathMatches([]);
+    setSelectedPathMatch(-1);
+    setCompletionStatus(match.type === 'directory'
+      ? 'Directory completed. Press Tab again to continue.'
+      : 'File completed. Press Enter to open it.');
+    requestAnimationFrame(() => pathRef.current?.focus());
+  }
+
+  async function completePath() {
+    const request = completionRequest.current + 1;
+    completionRequest.current = request;
+    setCompletingPath(true);
+    setCompletionStatus('');
+    try {
+      const result = await completeMarkdownPath(markdownPath, undefined, target);
+      if (request !== completionRequest.current) return;
+      const matches = result.matches || [];
+      setMarkdownPath(result.completion);
+      setSelectedPathMatch(-1);
+      if (matches.length <= 1) {
+        setPathMatches([]);
+        setCompletionStatus(matches.length === 0
+          ? 'No matching directories or Markdown files.'
+          : matches[0].type === 'directory'
+            ? 'Directory completed. Press Tab again to continue.'
+            : 'File completed. Press Enter to open it.');
+      } else {
+        setPathMatches(matches);
+        setCompletionStatus(`${matches.length} matches. Use ↑/↓ and Enter to choose.`);
+      }
+    } catch (cause) {
+      if (request === completionRequest.current) setCompletionStatus(cause.message);
+    } finally {
+      if (request === completionRequest.current) setCompletingPath(false);
+    }
+  }
+
+  function pathKeyDown(event) {
+    if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      void completePath();
+      return;
+    }
+    if (pathMatches.length === 0) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      setSelectedPathMatch((current) => {
+        if (current === -1) return direction === 1 ? 0 : pathMatches.length - 1;
+        return (current + direction + pathMatches.length) % pathMatches.length;
+      });
+      return;
+    }
+    if (event.key === 'Enter' && selectedPathMatch >= 0) {
+      event.preventDefault();
+      usePathMatch(pathMatches[selectedPathMatch]);
+    }
+  }
+
   const term = query.trim().toLowerCase();
   const files = (data?.files || []).filter((file) => !term || file.path.toLowerCase().includes(term));
   // Once the week's file exists it is just another entry in the list below, so the
@@ -106,7 +182,16 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
               placeholder="/path/to/file.md or ~/file.md"
               value={markdownPath}
               aria-label="Markdown file path"
-              onChange={(event) => setMarkdownPath(event.target.value)}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={pathMatches.length > 0}
+              aria-controls="markdown-path-matches"
+              aria-activedescendant={selectedPathMatch >= 0 ? `markdown-path-match-${selectedPathMatch}` : undefined}
+              onChange={(event) => {
+                setMarkdownPath(event.target.value);
+                clearPathMatches();
+              }}
+              onKeyDown={pathKeyDown}
             />
             <button
               type="submit"
@@ -114,7 +199,30 @@ export default function NotePicker({ open, onClose, onOpenFile, openPaths, leftO
               disabled={busy === 'file'}
             >{busy === 'file' ? <Spinner className="size-3.5" /> : 'Open'}</button>
           </div>
-          <p className="text-[0.68rem] text-muted">Paths are resolved on the selected FritzWorks machine.</p>
+          {pathMatches.length > 0 && (
+            <ul id="markdown-path-matches" role="listbox" className="max-h-44 overflow-y-auto rounded-md border border-primary/40 bg-page p-1 shadow-lg">
+              {pathMatches.map((match, index) => (
+                <li key={match.path}>
+                  <button
+                    id={`markdown-path-match-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={selectedPathMatch === index}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left font-mono text-xs ${selectedPathMatch === index ? 'bg-soft text-on-soft' : 'text-ink hover:bg-soft hover:text-on-soft'}`}
+                    onMouseEnter={() => setSelectedPathMatch(index)}
+                    onClick={() => usePathMatch(match)}
+                  >
+                    <span className="w-3 shrink-0 text-primary" aria-hidden="true">{match.type === 'directory' ? '›' : '·'}</span>
+                    <span className="min-w-0 flex-1 truncate" title={match.path}>{match.path}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="flex min-h-4 items-center gap-1 text-[0.68rem] text-muted" aria-live="polite">
+            {completingPath && <Spinner className="size-3" />}
+            {completionStatus || 'Press Tab to complete paths on the selected FritzWorks machine.'}
+          </p>
         </form>
 
         <div className="shrink-0 px-3 pt-2 text-xs font-bold text-primary">Work notes</div>

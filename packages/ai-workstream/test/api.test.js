@@ -1388,6 +1388,14 @@ test('notes editor endpoints read, write, and remember markdown files', async (t
 
   const markdownPath = join(dir, 'standalone.md');
   writeFileSync(markdownPath, '# Standalone');
+  mkdirSync(join(dir, 'standalone-notes'));
+  const completed = await (await fetch(`${base}/markdown/complete?path=${encodeURIComponent(join(dir, 'stand'))}`)).json();
+  assert.equal(completed.completion, join(dir, 'standalone'));
+  assert.deepEqual(completed.matches.map((match) => [match.path, match.type]), [
+    [`${join(dir, 'standalone-notes')}/`, 'directory'],
+    [markdownPath, 'file'],
+  ]);
+  assert.equal((await fetch(`${base}/markdown/complete`)).status, 400);
   const markdown = await (await fetch(`${base}/markdown/file?path=${encodeURIComponent(markdownPath)}`)).json();
   assert.equal(markdown.path, markdownPath);
   assert.equal(markdown.content, '# Standalone');

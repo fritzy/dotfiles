@@ -1,4 +1,4 @@
-// Behavioral tests for the bottom-drawer keyboard navigation (Ctrl-H/J/K/L):
+// Behavioral tests for standalone-session keyboard navigation (Ctrl-H/J/K/L):
 // unlike the rest of the web-v2 suite, these actually mount the real
 // BottomTabs.jsx and MarkdownEditor.jsx (LocalTerminal is swapped for a
 // lightweight stand-in — xterm/canvas aren't meaningful under jsdom, and its
@@ -71,7 +71,23 @@ async function togglePreview(container) {
   await flush(20);
 }
 
-test('remembered bottom terminals mount and reattach while the drawer stays closed', async (t) => {
+test('Ctrl-E toggles a Markdown tab between Edit and Preview', async (t) => {
+  const { ref, container } = await harness(t);
+
+  await openNote(ref);
+  const editPane = textarea(container);
+  const toPreview = await dispatchKey(editPane, 'e');
+  assert.equal(toPreview.defaultPrevented, true, 'Ctrl-E must not reach the browser');
+  assert.equal(textarea(container), null);
+  assert.equal(document.activeElement, previewPane(container), 'Ctrl-E focuses Preview after switching to it');
+
+  const toEdit = await dispatchKey(previewPane(container), 'e');
+  assert.equal(toEdit.defaultPrevented, true, 'Ctrl-E is captured in Preview too');
+  assert.equal(previewPane(container), null);
+  assert.equal(document.activeElement, textarea(container), 'a second Ctrl-E returns focus to Edit');
+});
+
+test('remembered standalone terminals mount and reattach while no session is selected', async (t) => {
   const { container } = await harness(t, {
     browserState: {
       terminals: [
@@ -88,21 +104,17 @@ test('remembered bottom terminals mount and reattach while the drawer stays clos
     ['terminal-one', 'terminal-two'],
     'all restored terminals mount, so each one attempts its Zellij claim',
   );
-  assert.equal(container.querySelector('[role="tabpanel"]').getAttribute('aria-hidden'), 'true');
+  assert.equal(container.querySelector('[data-standalone-sessions] > section').getAttribute('aria-hidden'), 'true');
 });
 
-test('a lone note tab regains real keyboard focus after Ctrl-J, in Edit and Preview mode', async (t) => {
+test('a lone Markdown session regains keyboard focus in Edit and Preview mode', async (t) => {
   const { ref, container } = await harness(t);
 
   await openNote(ref);
   assert.equal(document.activeElement, textarea(container), 'opening the note focuses its textarea');
 
-  // Simulate leaving to a workspace terminal: BottomTabs.hide() only updates its
-  // own bookkeeping (nothing blurs the outgoing tab, same as the real app —
-  // it's the destination panel's own focus effect that steals focus away), so
-  // the blur has to be simulated explicitly to reach the precondition Ctrl-J
-  // actually has to recover from. Then Ctrl-J is exactly what App.jsx calls:
-  // bottomTabsRef.current.focusLastUsed().
+  // Simulate leaving for a workstream. The destination panel normally steals
+  // focus, so blur explicitly before exercising the same imperative handoff.
   await actCall(() => ref.current.hide());
   await flush(20);
   await actCall(() => document.activeElement.blur());
@@ -110,7 +122,7 @@ test('a lone note tab regains real keyboard focus after Ctrl-J, in Edit and Prev
 
   await actCall(() => ref.current.focusLastUsed());
   await flush(20);
-  assert.equal(document.activeElement, textarea(container), 'Ctrl-J must refocus the only tab, in Edit mode');
+  assert.equal(document.activeElement, textarea(container), 'the only Markdown session is refocused in Edit mode');
 
   // Now the same round trip with the note left in Preview mode.
   await togglePreview(container);
@@ -125,77 +137,44 @@ test('a lone note tab regains real keyboard focus after Ctrl-J, in Edit and Prev
   assert.equal(
     document.activeElement,
     previewPane(container),
-    'Ctrl-J must refocus the only tab even when it is showing its Preview pane',
+    'the only Markdown session is refocused even when it is showing its Preview pane',
   );
 });
 
-test('Ctrl-H/L move both focus and the visible tab consistently between a terminal and a note', async (t) => {
-  const { ref, container } = await harness(t);
-
-  await createTerminal(ref);
-  const [terminal] = fakeTerminals(container);
-  assert.equal(document.activeElement, terminal, 'creating a terminal focuses it');
-
-  await openNote(ref);
-  assert.equal(document.activeElement, textarea(container), 'opening a note focuses it');
-
-  await dispatchKey(textarea(container), 'h');
-  assert.equal(document.activeElement, terminal, 'Ctrl-H from the note must focus the adjacent terminal tab');
-
-  await dispatchKey(terminal, 'l');
-  assert.equal(document.activeElement, textarea(container), 'Ctrl-L from the terminal must focus the adjacent note tab');
-
-  // Toggling Preview while the note is the focused tab must not strand focus.
-  await togglePreview(container);
-  assert.equal(document.activeElement, previewPane(container));
-
-  await dispatchKey(previewPane(container), 'h');
-  assert.equal(document.activeElement, terminal, 'Ctrl-H from a Preview-mode note must still reach the terminal');
-
-  await dispatchKey(terminal, 'l');
-  assert.equal(
-    document.activeElement,
-    previewPane(container),
-    'Ctrl-L back into a note left in Preview mode must focus its preview pane, not leave focus stranded',
-  );
-});
-
-test('Ctrl-H/L always target the immediately adjacent tab across a mixed strip', async (t) => {
-  const { ref, container } = await harness(t);
-
-  await createTerminal(ref);
-  await openNote(ref);
-  await createTerminal(ref);
-  const [firstTerminal, secondTerminal] = fakeTerminals(container);
-  assert.equal(document.activeElement, secondTerminal, 'the most recently created tab is focused');
-
-  await dispatchKey(secondTerminal, 'h');
-  assert.equal(document.activeElement, textarea(container), 'one step left from the last terminal must land on the note');
-
-  await dispatchKey(textarea(container), 'h');
-  assert.equal(document.activeElement, firstTerminal, 'one step left from the note must land on the first terminal');
-
-  await dispatchKey(firstTerminal, 'l');
-  assert.equal(document.activeElement, textarea(container), 'one step right from the first terminal must land back on the note');
-
-  await dispatchKey(textarea(container), 'l');
-  assert.equal(document.activeElement, secondTerminal, 'one step right from the note must land on the last terminal');
-});
-
-test('Ctrl-H at the first tab defers to the sidebar; Ctrl-L at the last tab is a no-op', async (t) => {
+test('Ctrl-H from a standalone terminal returns to the sidebar; J/K/L stay in place', async (t) => {
   const { ref, container, sidebarFocused } = await harness(t);
 
   await createTerminal(ref);
+  const terminal = fakeTerminals(container)[0];
+  assert.equal(document.activeElement, terminal, 'creating a terminal focuses it');
+
+  for (const key of ['j', 'k', 'l']) {
+    const event = await dispatchKey(terminal, key);
+    assert.equal(event.defaultPrevented, true, `Ctrl-${key.toUpperCase()} must not reach the shell`);
+    assert.deepEqual(sidebarFocused, []);
+  }
+
+  const event = await dispatchKey(terminal, 'h');
+  assert.equal(event.defaultPrevented, true, 'Ctrl-H must not reach the shell');
+  assert.deepEqual(sidebarFocused, [true], 'Ctrl-H hands the standalone session back to the left sidebar');
+});
+
+test('Ctrl-H returns Markdown Edit and Preview sessions to the sidebar', async (t) => {
+  const { ref, container, sidebarFocused } = await harness(t);
+
   await openNote(ref);
-  const [terminal] = fakeTerminals(container);
+  const edit = textarea(container);
+  for (const key of ['j', 'k', 'l']) {
+    const event = await dispatchKey(edit, key);
+    assert.equal(event.defaultPrevented, true, `Ctrl-${key.toUpperCase()} must stay within the standalone editor`);
+    assert.deepEqual(sidebarFocused, []);
+  }
+  await dispatchKey(edit, 'h');
+  assert.deepEqual(sidebarFocused, [true]);
 
-  await dispatchKey(textarea(container), 'l');
-  assert.equal(document.activeElement, textarea(container), 'there is nothing to the right of the last tab');
-
-  await dispatchKey(textarea(container), 'h');
-  assert.equal(document.activeElement, terminal);
-
-  await dispatchKey(terminal, 'h');
-  assert.equal(document.activeElement, terminal, 'there is nothing to the left of the first tab');
-  assert.deepEqual(sidebarFocused, [true], 'Ctrl-H at the first tab hands off to the sidebar instead');
+  await actCall(() => ref.current.focusLastUsed());
+  await flush(20);
+  await togglePreview(container);
+  await dispatchKey(previewPane(container), 'h');
+  assert.deepEqual(sidebarFocused, [true, true]);
 });

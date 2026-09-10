@@ -81,6 +81,27 @@ test('browser terminal session names are stable per role and standalone terminal
   );
 });
 
+test('browser terminal session names compact IDs that would overflow the Zellij socket path', () => {
+  const failingTerminalId = 'terminal-7b1d9222-8f54-4aed-9a64-c8d1fa67b6ef';
+  const first = browserTerminalSessionName({ terminalId: failingTerminalId });
+  const second = browserTerminalSessionName({ terminalId: failingTerminalId });
+  const different = browserTerminalSessionName({
+    terminalId: 'terminal-8b1d9222-8f54-4aed-9a64-c8d1fa67b6ef',
+  });
+
+  assert.equal(Buffer.byteLength(first) <= 48, true);
+  assert.match(first, /^ws-browser-terminal-h-[a-f0-9]{24}$/);
+  assert.equal(first, second);
+  assert.notEqual(first, different);
+
+  const workstream = browserTerminalSessionName({
+    sessionId: 'a-very-long-configured-workstream-identifier-that-needs-compaction',
+    role: 'agent',
+  });
+  assert.equal(Buffer.byteLength(workstream) <= 48, true);
+  assert.match(workstream, /^ws-browser-agent-h-[a-f0-9]{24}$/);
+});
+
 test('browser terminals discard an exited snapshot, recreate the session, and reuse a live one', () => {
   const identity = { terminalId: 'terminal-restart' };
   const session = browserTerminalSessionName(identity);
