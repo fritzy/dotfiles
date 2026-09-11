@@ -217,17 +217,28 @@ test('resources resolve from their owning session and protect discovered and dir
   const opened = openResourcePanel(db, association.resource.id, {}, revision);
   revision = opened.revision;
   assert.equal(opened.panel.kind, 'markdown');
+  assert.equal(opened.panel.markdownMode, 'preview');
   assert.throws(
     () => removeResource(db, association.resource.id, { dirty: true }, revision),
     (error) => error instanceof PanelModelError && error.status === 409,
   );
 
-  const discoveredDir = join(notes, 'work', '2025', 'workstream', `${row.id}-project-resources`);
+  const canonicalDir = join(notes, 'work', '2026', 'workstream', row.uuid);
+  const discoveredDir = join(notes, 'work', '2025', 'workstream', `${row.id}-project-old-branch`);
+  mkdirSync(canonicalDir, { recursive: true });
   mkdirSync(discoveredDir, { recursive: true });
-  writeFileSync(join(discoveredDir, '2025-12-31-note.md'), '# Note\n');
+  const canonicalPath = join(canonicalDir, '2026-note.md');
+  const legacyPath = join(discoveredDir, '2025-12-31-note.md');
+  writeFileSync(canonicalPath, '# Canonical note\n');
+  writeFileSync(legacyPath, '# Legacy note\n');
   syncDiscoveredSessionNotes(db, notes);
-  const discovered = readPanelLayout(db).groups.find((item) => item.id === group.id)
-    .resources.find((resource) => resource.discovered);
+  const discoveredResources = readPanelLayout(db).groups.find((item) => item.id === group.id)
+    .resources.filter((resource) => resource.discovered);
+  assert.deepEqual(
+    new Set(discoveredResources.map((resource) => resource.value)),
+    new Set([canonicalPath, legacyPath]),
+  );
+  const discovered = discoveredResources.find((resource) => resource.value === legacyPath);
   assert.ok(discovered);
   assert.equal(discovered.disassociate, false);
   openResourcePanel(db, discovered.id, {}, readPanelLayout(db).revision);
@@ -240,7 +251,7 @@ test('resources resolve from their owning session and protect discovered and dir
     (error) => error instanceof PanelModelError && error.status === 404,
   );
 
-  const discoveredAgainDir = join(notes, 'work', '2024', 'workstream', `${row.id}-project-resources`);
+  const discoveredAgainDir = join(notes, 'work', '2024', 'workstream', `${row.id}-project-another-old-branch`);
   mkdirSync(discoveredAgainDir, { recursive: true });
   writeFileSync(join(discoveredAgainDir, '2024-note.md'), '# Older note\n');
   syncDiscoveredSessionNotes(db, notes);
@@ -249,6 +260,64 @@ test('resources resolve from their owning session and protect discovered and dir
   assert.throws(
     () => removeResource(db, discoveredAgain.id, {}, readPanelLayout(db).revision),
     (error) => error instanceof PanelModelError && error.status === 403,
+  );
+});
+
+test('resource association can open a panel for an active unfocused session', (t) => {
+  const { db, root } = fixture(t);
+  const sessionPath = join(root, 'active-session');
+  mkdirSync(sessionPath, { recursive: true });
+  writeFileSync(join(sessionPath, 'active.md'), '# Active\n');
+  writeFileSync(join(sessionPath, 'inactive.md'), '# Inactive\n');
+  const row = upsertWorkstream(db, {
+    org: 'example', repo: 'project', branch: 'active-resource', source: 'origin',
+    path: sessionPath, status: 'active', created_at: '2026-01-01T00:00:00Z',
+    last_joined_at: '2026-01-01T00:00:00Z',
+  });
+  const { group } = ensureSessionPanelGroup(db, {
+    id: row.id, type: 'repo', name: 'Active resource', path: sessionPath,
+  }, { bump: true });
+  const focused = createPanelGroup(db, { type: 'terminal' }, readPanelLayout(db).revision);
+
+  const associated = addResource(db, group.id, {
+    kind: 'markdown', value: 'active.md',
+  }, focused.revision, { cwd: root, home: root, activeSessionIds: [row.id] });
+  assert.equal(associated.panel, undefined);
+  assert.equal(readPanelLayout(db).groups.find((candidate) => candidate.id === group.id).panels
+    .some((panel) => panel.resourceId === associated.resource.id), false);
+
+  const opened = addResource(db, group.id, {
+    kind: 'markdown', value: 'active.md', open: true,
+  }, associated.revision, { cwd: root, home: root, activeSessionIds: [row.id] });
+  assert.equal(opened.opened, true);
+  assert.equal(opened.panel.markdownMode, 'preview');
+  assert.equal(opened.panel.kind, 'markdown');
+  assert.equal(opened.panel.minimized, false);
+  assert.equal(opened.restored, false);
+  assert.equal(readPanelLayout(db).activeGroupId, focused.groupId, 'opening does not focus the owning session');
+
+  const minimized = updatePanel(db, opened.panel.id, { minimized: true, markdownMode: 'edit' }, opened.revision);
+  const restored = addResource(db, group.id, {
+    kind: 'markdown', value: 'active.md', open: true,
+  }, minimized.revision, { cwd: root, home: root, activeSessionIds: [row.id] });
+  assert.equal(restored.opened, true);
+  assert.equal(restored.restored, true);
+  assert.equal(restored.panel.id, opened.panel.id);
+  assert.equal(restored.panel.minimized, false);
+  assert.equal(restored.panel.markdownMode, 'edit', 'restoring preserves an explicitly selected mode');
+  assert.equal(readPanelLayout(db).activeGroupId, focused.groupId);
+
+  const inactive = addResource(db, group.id, {
+    kind: 'markdown', value: 'inactive.md', open: true,
+  }, restored.revision, { cwd: root, home: root, activeSessionIds: [] });
+  assert.equal(inactive.opened, false);
+  assert.equal(inactive.panel, undefined);
+  const layout = readPanelLayout(db);
+  assert.equal(layout.activeGroupId, focused.groupId);
+  assert.equal(
+    layout.groups.find((candidate) => candidate.id === group.id).panels
+      .some((panel) => panel.resourceId === inactive.resource.id),
+    false,
   );
 });
 

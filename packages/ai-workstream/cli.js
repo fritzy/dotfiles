@@ -285,12 +285,13 @@ async function cmdResource(args) {
   const [action, first, second, ...rest] = positionals(args, ['--label']);
   if (action === 'add') {
     if (!first || !['link', 'markdown'].includes(second) || rest.length === 0) {
-      die('usage: ws resource add <group-id> <link|markdown> <value> [--label <name>]');
+      die('usage: ws resource add <group-id> <link|markdown> <value> [--label <name>] [--open]');
     }
     return console.log(JSON.stringify(await panelMutation(
       `/panel-layout/groups/${encodeURIComponent(first)}/resources`, 'POST', {
         kind: second,
         value: rest.join(' '),
+        ...(args.includes('--open') ? { open: true } : {}),
         ...(flagValue(args, '--label') ? { label: flagValue(args, '--label') } : {}),
       },
     ), null, 2));
@@ -419,6 +420,23 @@ async function cmdRefresh() {
   for (const row of result.paused) {
     const repo = isScratch(row) ? 'scratch' : `${row.org}/${row.repo}`;
     console.log(`Paused #${row.id} (${repo} @ ${row.branch}); no browser terminals are connected.`);
+  }
+}
+
+async function cmdSync(args) {
+  const positional = positionals(args);
+  const db = openDb();
+  const row = await resolveTarget(db, positional[0] || flagValue(args, '--ws'), 'sync');
+  const { result } = await requestLocalService(`/ws/${encodeURIComponent(row.id)}/sync`, {
+    method: 'POST', body: {},
+  });
+  console.log(`Synced ${result.notes.count} Markdown resource${result.notes.count === 1 ? '' : 's'} for #${row.id}.`);
+  if (result.pullRequest.checked) {
+    console.log(result.pullRequest.associated
+      ? `Associated PR: ${result.pullRequest.pr.url}`
+      : 'No PR found for the current branch.');
+  } else if (result.pullRequest.associated) {
+    console.log('PR already associated.');
   }
 }
 
@@ -791,8 +809,8 @@ async function cmdDigest(args) {
   }
 }
 
-// ws note list|show — read longer-form notes under the configured notes root.
-// They are written by the MCP server's ws_note tool; this is the human read side.
+// ws note list|show — legacy read view for per-session Markdown resources under
+// the configured notes root.
 async function cmdNote(args) {
   const [sub, ...rest] = args;
   switch (sub) {
@@ -843,7 +861,7 @@ Usage:
   ws panel add <group> <terminal|ai> [--label <name>]
   ws panel minimize|restore|close <panel-id>
   ws panel rename <panel-id> <name>
-  ws resource add <group> <link|markdown> <value> [--label <name>]
+  ws resource add <group> <link|markdown> <value> [--label <name>] [--open]
   ws resource open|remove <resource-id>
   ws issue add <link...> [--ws X]       Link Linear/GitHub issues to a workstream
   ws issue remove <link> [--ws X]       Unlink an issue (by link or issue id)
@@ -854,11 +872,12 @@ Usage:
   ws stack link [--open] [--ws X]       Push the chain and stack its PRs on GitHub (gh stack link)
   ws stack rebase [--trunk] [--ws X]    Cascade-rebase the chain, each branch in its own worktree
   ws log <msg...> [--done] [--ws X]     Jot a work note (--done marks it completed)
-  ws note list [--ws X]                 List longer-form notes (written via the MCP ws_note tool)
-  ws note show <file> [--ws X]          Print a note's contents
+  ws note list [--ws X]                 List legacy per-session Markdown
+  ws note show <file> [--ws X]          Print legacy per-session Markdown
   ws digest [YYYY-MM-DD] [--write]      Draft a day's notes from commits + work logs
                                         (--write appends to the configured weekly notes file)
   ws config                        Print the resolved configuration and config file path
+  ws sync [id|branch] [--ws X]     Sync session Markdown and discover its branch PR
   ws refresh                       Reconcile status with live browser terminal sessions
   ws hooks [install|status]         Install or inspect Claude/Codex agent-status hooks
   ws daemon [start|stop|restart|status|foreground|log] [--host H] [--port P]
@@ -930,6 +949,7 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'note': return cmdNote(rest);
     case 'digest': return cmdDigest(rest);
     case 'config': return cmdConfig();
+    case 'sync': return cmdSync(rest);
     case 'refresh': return cmdRefresh();
     case 'hooks': return cmdHooks(rest);
     case 'hook': return cmdAgentHook(rest);

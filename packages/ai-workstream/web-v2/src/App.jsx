@@ -39,6 +39,7 @@ export default function App() {
   // Local is always where a fresh load lands; switching targets afterwards
   // never triggers a reload, so both stay connected in the background.
   const [currentTargetId, setCurrentTargetId] = useState('local');
+  const [documentVisible, setDocumentVisible] = useState(() => !document.hidden);
   const [connections, setConnections] = useState({});
   const [sidebarStates, setSidebarStates] = useState({});
   const paneControllers = useRef(new Map());
@@ -76,6 +77,12 @@ export default function App() {
 
   useEffect(() => {
     listDaemons().then((body) => setDaemons(body.daemons || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const updateVisibility = () => setDocumentVisible(!document.hidden);
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
   }, []);
 
   useEffect(() => {
@@ -339,6 +346,7 @@ export default function App() {
                 key={target.id}
                 target={target}
                 visible={target.id === currentTargetId}
+                active={documentVisible && target.id === currentTargetId}
                 terminalMode={terminalMode}
                 fontFamily={TERMINAL_FONTS[terminalFont].family}
                 sidebarOpen={sidebarOpen}

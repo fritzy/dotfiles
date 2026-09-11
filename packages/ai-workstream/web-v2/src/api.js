@@ -152,6 +152,10 @@ export function postCommand(id, command, body = {}, target) {
   }, target);
 }
 
+export function syncWorkstream(id, target) {
+  return postCommand(id, 'sync', {}, target);
+}
+
 export function resetAllTerminalSessions(target) {
   return request('/ws/terminal-reset', {
     method: 'POST',

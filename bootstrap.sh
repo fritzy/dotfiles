@@ -286,6 +286,47 @@ else
   cp -R ./home/.config/nvim/* $nvim_config/
 fi
 
+# Claude and Codex keep credentials, transcripts, databases, and other runtime
+# state beside their settings. Keep those directories real and copy only the
+# intentional config stored outside the Stow package.
+sync_ai_file() {
+  local source_file=$1
+  local target_file=$2
+  local mode=$3
+
+  [[ -f $source_file ]] || return 0
+  mkdir -p "$(dirname "$target_file")"
+  [[ -L $target_file ]] && unlink "$target_file"
+  install -m "$mode" "$source_file" "$target_file"
+}
+
+sync_ai_skills() {
+  local source_root=$1
+  local target_root=$2
+  local source_skill skill_name target_skill
+
+  [[ -d $source_root ]] || return 0
+  [[ -L $target_root ]] && unlink "$target_root"
+  mkdir -p "$target_root"
+
+  for source_skill in "$source_root"/*; do
+    [[ -d $source_skill ]] || continue
+    skill_name=${source_skill##*/}
+    [[ -n $skill_name && $skill_name != .* ]] || continue
+    target_skill="$target_root/$skill_name"
+    rm -rf "$target_skill"
+    cp -R "$source_skill" "$target_skill"
+  done
+}
+
+echo
+echo "Syncing Claude and Codex config..."
+sync_ai_file "$dotfiles_root/claude/settings.json" "$HOME/.claude/settings.json" 600
+sync_ai_file "$dotfiles_root/claude/plugins/known_marketplaces.json" "$HOME/.claude/plugins/known_marketplaces.json" 600
+sync_ai_file "$dotfiles_root/codex/config.toml" "$HOME/.codex/config.toml" 600
+sync_ai_skills "$dotfiles_root/claude/skills" "$HOME/.claude/skills"
+sync_ai_skills "$dotfiles_root/codex/skills" "$HOME/.codex/skills"
+
 # ai-workstream: install dependencies and put its commands on PATH.
 ws_pkg="$dotfiles_root/packages/ai-workstream"
 if [[ -f "$ws_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then

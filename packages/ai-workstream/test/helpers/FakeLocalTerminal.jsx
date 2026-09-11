@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react';
 // navigation contract LocalTerminal implements via attachCustomKeyEventHandler,
 // so BottomTabs' orchestration can be exercised end-to-end with real DOM focus.
 export default function FakeLocalTerminal({
-  visible = true, focused = null, autoFocus = true, label = 'fake terminal',
+  visible = true, active = visible, focused = null, autoFocus = true, label = 'fake terminal',
   terminalId = 'default',
   onPanelNavigate = null, onNavigateUp = null, onNavigateDown = null,
   onToggleFullscreen = null, onToggleSidebar = null, onNewTerminal = null,
@@ -36,6 +36,7 @@ export default function FakeLocalTerminal({
       tabIndex={-1}
       data-fake-terminal={label}
       data-terminal-id={terminalId}
+      data-terminal-active={active}
       aria-label={label}
       onKeyDown={onKeyDown}
     />

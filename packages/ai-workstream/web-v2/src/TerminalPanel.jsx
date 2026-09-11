@@ -27,7 +27,7 @@ export function TerminalFontControls({ label, value, onChange }) {
 
 export default function TerminalPanel({
   panelName, label, title = label, titleContent = null, Icon,
-  shown = true, visible = true, focused = false, fullscreen = false,
+  shown = true, visible = true, active = visible, focused = false, fullscreen = false,
   onPanelFocus, onToggleFullscreen, onFontSizeChange, headerActions = null, headerMessage = null,
   headerProps = null,
   terminalKey, target, sessionId = null, role = null, terminalId = 'default', persistentPanelId = null,
@@ -36,6 +36,7 @@ export default function TerminalPanel({
   onControlReady, onExit, terminalLabel = label,
 }) {
   const terminalVisible = visible && shown;
+  const terminalActive = active && shown;
   const focusPanel = () => { if (shown) onPanelFocus?.(panelName); };
 
   return (
@@ -88,6 +89,7 @@ export default function TerminalPanel({
             fontFamily={fontFamily}
             themeMode={themeMode}
             visible={terminalVisible}
+            active={terminalActive}
             autoFocus={autoFocus}
             focused={terminalVisible && focused}
             onPanelNavigate={onPanelNavigate}

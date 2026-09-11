@@ -19,10 +19,10 @@ import {
   linkedSessionSeed,
   linkPr,
   listLogs,
+  noteDir,
   latestWorkstreamEventSequence,
   openDb,
   parentOf,
-  prCheckDue,
   recentRepositories,
   refreshWorkstreamStatuses,
   removeIssue,
@@ -39,10 +39,71 @@ import {
   selectedAgent,
   upsertWorkstream,
   workstreamEventsAfter,
+  workstreamSlug,
   worktreeClean,
   worktreeCleanAsync,
   workstreamView,
 } from '../lib/core.js';
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+test('workstream UUID migration backfills existing rows once', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-uuid-migration-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'workstreams.db');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE workstreams (
+      id INTEGER PRIMARY KEY,
+      org TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      last_joined_at TEXT,
+      UNIQUE(org, repo, branch)
+    );
+    INSERT INTO workstreams (org, repo, branch, path, created_at)
+    VALUES ('example', 'project', 'one', '/tmp/one', '2026-01-01T00:00:00Z');
+    INSERT INTO workstreams (org, repo, branch, path, created_at)
+    VALUES ('example', 'project', 'two', '/tmp/two', '2026-01-01T00:00:00Z');
+  `);
+  legacy.close();
+
+  let db = openDb(path);
+  const migrated = db.prepare('SELECT id, uuid FROM workstreams ORDER BY id').all();
+  assert.equal(migrated.every(({ uuid }) => UUID_PATTERN.test(uuid)), true);
+  assert.equal(new Set(migrated.map(({ uuid }) => uuid)).size, 2);
+  db.close();
+
+  db = openDb(path);
+  t.after(() => db.close());
+  assert.deepEqual(db.prepare('SELECT id, uuid FROM workstreams ORDER BY id').all(), migrated);
+  assert.throws(
+    () => db.prepare(`
+      INSERT INTO workstreams (org, repo, branch, path, created_at)
+      VALUES ('example', 'project', 'missing', '/tmp/missing', '2026-01-01T00:00:00Z')
+    `).run(),
+    /workstream uuid is required/,
+  );
+});
+
+test('session Markdown directory is stable across branch changes', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-uuid-notes-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const db = openDb(join(dir, 'workstreams.db'));
+  t.after(() => db.close());
+  const row = upsertWorkstream(db, {
+    org: 'example', repo: 'project', branch: 'before', source: 'origin', path: join(dir, 'repo'),
+    created_at: '2026-01-01T00:00:00Z', last_joined_at: '2026-01-01T00:00:00Z',
+  });
+  const before = noteDir(row, new Date('2026-01-01T00:00:00Z'), join(dir, 'notes'));
+  db.prepare('UPDATE workstreams SET branch=? WHERE id=?').run('after', row.id);
+  const changed = resolveRow(db, String(row.id));
+  assert.equal(workstreamSlug(changed), row.uuid);
+  assert.equal(noteDir(changed, new Date('2026-01-01T00:00:00Z'), join(dir, 'notes')), before);
+});
 
 test('recent repositories are unique, ordered by use, and limited to three months', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-recent-repos-'));
@@ -106,7 +167,7 @@ test('cached Git cleanliness emits update-session events only when it changes', 
   );
 });
 
-test('branch PR checks link the PR, cache completion, and throttle terminal checks', (t) => {
+test('branch PR checks link the PR and cache completion', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'ai-workstream-pr-cache-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const db = openDb(join(dir, 'workstreams.db'));
@@ -151,13 +212,6 @@ test('branch PR checks link the PR, cache completion, and throttle terminal chec
   assert.deepEqual(listIssues(db, row.id).map((issue) => issue.ref), [
     'https://github.com/example/project/pull/42',
   ]);
-  assert.equal(prCheckDue(fresh, {
-    reference: '2026-08-26T14:02:59.999Z',
-  }), false);
-  assert.equal(prCheckDue(fresh, {
-    reference: '2026-08-26T14:03:00.000Z',
-  }), true);
-
   const openPr = () => ({
     status: 0,
     stdout: JSON.stringify([{

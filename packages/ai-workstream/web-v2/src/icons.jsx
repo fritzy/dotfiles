@@ -16,6 +16,10 @@ export function ChevronIcon({ className = svgClass }) {
   return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>;
 }
 
+export function ArrowLeftIcon({ className = svgClass }) {
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" aria-hidden="true"><path d="M19 12H5M11 18l-6-6 6-6" /></svg>;
+}
+
 export function ShellIcon({ className = svgClass }) {
   return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" aria-hidden="true"><path d="M4 6l6 6-6 6M13 18h7" /></svg>;
 }

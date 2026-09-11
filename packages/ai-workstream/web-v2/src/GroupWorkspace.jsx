@@ -4,14 +4,14 @@ import {
 
 import {
   associateResource, changePanel, changePanelGroup, closePanel, createGroupPanel, disassociateResource,
-  openPanelResource, savePanelOrder,
+  openPanelResource, savePanelOrder, syncWorkstream,
 } from './api.js';
 import {
-  EditorIcon, LinkIcon, RobotIcon, ShellIcon, Spinner, TargetIcon, XIcon,
+  EditorIcon, LinkIcon, RefreshIcon, RobotIcon, ShellIcon, Spinner, TargetIcon, XIcon,
 } from './icons.jsx';
 import TerminalPanel from './TerminalPanel.jsx';
 import TerminalSplitLayout, { defaultSplitBoundaries } from './TerminalSplitLayout.jsx';
-import { AgentToggle, Button } from './ui.jsx';
+import { AgentToggle, Button, ErrorMessage, Field, IconButton, inputClass, Modal } from './ui.jsx';
 import { panelCapacity, panelsToMinimize } from './panel-layout.js';
 import { canArchiveSession } from './utils.js';
 
@@ -225,7 +225,7 @@ function IframePanel({
 }
 
 export default function GroupWorkspace({
-  group, revision, target, session, visible = true, focusedPanel, onPanelFocus, onRefresh,
+  group, revision, target, session, visible = true, active = visible, focusedPanel, onPanelFocus, onRefresh,
   terminalMode, fontFamily, onToggleSidebar, onSidebarFocus,
   onAgentChange, onDetails, onArchive, onReset, onResourceDirtyChange,
 }) {
@@ -238,7 +238,9 @@ export default function GroupWorkspace({
   const dropCommittedRef = useRef(false);
   const [availableWidth, setAvailableWidth] = useState(0);
   const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [markdownAssociation, setMarkdownAssociation] = useState(null);
+  const [associatingMarkdown, setAssociatingMarkdown] = useState(false);
+  const [associationError, setAssociationError] = useState('');
   const [boundaries, setBoundaries] = useState([]);
   const [dirtyResources, setDirtyResources] = useState(() => new Set());
   const [dragOrder, setDragOrder] = useState(null);
@@ -309,7 +311,6 @@ export default function GroupWorkspace({
   }, [group.id]);
 
   const refreshAfter = useCallback(async (operation) => {
-    setBusy(true);
     setMessage('');
     try {
       const result = await operation();
@@ -319,8 +320,6 @@ export default function GroupWorkspace({
       setMessage(error.message);
       if (/another client/i.test(error.message)) await onRefresh?.();
       return null;
-    } finally {
-      setBusy(false);
     }
   }, [onRefresh]);
 
@@ -397,12 +396,35 @@ export default function GroupWorkspace({
   };
 
   const associate = (kind) => {
-    const prompt = kind === 'markdown'
-      ? 'Markdown path (relative to this session, absolute, or ~/):'
-      : 'HTTP(S) link:';
-    const value = window.prompt(prompt);
+    if (kind === 'markdown') {
+      setMarkdownAssociation({ value: '', open: false });
+      setAssociationError('');
+      return;
+    }
+    const value = window.prompt('HTTP(S) link:');
     if (!value) return;
     void refreshAfter(() => associateResource(group.id, { kind, value }, revision, target));
+  };
+
+  const submitMarkdownAssociation = async (event) => {
+    event.preventDefault();
+    const value = markdownAssociation.value.trim();
+    if (!value || associatingMarkdown) return;
+    if (markdownAssociation.open && availableWidth > 0 && visiblePanels.length >= capacity) {
+      setAssociationError('Minimize another panel to open this, or uncheck Open after associating.');
+      return;
+    }
+    setAssociatingMarkdown(true);
+    setAssociationError('');
+    try {
+      await associateResource(group.id, { kind: 'markdown', value, open: markdownAssociation.open }, revision, target);
+      await onRefresh?.();
+      setMarkdownAssociation(null);
+    } catch (error) {
+      setAssociationError(error.message);
+    } finally {
+      setAssociatingMarkdown(false);
+    }
   };
 
   const disassociate = (resource) => {
@@ -413,15 +435,14 @@ export default function GroupWorkspace({
     ));
   };
 
-  function markDirty(resourceId, dirty) {
-    setDirtyResources((current) => {
-      const next = new Set(current);
-      if (dirty) next.add(resourceId); else next.delete(resourceId);
-      dirtyResourcesRef.current = next;
-      return next;
-    });
+  const markDirty = useCallback((resourceId, dirty) => {
+    if (dirtyResourcesRef.current.has(resourceId) === dirty) return;
+    const next = new Set(dirtyResourcesRef.current);
+    if (dirty) next.add(resourceId); else next.delete(resourceId);
+    dirtyResourcesRef.current = next;
+    setDirtyResources(next);
     onResourceDirtyChange?.(resourceId, dirty);
-  }
+  }, [onResourceDirtyChange]);
 
   function navigate(index, direction) {
     const next = visiblePanels[index + direction];
@@ -580,27 +601,40 @@ export default function GroupWorkspace({
           {group.type !== 'terminal' && <AddPanelButton label="Associate Markdown panel" onClick={() => associate('markdown')}><EditorIcon className="size-3.5" /></AddPanelButton>}
           {group.type !== 'terminal' && <AddPanelButton label="Associate link panel" onClick={() => associate('link')}><LinkIcon className="size-3.5" /></AddPanelButton>}
         </div>
+        {session && (group.type === 'repository' || group.type === 'scratchpad') && (
+          <IconButton
+            compact
+            label="Refresh session"
+            title={group.type === 'repository'
+              ? 'Sync session Markdown and current-branch pull request'
+              : 'Sync session Markdown'}
+            onClick={() => { void syncWorkstream(session.id, target).catch(() => {}); }}
+          ><RefreshIcon /></IconButton>
+        )}
         {session && <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={() => onDetails?.(session.id)}>Details</Button>}
         {session && onReset && <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={resetTerminals}>Reset</Button>}
         {canArchiveSession(session) && onArchive && <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={archive}>Archive</Button>}
       </header>
-      {(message || busy) && <div className="flex min-h-7 shrink-0 items-center gap-2 border-b border-primary/30 px-3 text-xs text-primary" role="status">{busy && <Spinner className="size-3" />}{message}</div>}
+      {message && <div className="flex min-h-7 shrink-0 items-center gap-2 border-b border-primary/30 px-3 text-xs text-primary" role="status">{message}</div>}
       <div ref={hostRef} className="relative flex min-h-0 flex-1">
-        {visiblePanels.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted">Choose a panel or resource pill to open it.</div>
-        ) : (
-          <TerminalSplitLayout
-            count={visiblePanels.length}
-            boundaries={boundaries.length === visiblePanels.length - 1 ? boundaries : defaultSplitBoundaries(visiblePanels.length)}
-            onBoundaryChange={changeBoundary}
-            onBoundaryCommit={commitBoundaries}
-            onBoundaryFocus={(index) => {
-              const panel = visiblePanels[index];
-              if (panel) onPanelFocus?.(panelNameFor(panel.id));
-            }}
-            onResetBoundaries={resetBoundaries}
-          >
-            {visiblePanels.map((panel, index) => {
+        {visiblePanels.length === 0 && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center text-sm text-muted">Choose a panel or resource pill to open it.</div>
+        )}
+        <TerminalSplitLayout
+          count={visiblePanels.length}
+          boundaries={boundaries.length === visiblePanels.length - 1 ? boundaries : defaultSplitBoundaries(visiblePanels.length)}
+          onBoundaryChange={changeBoundary}
+          onBoundaryCommit={commitBoundaries}
+          onBoundaryFocus={(index) => {
+            const panel = visiblePanels[index];
+            if (panel) onPanelFocus?.(panelNameFor(panel.id));
+          }}
+          onResetBoundaries={resetBoundaries}
+        >
+            {orderedPanels.map((panel) => {
+              const index = visiblePanels.findIndex((candidate) => candidate.id === panel.id);
+              const isTerminalPanel = panel.kind === 'terminal' || panel.kind === 'ai';
+              if (panel.minimized && !isTerminalPanel) return null;
               const panelName = panelNameFor(panel.id);
               const resource = resourcesById.get(panel.resourceId);
               const titleContent = (
@@ -618,12 +652,12 @@ export default function GroupWorkspace({
                   )}
                 </>
               );
-              if (panel.kind === 'terminal' || panel.kind === 'ai') {
+              if (isTerminalPanel) {
                 const Icon = panel.kind === 'ai' ? RobotIcon : panel.terminalRole === 'editor' ? EditorIcon : ShellIcon;
                 return (
                   <div
                     key={panel.id}
-                    className="relative flex min-h-0 min-w-0 [&>section]:flex-1"
+                    className={`${panel.minimized ? 'hidden' : 'flex'} relative min-h-0 min-w-0 [&>section]:flex-1`}
                     onDragOver={(event) => previewPanel(event, panel.id)}
                     onDrop={(event) => dropPanel(event, panel.id)}
                   >
@@ -632,8 +666,9 @@ export default function GroupWorkspace({
                       panelName={panelName}
                       label={panel.label}
                       Icon={Icon}
-                      shown
+                      shown={!panel.minimized}
                       visible={visible}
+                      active={active && !panel.minimized}
                       focused={focusedPanel === panelName}
                       onPanelFocus={onPanelFocus}
                       titleContent={titleContent}
@@ -648,7 +683,7 @@ export default function GroupWorkspace({
                       fontSize={panel.fontSize}
                       fontFamily={fontFamily}
                       themeMode={terminalMode}
-                      autoFocus={visible && index === 0}
+                      autoFocus={active && index === 0}
                       onPanelNavigate={(direction) => navigate(index, direction)}
                       onToggleSidebar={onToggleSidebar}
                       onNewTerminal={() => addKind('terminal')}
@@ -659,7 +694,7 @@ export default function GroupWorkspace({
               }
               if (panel.kind === 'iframe') {
                 return (
-                  <div key={panel.id} className="relative flex min-h-0 min-w-0 [&>section]:flex-1" onDragOver={(event) => previewPanel(event, panel.id)} onDrop={(event) => dropPanel(event, panel.id)}>
+                  <div key={panel.id} className={`${panel.minimized ? 'hidden' : 'flex'} relative min-h-0 min-w-0 [&>section]:flex-1`} onDragOver={(event) => previewPanel(event, panel.id)} onDrop={(event) => dropPanel(event, panel.id)}>
                     <PanelDropIndicator panelId={panel.id} indicator={dropIndicator} />
                     <IframePanel
                       panel={panel}
@@ -675,7 +710,7 @@ export default function GroupWorkspace({
                 );
               }
               return (
-                <section key={panel.id} className={`relative flex min-h-0 min-w-0 overflow-hidden ring-inset ${focusedPanel === panelName ? 'ring-2 ring-accent/60' : ''}`} data-panel={panelName} onDragOver={(event) => previewPanel(event, panel.id)} onDrop={(event) => dropPanel(event, panel.id)} onPointerDownCapture={() => onPanelFocus?.(panelName)} onFocusCapture={() => onPanelFocus?.(panelName)}>
+                <section key={panel.id} className={`${panel.minimized ? 'hidden' : 'flex'} relative min-h-0 min-w-0 overflow-hidden ring-inset ${focusedPanel === panelName ? 'ring-2 ring-accent/60' : ''}`} data-panel={panelName} onDragOver={(event) => previewPanel(event, panel.id)} onDrop={(event) => dropPanel(event, panel.id)} onPointerDownCapture={() => onPanelFocus?.(panelName)} onFocusCapture={() => onPanelFocus?.(panelName)}>
                   <PanelDropIndicator panelId={panel.id} indicator={dropIndicator} />
                   <Suspense fallback={<div className="flex flex-1 items-center justify-center"><Spinner /> Loading Markdown…</div>}>
                     <MarkdownEditor
@@ -683,13 +718,15 @@ export default function GroupWorkspace({
                       name={panel.label}
                       source="file"
                       focused={focusedPanel === panelName}
+                      visible={active && !panel.minimized}
                       fontFamily={fontFamily}
                       fontSize={panel.fontSize}
                       initialMode={panel.markdownMode}
                       modeRevision={revision}
                       onModeChange={(markdownMode) => refreshAfter(() => changePanel(panel.id, { markdownMode }, revision, target))}
                       onFontSizeChange={(amount) => refreshAfter(() => changePanel(panel.id, { fontSize: panel.fontSize + amount }, revision, target))}
-                      onDirtyChange={(_, dirty) => markDirty(resource.id, dirty)}
+                      dirtyKey={resource.id}
+                      onDirtyChange={markDirty}
                       onFocusRequest={() => onPanelFocus?.(panelName)}
                       onPanelNavigate={(direction) => navigate(index, direction)}
                       onToggleSidebar={onToggleSidebar}
@@ -702,9 +739,26 @@ export default function GroupWorkspace({
                 </section>
               );
             })}
-          </TerminalSplitLayout>
-        )}
+        </TerminalSplitLayout>
       </div>
+      <Modal open={markdownAssociation !== null} onClose={() => setMarkdownAssociation(null)} title="Associate Markdown" busy={associatingMarkdown}>
+        {markdownAssociation && (
+          <form className="grid gap-4" onSubmit={submitMarkdownAssociation}>
+            <Field label="Markdown path (relative to this session, absolute, or ~/)">
+              <input className={inputClass} autoFocus required value={markdownAssociation.value} disabled={associatingMarkdown} onChange={(event) => setMarkdownAssociation({ ...markdownAssociation, value: event.target.value })} />
+            </Field>
+            <label className="flex items-center gap-2 text-sm text-primary">
+              <input type="checkbox" checked={markdownAssociation.open} disabled={associatingMarkdown} onChange={(event) => setMarkdownAssociation({ ...markdownAssociation, open: event.target.checked })} />
+              Open after associating
+            </label>
+            <ErrorMessage>{associationError}</ErrorMessage>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" disabled={associatingMarkdown} onClick={() => setMarkdownAssociation(null)}>Cancel</Button>
+              <Button type="submit" disabled={associatingMarkdown || !markdownAssociation.value.trim()}>{associatingMarkdown ? 'Associating…' : 'Associate'}</Button>
+            </div>
+          </form>
+        )}
+      </Modal>
     </main>
   );
 }

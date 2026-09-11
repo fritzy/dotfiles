@@ -61,6 +61,10 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.match(daemonPane, /setWorkspaceStateRevision\(\(value\) => value \+ 1\)/);
   assert.match(daemonPane, /setBottomTerminalStateRevision\(\(value\) => value \+ 1\)/);
   assert.match(daemonPane, /SOCKET_MESSAGE_TYPES\.has\(message\.type\)/);
+  assert.match(daemonPane, /type: 'markdown_watch'/);
+  assert.match(daemonPane, /message\?\.type === 'markdown_changed'/);
+  assert.match(daemonPane, /message\?\.type === 'full_page_refresh'/);
+  assert.match(daemonPane, /window\.location\.reload\(\)/);
   assert.match(localTerminal, /if \(ownedTerminal\) reconnectQuery\.set\('owner', '1'\)/);
   assert.match(localTerminal, /candidate = new WebSocket\(terminalUrl\(\)\)/);
   assert.match(localTerminal, /ownedTerminal = true/);
@@ -75,6 +79,8 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.match(api, /status: 'active_paused'/);
   assert.match(api, /`\/ws\/\$\{encodeURIComponent\(id\)\}\/\?status=all`/);
   assert.match(api, /`\/ws\/\$\{encodeURIComponent\(id\)\}\/\$\{command\}`/);
+  assert.match(api, /export function syncWorkstream\(id, target\)/);
+  assert.match(api, /return postCommand\(id, 'sync', \{\}, target\)/);
   assert.match(api, /'\/ws\/scratchpad'/);
   assert.match(api, /export function wsUrl\(path, target\)/);
   assert.doesNotMatch(api, /export function selectDaemon/);
@@ -109,6 +115,9 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.doesNotMatch(app, /DAEMON_RAIL_WIDTH_PIXELS/);
   assert.match(app, /targets\.map\(\(target\) => \(/);
   assert.match(app, /visible=\{target\.id === currentTargetId\}/);
+  assert.match(app, /const \[documentVisible, setDocumentVisible\] = useState\(\(\) => !document\.hidden\)/);
+  assert.match(app, /document\.addEventListener\('visibilitychange', updateVisibility\)/);
+  assert.match(app, /active=\{documentVisible && target\.id === currentTargetId\}/);
   assert.match(app, /setFocusedPanel\(`sidebar-\$\{id\}-sessions`\)/);
   assert.match(app, /<ActiveSessionsSidebar/);
   assert.match(app, /sections=\{targetSections\}/);
@@ -190,6 +199,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(daemonPane, /key=\{workspaceSession\.id\}/);
   assert.match(daemonPane, /visible=\{!activeStandaloneId && String\(workspaceSession\.id\) === activeWorkspaceId\}/);
   assert.match(daemonPane, /onArchive=\{archiveWorkspace\}/);
+  assert.doesNotMatch(daemonPane, /syncWorkspace|onSync=/);
   assert.match(daemonPane, /mutate\(item, 'terminal-reset'\)/);
   assert.match(daemonPane, /resetAllTerminalSessions\(target\)/);
   assert.match(daemonPane, /onReset=\{resetWorkspaceTerminals\}/);
@@ -255,7 +265,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(daemonPane, /readBrowserState\(WORKSPACE_STATE_SCOPE, controller\.signal, target\)/);
   assert.match(activeSidebar, /groupActiveSessionsByRepo/);
   assert.match(activeSidebar, /aria-expanded=\{!collapsed\}/);
-  assert.match(activeSidebar, /Collapse.*sidebar view/);
+  assert.doesNotMatch(activeSidebar, /Collapse.*sidebar view/);
   assert.match(activeSidebar, /transition-\[grid-template-rows,opacity\]/);
   assert.match(activeSidebar, /name\.replace\(\/\^fritzy\\\//);
   assert.match(activeSidebar, /'…'/);
@@ -304,11 +314,13 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(groupWorkspace, /event\.preventDefault\(\);[\s\S]*if \(sourceId === destinationId\)/);
   assert.match(groupWorkspace, /<PanelDropIndicator/);
   assert.match(groupWorkspace, /headerProps=\{panelHeaderProps\(panel\)\}/);
-  assert.match(activeSidebar, /role="tablist"[\s\S]*aria-label="Sidebar views"/);
+  assert.doesNotMatch(activeSidebar, /role="tablist"|role="tab"/);
   assert.match(activeSidebar, /function chooseView\(nextView\)/);
   assert.match(activeSidebar, /const SIDEBAR_VIEWS = \['sessions', 'settings'\]/);
-  assert.match(activeSidebar, /SIDEBAR_VIEWS\.map/);
-  assert.match(activeSidebar, /onClick=\{\(\) => chooseView\(option\)\}/);
+  assert.doesNotMatch(activeSidebar, /SIDEBAR_VIEWS\.map/);
+  assert.match(activeSidebar, /aria-label="Open settings"[\s\S]*onClick=\{\(\) => chooseView\('settings'\)\}/);
+  assert.match(activeSidebar, /aria-label="Back to sessions"[\s\S]*onClick=\{\(\) => chooseView\('sessions'\)\}/);
+  assert.match(activeSidebar, /<ArrowLeftIcon className="size-4"/);
   assert.match(activeSidebar, /<AssetIcon name="folder" className="size-5"/);
   assert.match(activeSidebar, /<GearIcon className="size-5"/);
   assert.match(activeSidebar, /Syncing Window Fullscreen/);
@@ -342,11 +354,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(activeSidebar, /onDoubleClick=\{\(\) => onOpenDetails\(item\.id\)\}/);
   assert.match(activeSidebar, /min-h-screen/);
   assert.match(activeSidebar, /sticky top-0 grid h-screen/);
-  assert.match(activeSidebar, /fixed top-2 z-\[55\] grid w-10/);
-  assert.match(activeSidebar, /focusedPanel\?\.startsWith\('sidebar-'\)/);
-  assert.match(activeSidebar, /opacity-20 hover:opacity-100 focus-within:opacity-100/);
-  assert.match(activeSidebar, /transition-\[left,opacity\]/);
-  assert.match(activeSidebar, /style=\{\{ left: sidebarWidth \}\}/);
+  assert.equal(activeSidebar.match(/absolute right-3 bottom-3 z-10/g)?.length, 2);
   assert.match(activeSidebar, /role="separator"/);
   assert.match(activeSidebar, /aria-label="Resize sidebar"/);
   assert.match(activeSidebar, /setPointerCapture/);
@@ -403,6 +411,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(activeSidebar, /label: 'Terminals', kind: 'standalone'/);
   assert.match(activeSidebar, /label: 'Markdown', kind: 'standalone'/);
   assert.match(activeSidebar, /aria-label=\{`New \$\{section\.target\.name\} terminal`\}/);
+  assert.doesNotMatch(activeSidebar, /<span className="truncate">Terminal<\/span>/);
   assert.match(activeSidebar, /aria-label=\{`Open \$\{section\.target\.name\} Markdown`\}/);
   assert.match(activeSidebar, /onActivateStandalone\(sectionId, item\.id\)/);
   assert.match(activeSidebar, /onCloseStandalone\(sectionId, item\.id\)/);
@@ -469,7 +478,7 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(localTerminal, /terminal\.options\.fontSize = fontSize/);
   assert.match(localTerminal, /terminal\.options\.fontFamily = fontFamily/);
   assert.match(localTerminal, /document\.fonts\?\.load\(`\$\{fontSize\}px \$\{primaryFamily\}`\)/);
-  assert.match(localTerminal, /\[fontFamily, fontSize, themeMode\]/);
+  assert.match(localTerminal, /\[active, fontFamily, fontSize, themeMode\]/);
   assert.doesNotMatch(localTerminal, /MutationObserver/);
   assert.match(localTerminal, /new FitAddon/);
   assert.match(localTerminal, /\/ws\/terminal/);
@@ -481,7 +490,13 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(localTerminal, /terminalRef/);
   assert.match(localTerminal, /focusedRef\.current == null \? autoFocusRef\.current : focusedRef\.current/);
   assert.match(localTerminal, /focused === true \|\| \(focused == null && autoFocus\)/);
-  assert.match(localTerminal, /\}, \[visible\]\);/);
+  assert.match(localTerminal, /\}, \[active\]\);/);
+  assert.match(localTerminal, /terminalQuery\.set\('suspended', '1'\)/);
+  assert.match(localTerminal, /JSON\.stringify\(\{ type: 'suspend' \}\)/);
+  assert.match(localTerminal, /JSON\.stringify\(\{ type: 'resume' \}\)/);
+  assert.match(localTerminal, /createTerminalOutputBatch/);
+  assert.match(localTerminal, /if \(activeRef\.current\) outputBatch\.enqueue\(message\.data\)/);
+  assert.match(localTerminal, /terminal\.options\.cursorBlink = shouldFocus/);
   assert.match(localTerminal, /requestAnimationFrame\(\(\) => terminalRef\.current\?\.focus\(\)\)/);
   assert.match(localTerminal, /attachCustomKeyEventHandler/);
   assert.match(localTerminal, /const toggleFullscreenRef = useRef\(onToggleFullscreen\)/);
@@ -549,6 +564,11 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(sessionWorkspace, /canArchiveSession\(session\)/);
   assert.match(sessionWorkspace, /await onArchive\(session\)/);
   assert.match(sessionWorkspace, /label="Archive session"/);
+  assert.match(sessionWorkspace, /label="Refresh session"/);
+  assert.match(groupWorkspace, /label="Refresh session"/);
+  assert.match(sessionWorkspace, /syncWorkstream\(session\.id, target\)/);
+  assert.match(groupWorkspace, /syncWorkstream\(session\.id, target\)/);
+  assert.match(groupWorkspace, /group\.type === 'repository' \|\| group\.type === 'scratchpad'/);
   assert.match(sessionWorkspace, /<ArchiveIcon \/>/);
   assert.match(sessionWorkspace, /session\.issues\?\.map\(\(issue\) => <LinkPill key=\{issue\.ref\} entry=\{issue\} \/>\)/);
   assert.match(sessionWorkspace, /terminalKey=\{role === 'agent' \? `\$\{role\}-\$\{session\.agent\}` : role\}/);
@@ -696,9 +716,12 @@ test('v2 standalone sessions host Markdown files backed by notes and general-fil
   // Neither the textarea nor the preview pane exists until the file has loaded,
   // so focus has to be reapplied — and it must land on whichever of the two is
   // actually rendered, or a note left in Preview mode goes keyboard-unreachable.
-  assert.match(editor, /if \(!focused \|\| loading\) return;/);
+  assert.match(editor, /if \(!visible \|\| !focused \|\| loading\) return;/);
   assert.match(editor, /\(preview \? previewRef : textareaRef\)\.current\?\.focus\(\);/);
-  assert.match(editor, /\}, \[focused, loading, preview\]\);/);
+  assert.match(editor, /\}, \[focused, loading, preview, visible\]\);/);
+  assert.match(editor, /if \(!visible \|\| !path \|\| !watchMarkdown\) return undefined;/);
+  assert.match(editor, /preserveDirty: true/);
+  assert.match(editor, /markdown file changed on disk while this panel has unsaved changes/);
 
   assert.match(bottomTabs, /items: tabs\.map\(\(tab\) => \{/);
   assert.match(bottomTabs, /splitGroupIndex: splitGroup \? splitGroup\.members\.indexOf\(tab\.id\) : null/);

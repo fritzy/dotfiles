@@ -3,7 +3,7 @@ import {
 } from 'react';
 
 import {
-  AssetIcon, ChevronIcon, EditorIcon, GearIcon, GripIcon, LinkIcon, MaskIcon, MinimizeIcon, ProviderIcon, ShellIcon, Spinner, XIcon,
+  ArrowLeftIcon, AssetIcon, ChevronIcon, EditorIcon, GearIcon, GripIcon, LinkIcon, MaskIcon, MinimizeIcon, ProviderIcon, ShellIcon, Spinner, XIcon,
 } from './icons.jsx';
 import BrandLogo from './BrandLogo.jsx';
 import {
@@ -804,7 +804,7 @@ export default function ActiveSessionsSidebar({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className={`h-full min-w-0 overflow-hidden border-r border-primary/35 bg-page ring-inset transition-opacity duration-200 ${focusedPanel === currentPanel ? 'ring-2 ring-accent/50' : ''} ${open ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        className={`relative h-full min-w-0 overflow-hidden border-r border-primary/35 bg-page ring-inset transition-opacity duration-200 ${focusedPanel === currentPanel ? 'ring-2 ring-accent/50' : ''} ${open ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         aria-hidden={!open}
         inert={!open}
         data-panel={currentPanel}
@@ -821,7 +821,7 @@ export default function ActiveSessionsSidebar({
             </div>
           </div>
           {view === 'sessions' ? (
-            <div id={`${sessionsPanel}-view`} role="tabpanel" aria-labelledby={`${sessionsPanel}-tab`} className="grid min-w-0 content-start gap-1">
+            <div id={`${sessionsPanel}-view`} aria-label="Sessions" className="grid min-w-0 content-start gap-1 pb-16">
               <div className="flex min-h-9 items-center justify-between gap-2 px-2">
                 <h2 className="truncate text-sm font-bold text-primary">Sessions</h2>
               </div>
@@ -873,11 +873,11 @@ export default function ActiveSessionsSidebar({
                           ><span className="text-sm font-bold" aria-hidden="true">+</span><AssetIcon name="folder" className="size-3.5" /></button>
                           <button
                             type="button"
-                            className="inline-flex min-h-7 min-w-0 flex-1 items-center justify-center gap-1 overflow-hidden rounded-md border border-primary/60 px-1 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+                            className="inline-flex min-h-7 min-w-9 shrink-0 items-center justify-center gap-1 rounded-md border border-primary/60 px-2 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
                             aria-label={`New ${section.target.name} terminal`}
                             title={`New ${section.target.name} terminal`}
                             onClick={() => onCreateTerminal(sectionId)}
-                          ><span className="text-sm font-bold" aria-hidden="true">+</span><ShellIcon className="size-3.5 shrink-0" /><span className="truncate">Terminal</span></button>
+                          ><span className="text-sm font-bold" aria-hidden="true">+</span><ShellIcon className="size-3.5" /></button>
                           {!section.panelGroups && <button
                             type="button"
                             className="inline-flex min-h-7 min-w-0 flex-1 items-center justify-center gap-1 overflow-hidden rounded-md border border-primary/60 px-1 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
@@ -1029,7 +1029,7 @@ export default function ActiveSessionsSidebar({
               })}
             </div>
           ) : (
-            <div id={`${panelName('settings')}-view`} role="tabpanel" aria-labelledby={`${panelName('settings')}-tab`} className="grid content-start gap-5 px-2 py-3">
+            <div id={`${panelName('settings')}-view`} aria-label="Settings" className="grid content-start gap-5 px-2 pt-3 pb-16">
               <section className="grid gap-2">
                 <label className="grid gap-1 text-sm font-bold text-primary" htmlFor="sidebar-theme">Theme</label>
                 <select id="sidebar-theme" className={`${selectClass} w-full`} value={theme} onChange={(event) => onThemeChange(event.target.value)}>
@@ -1073,36 +1073,30 @@ export default function ActiveSessionsSidebar({
             </div>
           )}
         </div>
-      </div>
-      <div
-        className={`fixed top-2 z-[55] grid w-10 gap-1 motion-reduce:transition-none ${sidebarResizing ? 'transition-opacity duration-200' : 'transition-[left,opacity] duration-300 ease-in-out'} ${focusedPanel?.startsWith('sidebar-') ? 'opacity-100' : 'opacity-20 hover:opacity-100 focus-within:opacity-100'}`}
-        style={{ left: sidebarWidth }}
-        role="tablist"
-        aria-label="Sidebar views"
-      >
-          {SIDEBAR_VIEWS.map((option) => {
-            const selected = view === option;
-            const expanded = open && selected;
-            return (
-              <button
-                key={option}
-                id={`${panelName(option)}-tab`}
-                type="button"
-                role="tab"
-                className={`flex h-12 w-10 items-center justify-center rounded-r-lg border border-l-0 border-primary shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${selected ? 'bg-accent text-on-accent' : 'bg-page text-primary hover:bg-soft hover:text-on-soft'} ${focusedPanel === panelName(option) ? 'outline-2 outline-offset-1 outline-accent' : ''}`}
-                aria-label={`${expanded ? 'Collapse' : 'Open'} ${option} sidebar view`}
-                aria-controls={`${panelName(option)}-view`}
-                aria-selected={selected}
-                aria-expanded={expanded}
-                title={`${expanded ? 'Collapse' : 'Open'} ${option} view`}
-                onClick={() => chooseView(option)}
-              >
-                {option === 'sessions'
-                  ? <AssetIcon name="folder" className="size-5" />
-                  : <GearIcon className="size-5" />}
-              </button>
-            );
-          })}
+        {view === 'sessions' ? (
+          <button
+            type="button"
+            className="absolute right-3 bottom-3 z-10 flex size-10 items-center justify-center rounded-full border border-primary/60 bg-page text-primary shadow-md transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            aria-label="Open settings"
+            aria-controls={`${panelName('settings')}-view`}
+            title="Settings"
+            onClick={() => chooseView('settings')}
+          >
+            <GearIcon className="size-5" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="absolute right-3 bottom-3 z-10 flex h-10 w-16 items-center justify-center gap-1 rounded-full border border-primary/60 bg-page text-primary shadow-md transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            aria-label="Back to sessions"
+            aria-controls={`${sessionsPanel}-view`}
+            title="Back to sessions"
+            onClick={() => chooseView('sessions')}
+          >
+            <ArrowLeftIcon className="size-4" />
+            <AssetIcon name="folder" className="size-5" />
+          </button>
+        )}
       </div>
       <SidebarResizeHandle
         open={open}

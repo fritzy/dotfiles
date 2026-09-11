@@ -444,7 +444,7 @@ export function addPanel(db, groupId, body, expectedRevision) {
       label: body?.label || resource?.label || (kind === 'ai' ? 'AI' : kind === 'terminal' ? `Terminal ${count + 1}` : 'Resource'),
       terminalRole: role,
       legacyTerminal: false,
-      markdownMode: kind === 'markdown' ? (body?.markdownMode === 'preview' ? 'preview' : 'edit') : null,
+      markdownMode: kind === 'markdown' ? (body?.markdownMode === 'edit' ? 'edit' : 'preview') : null,
       resourceId,
       fontSize: body?.fontSize,
     });
@@ -588,7 +588,18 @@ export function addResource(db, groupId, body, expectedRevision, options = {}) {
       label: body?.label,
       source: 'explicit',
     }, options);
-    return { resource: mapResource(resource) };
+    if (body?.open !== true) return { resource: mapResource(resource) };
+    const activeSessionIds = new Set(
+      [...(options.activeSessionIds || [])].map(String),
+    );
+    if (group.owner_id == null || !activeSessionIds.has(String(group.owner_id))) {
+      return { resource: mapResource(resource), opened: false };
+    }
+    return {
+      resource: mapResource(resource),
+      opened: true,
+      ...openResourcePanelChange(db, resource.id, {}, { activate: false }),
+    };
   });
 }
 
@@ -608,29 +619,33 @@ export function removeResource(db, resourceId, body, expectedRevision) {
   });
 }
 
-export function openResourcePanel(db, resourceId, body, expectedRevision) {
-  return mutatePanelLayout(db, expectedRevision, () => {
-    const resource = resourceRow(db, resourceId);
-    const existing = db.prepare('SELECT * FROM panels WHERE resource_id=?').get(resource.id);
-    if (existing) {
-      db.prepare('UPDATE panels SET minimized=0 WHERE id=?').run(existing.id);
-      if (bool(existing.minimized)) db.prepare('UPDATE panels SET width=1 WHERE group_id=?').run(existing.group_id);
-      db.prepare('UPDATE panel_layout_state SET active_group_id=? WHERE singleton=1').run(existing.group_id);
-      return { panel: mapPanel(panelRow(db, existing.id)), restored: true };
-    }
-    const group = groupRow(db, resource.group_id);
-    const kind = resource.kind === 'markdown' ? 'markdown' : 'iframe';
-    validateGroupPanelKind(db, group, kind, resource.id);
-    const count = Number(db.prepare('SELECT COUNT(*) AS count FROM panels WHERE group_id=?').get(group.id).count);
-    const panel = insertPanel(db, {
-      groupId: group.id, position: count, kind, resourceId: resource.id,
-      minimized: body?.minimized === true, label: resource.label,
-      markdownMode: kind === 'markdown' ? 'edit' : null,
-    });
-    db.prepare('UPDATE panels SET width=1 WHERE group_id=?').run(group.id);
-    db.prepare('UPDATE panel_layout_state SET active_group_id=? WHERE singleton=1').run(group.id);
-    return { panel: mapPanel({ ...panel, width: 1 }), restored: false };
+function openResourcePanelChange(db, resourceId, body, { activate = true } = {}) {
+  const resource = resourceRow(db, resourceId);
+  const existing = db.prepare('SELECT * FROM panels WHERE resource_id=?').get(resource.id);
+  if (existing) {
+    db.prepare('UPDATE panels SET minimized=0 WHERE id=?').run(existing.id);
+    if (bool(existing.minimized)) db.prepare('UPDATE panels SET width=1 WHERE group_id=?').run(existing.group_id);
+    if (activate) db.prepare('UPDATE panel_layout_state SET active_group_id=? WHERE singleton=1').run(existing.group_id);
+    return { panel: mapPanel(panelRow(db, existing.id)), restored: true };
+  }
+  const group = groupRow(db, resource.group_id);
+  const kind = resource.kind === 'markdown' ? 'markdown' : 'iframe';
+  validateGroupPanelKind(db, group, kind, resource.id);
+  const count = Number(db.prepare('SELECT COUNT(*) AS count FROM panels WHERE group_id=?').get(group.id).count);
+  const panel = insertPanel(db, {
+    groupId: group.id, position: count, kind, resourceId: resource.id,
+    minimized: body?.minimized === true, label: resource.label,
+    markdownMode: kind === 'markdown' ? 'preview' : null,
   });
+  db.prepare('UPDATE panels SET width=1 WHERE group_id=?').run(group.id);
+  if (activate) db.prepare('UPDATE panel_layout_state SET active_group_id=? WHERE singleton=1').run(group.id);
+  return { panel: mapPanel({ ...panel, width: 1 }), restored: false };
+}
+
+export function openResourcePanel(db, resourceId, body, expectedRevision) {
+  return mutatePanelLayout(db, expectedRevision, () => (
+    openResourcePanelChange(db, resourceId, body)
+  ));
 }
 
 export function terminalIdentityForPanel(panel, group) {
@@ -706,10 +721,10 @@ function ensureMigrationScratchpad(db, config) {
   const createdAt = timestamp();
   const result = db.prepare(`
     INSERT INTO workstreams (
-      org, repo, branch, path, source, status, label, created_at, last_joined_at
-    ) VALUES ('scratch', 'scratch', 'unassigned-markdown', ?, 'scratch', 'paused',
+      uuid, org, repo, branch, path, source, status, label, created_at, last_joined_at
+    ) VALUES (?, 'scratch', 'scratch', 'unassigned-markdown', ?, 'scratch', 'paused',
       'Unassigned Markdown', ?, ?)
-  `).run(path, createdAt, createdAt);
+  `).run(randomUUID(), path, createdAt, createdAt);
   row = db.prepare('SELECT * FROM workstreams WHERE id=?').get(Number(result.lastInsertRowid));
   return row;
 }
@@ -820,7 +835,7 @@ export function migrateLegacyPanelState(db, { dataDir, config, cwd = process.cwd
         insertPanel(db, {
           id: stableId('panel', `${group.id}:${resource.id}`), groupId: group.id,
           position: position++, kind: 'markdown', minimized: true, resourceId: resource.id,
-          label: resource.label, markdownMode: 'edit',
+          label: resource.label, markdownMode: 'preview',
         });
       }
     }
@@ -869,34 +884,54 @@ export function syncIssueResources(db) {
   return { changed, revision: panelLayoutRevision(db) };
 }
 
-export function syncDiscoveredSessionNotes(db, notesRoot) {
+export function syncDiscoveredSessionNotes(db, notesRoot, { ownerId = null } = {}) {
   const workDir = join(notesRoot, 'work');
   const desired = new Map();
   if (existsSync(workDir)) {
-    const groups = db.prepare("SELECT * FROM panel_groups WHERE type IN ('repository', 'scratchpad')").all();
+    const groups = ownerId == null
+      ? db.prepare("SELECT * FROM panel_groups WHERE type IN ('repository', 'scratchpad')").all()
+      : db.prepare(`
+          SELECT * FROM panel_groups
+          WHERE type IN ('repository', 'scratchpad') AND owner_id=?
+        `).all(String(ownerId));
     for (const group of groups) {
       const row = db.prepare('SELECT * FROM workstreams WHERE id=?').get(group.owner_id);
       if (!row) continue;
-      const rawSlug = row.source === 'scratch'
-        ? `${row.id}-${row.branch}`
-        : `${row.id}-${row.repo}-${String(row.branch).replaceAll('/', '-')}`;
       for (const year of readdirSync(workDir).sort()) {
-        const dir = join(workDir, year, 'workstream', rawSlug);
-        if (!existsSync(dir)) continue;
-        let files = [];
-        try { files = readdirSync(dir).filter((file) => file.toLowerCase().endsWith('.md')).sort(); }
-        catch { continue; }
-        for (const file of files) {
-          const path = join(dir, file);
-          try { if (!statSync(path).isFile()) continue; } catch { continue; }
-          desired.set(`${group.id}\0${path}`, { group, path, label: file });
+        const sessionRoot = join(workDir, year, 'workstream');
+        if (!existsSync(sessionRoot)) continue;
+        const legacyPrefix = row.source === 'scratch' ? `${row.id}-` : `${row.id}-${row.repo}-`;
+        let directories = [];
+        try {
+          directories = readdirSync(sessionRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory()
+              && (entry.name === row.uuid || entry.name.startsWith(legacyPrefix)))
+            .map((entry) => entry.name)
+            .sort();
+        } catch { continue; }
+        for (const name of directories) {
+          const dir = join(sessionRoot, name);
+          let files = [];
+          try { files = readdirSync(dir).filter((file) => file.toLowerCase().endsWith('.md')).sort(); }
+          catch { continue; }
+          for (const file of files) {
+            const path = join(dir, file);
+            try { if (!statSync(path).isFile()) continue; } catch { continue; }
+            desired.set(`${group.id}\0${path}`, { group, path, label: file });
+          }
         }
       }
     }
   }
 
   let changed = false;
-  const current = db.prepare("SELECT * FROM resource_associations WHERE source='discovered'").all();
+  const current = ownerId == null
+    ? db.prepare("SELECT * FROM resource_associations WHERE source='discovered'").all()
+    : db.prepare(`
+        SELECT r.* FROM resource_associations r
+        JOIN panel_groups g ON g.id=r.group_id
+        WHERE r.source='discovered' AND g.owner_id=?
+      `).all(String(ownerId));
   for (const resource of current) {
     if (desired.has(`${resource.group_id}\0${resource.value}`)) continue;
     db.prepare('DELETE FROM resource_associations WHERE id=?').run(resource.id);

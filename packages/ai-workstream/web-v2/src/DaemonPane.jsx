@@ -16,6 +16,7 @@ import { browserClientId } from './browser-client.js';
 import NewSessionModal from './NewSessionModal.jsx';
 import SessionDetailModal from './SessionDetailModal.jsx';
 import SessionWorkspace from './SessionWorkspace.jsx';
+import { MarkdownWatchProvider } from './markdown-watch.js';
 import { TargetProvider } from './target-context.js';
 import { websocketReconnectDelay } from './websocket-retry.js';
 import { panelCapacity } from './panel-layout.js';
@@ -33,7 +34,7 @@ function Connection({ state }) {
 }
 
 const DaemonPane = forwardRef(function DaemonPane({
-  target, visible, terminalMode, fontFamily,
+  target, visible, active = visible, terminalMode, fontFamily,
   sidebarOpen, onShowSidebar,
   focusedPanel, onPanelFocus, onFullscreenChange, fullscreenExitRevision, onRequestFullscreenExit,
   onToggleSidebar, leftOffset, onConnectionChange, onSidebarStateChange,
@@ -48,6 +49,9 @@ const DaemonPane = forwardRef(function DaemonPane({
   const activeSessionsRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   const bottomTabsRef = useRef(null);
+  const eventSocketRef = useRef(null);
+  const markdownSubscriptionsRef = useRef(new Map());
+  const markdownWatchSequenceRef = useRef(0);
   const workspaceStateRequestRef = useRef(0);
   const skipWorkspaceStateSaveRef = useRef(false);
   const [activeSessions, setActiveSessions] = useState([]);
@@ -83,6 +87,34 @@ const DaemonPane = forwardRef(function DaemonPane({
       ...resource, dirty: dirtyPanelResources.has(resource.id),
     })),
   })) || null, [dirtyPanelResources, panelLayout]);
+
+  const sendMarkdownSubscription = useCallback((subscription, watchId = null) => {
+    const socket = eventSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify(subscription
+      ? {
+          type: 'markdown_watch', watchId: subscription.watchId,
+          path: subscription.path, source: subscription.source,
+        }
+      : { type: 'markdown_unwatch', ...(watchId ? { watchId } : {}) }));
+  }, []);
+
+  const watchMarkdown = useCallback(({ path, source, onChange, onError }) => {
+    const subscription = {
+      watchId: `${browserClientId()}-${++markdownWatchSequenceRef.current}`,
+      path,
+      source,
+      onChange,
+      onError,
+    };
+    markdownSubscriptionsRef.current.set(subscription.watchId, subscription);
+    sendMarkdownSubscription(subscription);
+    return () => {
+      if (markdownSubscriptionsRef.current.get(subscription.watchId) !== subscription) return;
+      markdownSubscriptionsRef.current.delete(subscription.watchId);
+      sendMarkdownSubscription(null, subscription.watchId);
+    };
+  }, [sendMarkdownSubscription]);
 
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   useEffect(() => { onConnectionChange?.(targetId, connection); }, [connection, onConnectionChange, targetId]);
@@ -363,6 +395,7 @@ const DaemonPane = forwardRef(function DaemonPane({
         return;
       }
       socket.addEventListener('open', () => {
+        eventSocketRef.current = socket;
         reconnectAttempt = 0;
         setConnection('open');
         // Reconcile everything that could have changed while events were down,
@@ -371,10 +404,34 @@ const DaemonPane = forwardRef(function DaemonPane({
         setWorkspaceStateRevision((value) => value + 1);
         setBottomTerminalStateRevision((value) => value + 1);
         setPanelLayoutStateRevision((value) => value + 1);
+        for (const subscription of markdownSubscriptionsRef.current.values()) {
+          sendMarkdownSubscription(subscription);
+        }
       });
       socket.addEventListener('message', (event) => {
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
+        if (message?.type === 'full_page_refresh') {
+          window.location.reload();
+          return;
+        }
+        if (message?.type === 'markdown_watch') {
+          const current = markdownSubscriptionsRef.current.get(message.watchId);
+          if (current) current.normalizedPath = message.path;
+          return;
+        }
+        if (message?.type === 'markdown_changed') {
+          const current = markdownSubscriptionsRef.current.get(message.watchId);
+          if (current && (!current.normalizedPath || current.normalizedPath === message.path)) {
+            current.onChange?.(message);
+          }
+          return;
+        }
+        if (message?.type === 'markdown_watch_error') {
+          const current = markdownSubscriptionsRef.current.get(message.watchId);
+          if (current) current.onError?.(message.message);
+          return;
+        }
         if (message?.type === 'browser_state') {
           if (message.clientId === browserClientId()) return;
           if (message.scope === WORKSPACE_STATE_SCOPE) setWorkspaceStateRevision((value) => value + 1);
@@ -388,6 +445,7 @@ const DaemonPane = forwardRef(function DaemonPane({
         if (message && SOCKET_MESSAGE_TYPES.has(message.type)) setRevision((value) => value + 1);
       });
       socket.addEventListener('close', () => {
+        if (eventSocketRef.current === socket) eventSocketRef.current = null;
         if (closed) return;
         reconnect();
       });
@@ -397,9 +455,10 @@ const DaemonPane = forwardRef(function DaemonPane({
     return () => {
       closed = true;
       clearTimeout(reconnectTimer);
+      if (eventSocketRef.current === socket) eventSocketRef.current = null;
       socket?.close();
     };
-  }, [target]);
+  }, [sendMarkdownSubscription, target]);
 
   const mutate = useCallback(async (item, command, body = {}) => {
     const payload = command === 'resume'
@@ -577,13 +636,14 @@ const DaemonPane = forwardRef(function DaemonPane({
 
   return (
     <TargetProvider value={target}>
-      <div
-        className={`${visible ? 'block' : 'hidden'} absolute inset-0 min-h-screen w-full`}
-        aria-hidden={!visible}
-        inert={!visible}
-        data-daemon-pane={targetId}
-      >
-        <div className="relative min-h-screen min-w-0 overflow-hidden">
+      <MarkdownWatchProvider value={watchMarkdown}>
+        <div
+          className={`${visible ? 'block' : 'hidden'} absolute inset-0 min-h-screen w-full`}
+          aria-hidden={!visible}
+          inert={!visible}
+          data-daemon-pane={targetId}
+        >
+          <div className="relative min-h-screen min-w-0 overflow-hidden">
           {panelModelEnabled && panelLayout.groups
             .filter((group) => mountedPanelGroupIds.has(group.id))
             .map((group) => {
@@ -598,6 +658,7 @@ const DaemonPane = forwardRef(function DaemonPane({
                   target={target}
                   session={groupSession}
                   visible={visible && group.id === activePanelGroup?.id}
+                  active={active && group.id === activePanelGroup?.id}
                   focusedPanel={focusedPanel}
                   onPanelFocus={onPanelFocus}
                   onRefresh={refreshPanelLayout}
@@ -619,6 +680,7 @@ const DaemonPane = forwardRef(function DaemonPane({
               session={workspaceSession}
               target={target}
               visible={!activeStandaloneId && String(workspaceSession.id) === activeWorkspaceId}
+              active={active && !activeStandaloneId && String(workspaceSession.id) === activeWorkspaceId}
               focusedPanel={focusedPanel}
               onPanelFocus={onPanelFocus}
               onDetails={openSession}
@@ -640,34 +702,35 @@ const DaemonPane = forwardRef(function DaemonPane({
           ))}
           {panelModelEnabled && !activePanelGroup && <div className="min-h-screen min-w-0" aria-hidden="true" />}
           {!panelModelEnabled && !activeWorkspaceSession && !activeStandaloneId && <div className="min-h-screen min-w-0" aria-hidden="true" />}
-        </div>
+          </div>
 
-        <div className="fixed right-2 bottom-2 z-[60] rounded-full border border-primary/40 bg-page/95 px-2.5 py-1.5 shadow-lg backdrop-blur-sm">
-          <Connection state={connection} />
-        </div>
+          <div className="fixed right-2 bottom-2 z-[60] rounded-full border border-primary/40 bg-page/95 px-2.5 py-1.5 shadow-lg backdrop-blur-sm">
+            <Connection state={connection} />
+          </div>
 
-        {sessionId && (
-          <SessionDetailModal
+          {sessionId && (
+            <SessionDetailModal
             sessionId={sessionId}
             item={detail && String(detail.id) === String(sessionId) ? detail : null}
             loading={detailLoading}
             loadError={detailError}
             onClose={closeSession}
             mutate={mutate}
-          />
-        )}
+            />
+          )}
 
-        {newKind && (
-          <NewSessionModal
+          {newKind && (
+            <NewSessionModal
             kind={newKind}
             onClose={() => setNewKind(null)}
             onCreated={created}
-          />
-        )}
+            />
+          )}
 
-        {!panelModelEnabled && <BottomTabs
+          {!panelModelEnabled && <BottomTabs
           ref={bottomTabsRef}
           visible={visible}
+          active={active}
           focusedPanel={focusedPanel}
           onPanelFocus={onPanelFocus}
           leftOffset={leftOffset}
@@ -680,8 +743,9 @@ const DaemonPane = forwardRef(function DaemonPane({
           onToggleSidebar={onToggleSidebar}
           onSessionsChange={reportStandaloneSessions}
           onCloseActive={focusAfterStandaloneClose}
-        />}
-      </div>
+          />}
+        </div>
+      </MarkdownWatchProvider>
     </TargetProvider>
   );
 });

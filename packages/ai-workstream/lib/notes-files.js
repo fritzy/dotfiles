@@ -19,8 +19,8 @@ const MAX_LIST_DEPTH = 5;
 const MAX_MARKDOWN_BYTES = 1024 * 1024;
 const MAX_OPEN_TABS = 24;
 const MAX_PATH_COMPLETIONS = 80;
-// `workstream` holds the per-session notes `ws note` writes; those are not what the
-// editor is for, so they stay out of the picker.
+// `workstream` holds per-session Markdown resources; those are not what the
+// weekly-notes editor is for, so they stay out of the picker.
 const SKIPPED_DIRECTORIES = new Set(['.git', 'node_modules', '__pycache__', '.obsidian', 'workstream']);
 const pad2 = (value) => String(value).padStart(2, '0');
 
@@ -325,6 +325,25 @@ export function writeMarkdownFile(requested, content, { version = null, ...optio
   writeFileSync(path, written);
   return {
     path,
+    version: fileVersion(written),
+    mtime: Math.round(statSync(path).mtimeMs),
+  };
+}
+
+export function createMarkdownFile(requested, content, options = {}) {
+  const path = resolveMarkdownFile(requested, options);
+  if (!path) throw new NotesFileError(400, 'path must be a markdown file');
+  if (typeof content !== 'string') throw new NotesFileError(400, 'content must be a string');
+  if (Buffer.byteLength(content) > MAX_MARKDOWN_BYTES) {
+    throw new NotesFileError(413, 'markdown file exceeds 1 MiB');
+  }
+  if (existsSync(path)) throw new NotesFileError(409, `markdown file already exists: ${path}`);
+  mkdirSync(dirname(path), { recursive: true });
+  const written = content.endsWith('\n') ? content : `${content}\n`;
+  writeFileSync(path, written);
+  return {
+    path,
+    name: basename(path),
     version: fileVersion(written),
     mtime: Math.round(statSync(path).mtimeMs),
   };

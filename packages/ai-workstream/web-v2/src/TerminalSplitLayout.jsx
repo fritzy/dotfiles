@@ -101,7 +101,7 @@ function SplitHandle({
       onDoubleClick={(event) => { event.preventDefault(); onFocus?.(); onReset?.(); }}
       onKeyDown={keyDown}
     >
-      <span className={`h-full transition-[width,background-color] ${dragging ? 'w-1 bg-accent' : 'w-px bg-primary/50 group-hover:w-1 group-hover:bg-accent group-focus-visible:w-1 group-focus-visible:bg-accent'}`} aria-hidden="true" />
+      <span className={`h-full transition-[width,background-color] ${dragging ? 'w-1 bg-accent' : 'w-px bg-primary group-hover:w-1 group-hover:bg-accent group-focus-visible:w-1 group-focus-visible:bg-accent'}`} aria-hidden="true" />
     </div>
   );
 }

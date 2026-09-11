@@ -142,6 +142,7 @@ function EditableTerminalTitle({ tab, onRename }) {
 // occupies the same main content area as a workstream.
 const BottomTabs = forwardRef(function BottomTabs({
   visible = true, focusedPanel, onPanelFocus,
+  active: lifecycleActive = visible,
   terminalMode = 'dark', fontFamily = '"Roboto Mono", monospace', onFullscreenChange,
   fullscreenExitRevision, onSidebarFocus, onToggleSidebar, onSessionsChange,
   onCloseActive, leftOffset = '0rem', stateRevision = 0,
@@ -646,6 +647,7 @@ const BottomTabs = forwardRef(function BottomTabs({
                 Icon={ShellIcon}
                 shown={shown}
                 visible={visible && terminalViewActive}
+                active={lifecycleActive && terminalViewActive}
                 focused={focusedPanel === panelId(tab.id)}
                 fullscreen={activeFullscreen && active === tab.id}
                 onPanelFocus={() => focusTerminalPanel(tab.id)}
@@ -701,7 +703,7 @@ const BottomTabs = forwardRef(function BottomTabs({
       >
         <Suspense fallback={<div className="flex h-full flex-1 items-center justify-center gap-2 text-primary"><span className="size-5 animate-spin rounded-full border-2 border-current/25 border-t-current" /> Loading…</div>}>
           {tabs.filter((tab) => tab.kind === 'editor').map((tab) => {
-            const tabVisible = visible && active === tab.id;
+            const tabVisible = lifecycleActive && active === tab.id;
             return (
               <div key={tab.id} className={`absolute inset-0 min-h-0 ${tabVisible ? 'flex' : 'hidden'}`}>
                 <MarkdownEditor
@@ -709,6 +711,7 @@ const BottomTabs = forwardRef(function BottomTabs({
                   name={tab.label}
                   source={tab.source}
                   focused={tabVisible && focusedPanel === panelId(tab.id)}
+                  visible={tabVisible}
                   fontFamily={fontFamily}
                   fontSize={tab.fontSize}
                   fullscreen={tab.fullscreen}

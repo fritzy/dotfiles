@@ -1,5 +1,5 @@
 import {
-  useCallback, useEffect, useRef, useState,
+  memo, useCallback, useEffect, useRef, useState,
 } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -13,6 +13,7 @@ import {
 import {
   appendUnderHeading, continueList, shiftIndent,
 } from './markdown.js';
+import { useMarkdownWatch } from './markdown-watch.js';
 import { useTarget } from './target-context.js';
 import { Button } from './ui.jsx';
 
@@ -32,21 +33,22 @@ const MARKDOWN_COMPONENTS = {
   ),
 };
 
-export function MarkdownPreview({ children }) {
+export const MarkdownPreview = memo(function MarkdownPreview({ children }) {
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
       {children}
     </ReactMarkdown>
   );
-}
+});
 
 export default function MarkdownEditor({
-  path, name, source = 'notes', focused, fontFamily, fontSize = 14, fullscreen = false,
-  initialMode = 'edit', modeRevision, onModeChange, onDirtyChange, onFocusRequest, onFontSizeChange,
+  path, name, source = 'notes', focused, visible = true, fontFamily, fontSize = 14, fullscreen = false,
+  initialMode = 'preview', modeRevision, onModeChange, onDirtyChange, onFocusRequest, onFontSizeChange,
   onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar, onNewTerminal, onClose,
-  headerActions = null, headerProps = null, titleContent = null,
+  headerActions = null, headerProps = null, titleContent = null, dirtyKey = path,
 }) {
   const target = useTarget();
+  const watchMarkdown = useMarkdownWatch();
   const [content, setContent] = useState('');
   const [saved, setSaved] = useState('');
   const [version, setVersion] = useState(null);
@@ -55,12 +57,12 @@ export default function MarkdownEditor({
   const [error, setError] = useState('');
   const [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [preview, setPreview] = useState(initialMode === 'preview');
+  const [preview, setPreview] = useState(initialMode !== 'edit');
   const textareaRef = useRef(null);
   const previewRef = useRef(null);
-  const stateRef = useRef({ content: '', version: null });
+  const stateRef = useRef({ content: '', saved: '', version: null });
   const dirty = content !== saved;
-  stateRef.current = { content, version };
+  stateRef.current = { content, saved, version };
 
   function changePreview(next) {
     setPreview((current) => {
@@ -70,17 +72,32 @@ export default function MarkdownEditor({
     });
   }
 
-  useEffect(() => { setPreview(initialMode === 'preview'); }, [initialMode, modeRevision]);
+  useEffect(() => { setPreview(initialMode !== 'edit'); }, [initialMode, modeRevision]);
 
-  useEffect(() => { onDirtyChange?.(path, dirty); }, [dirty, onDirtyChange, path]);
+  useEffect(() => { onDirtyChange?.(dirtyKey, dirty); }, [dirty, dirtyKey, onDirtyChange]);
 
-  const load = useCallback(async (signal) => {
-    setLoading(true);
+  const load = useCallback(async (signal, { preserveDirty = false } = {}) => {
+    if (!preserveDirty) setLoading(true);
     try {
       const file = source === 'file'
         ? await readMarkdownFile(path, signal, target)
         : await readNotesFile(path, signal, target);
       if (signal?.aborted) return;
+      const current = stateRef.current;
+      if (preserveDirty && current.content !== current.saved) {
+        if (file.content === current.content) {
+          setSaved(file.content);
+        } else if (file.content !== current.saved) {
+          setConflict(true);
+          setError('markdown file changed on disk while this panel has unsaved changes');
+          return;
+        }
+        setVersion(file.version);
+        setTodayHeading(file.todayHeading || '');
+        setError('');
+        setConflict(false);
+        return;
+      }
       setContent(file.content);
       setSaved(file.content);
       setVersion(file.version);
@@ -95,10 +112,28 @@ export default function MarkdownEditor({
   }, [path, source, target]);
 
   useEffect(() => {
+    if (!visible) return undefined;
     const controller = new AbortController();
-    load(controller.signal);
+    void load(controller.signal, { preserveDirty: true });
     return () => controller.abort();
-  }, [load]);
+  }, [load, visible]);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    const refreshOnWindowFocus = () => { void load(undefined, { preserveDirty: true }); };
+    window.addEventListener('focus', refreshOnWindowFocus);
+    return () => window.removeEventListener('focus', refreshOnWindowFocus);
+  }, [load, visible]);
+
+  useEffect(() => {
+    if (!visible || !path || !watchMarkdown) return undefined;
+    return watchMarkdown({
+      path,
+      source,
+      onChange: () => { void load(undefined, { preserveDirty: true }); },
+      onError: (message) => setError(message),
+    });
+  }, [load, path, source, visible, watchMarkdown]);
 
   const save = useCallback(async ({ force = false } = {}) => {
     const { content: current, version: known } = stateRef.current;
@@ -137,9 +172,9 @@ export default function MarkdownEditor({
   // must be focused instead — a note left in Preview from an earlier visit must
   // still be reachable by keyboard navigation, not just visually "brought up".
   useEffect(() => {
-    if (!focused || loading) return;
+    if (!visible || !focused || loading) return;
     (preview ? previewRef : textareaRef).current?.focus();
-  }, [focused, loading, preview]);
+  }, [focused, loading, preview, visible]);
 
   // A dirty tab warns on unload even while it is hidden behind another tab.
   useEffect(() => {
@@ -241,6 +276,10 @@ export default function MarkdownEditor({
     : saving ? 'saving…'
       : conflict ? 'changed on disk'
         : dirty ? 'unsaved' : 'saved';
+
+  if (!visible) {
+    return <div className="hidden" aria-hidden="true" data-markdown-inactive={path} />;
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

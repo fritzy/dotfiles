@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -325,7 +325,6 @@ test('HTTP service exposes daemon-side stack, note, digest, and config routes', 
     db,
     config,
     pollInterval: 0,
-    prCheckIntervalMs: 0,
     checkGit: async () => null,
     checkPr: async () => ({ added: false }),
   });
@@ -393,6 +392,50 @@ test('HTTP service exposes daemon-side stack, note, digest, and config routes', 
   assert.equal(renamedGroup.group.label, 'Build logs');
   const updatedLayout = await (await fetch(`${base}/panel-layout`)).json();
   assert.equal(updatedLayout.groups.find((group) => group.id === createdGroup.groupId).label, 'Build logs');
+
+  const repoGroup = updatedLayout.groups.find((group) => group.ownerId === String(repo.id));
+  assert.equal(repoGroup.markdownDirectory.startsWith(config.paths.notes), true);
+  const addedResourceResponse = await fetch(`${base}/panel-layout/groups/${repoGroup.id}/resources`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      revision: updatedLayout.revision,
+      content: 'Created through the resource API.',
+      title: 'Session context',
+    }),
+  });
+  assert.equal(addedResourceResponse.status, 200);
+  const addedResource = await addedResourceResponse.json();
+  assert.equal(dirname(addedResource.file.path), repoGroup.markdownDirectory);
+  assert.equal(readFileSync(addedResource.file.path, 'utf8'), '# Session context\n\nCreated through the resource API.\n');
+
+  const readResource = await (await fetch(
+    `${base}/panel-layout/resources/${addedResource.resource.id}`,
+  )).json();
+  assert.equal(readResource.file.content, '# Session context\n\nCreated through the resource API.\n');
+  const writtenResource = await fetch(
+    `${base}/panel-layout/resources/${addedResource.resource.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '# Updated', version: readResource.file.version }),
+    },
+  );
+  assert.equal(writtenResource.status, 200);
+  assert.equal((await writtenResource.json()).file.version === readResource.file.version, false);
+  assert.equal(readFileSync(addedResource.file.path, 'utf8'), '# Updated\n');
+
+  const configuredGroup = updatedLayout.groups.find((group) => group.ownerId === 'dotfiles');
+  const configuredResourceResponse = await fetch(
+    `${base}/panel-layout/groups/${configuredGroup.id}/resources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision: addedResource.revision, content: 'Configured session context.' }),
+    },
+  );
+  assert.equal(configuredResourceResponse.status, 200);
+  const configuredResource = await configuredResourceResponse.json();
+  assert.equal(dirname(configuredResource.file.path), configuredGroup.markdownDirectory);
+  assert.equal(configuredGroup.markdownDirectory.startsWith(config.paths.notes), true);
 });
 
 test('path opener invokes xdg-open without shell interpolation', () => {
@@ -413,52 +456,10 @@ test('WebSocket frame encoder supports short and extended payloads', () => {
   assert.equal(extended.readUInt16BE(2), 130);
 });
 
-test('PR discovery retries unlinked repos and stops after a PR link is associated', async (t) => {
-  const { db, dir, repo, config } = fixture(t);
-  const alreadyLinked = upsertWorkstream(db, {
-    org: 'example', repo: 'project', branch: 'already-linked', source: 'origin',
-    path: join(dir, 'already-linked'),
-    created_at: '2026-08-26T12:00:00.000Z',
-    last_joined_at: '2026-08-26T12:00:00.000Z',
-  });
-  addIssue(db, alreadyLinked.id, 'https://github.com/example/project/pull/40');
-  const checks = [];
-  const service = createApiService({
-    db,
-    config,
-    pollInterval: 0,
-    prCheckIntervalMs: 20,
-    checkPr: async (database, row, { checkedAt }) => {
-      checks.push(row.id);
-      const found = row.id === repo.id && checks.filter((id) => id === repo.id).length > 1;
-      return linkPr(database, row, {
-        checkedAt,
-        run: () => ({
-          status: 0,
-          stdout: JSON.stringify(found ? [{
-            number: 41,
-            url: 'https://github.com/example/project/pull/41',
-            state: 'OPEN',
-            createdAt: checkedAt,
-          }] : []),
-        }),
-      });
-    },
-  });
-  t.after(() => service.close());
-
-  await waitUntil(
-    () => listIssues(db, repo.id).some((issue) => issue.ref.endsWith('/pull/41')),
-    'background PR discovery did not associate the branch PR',
-  );
-  assert.equal(checks.filter((id) => id === repo.id).length, 2);
-  assert.equal(checks.includes(alreadyLinked.id), false);
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(checks.filter((id) => id === repo.id).length, 2);
-});
-
 test('HTTP service serves assets, REST commands, and WebSocket invalidations', async (t) => {
-  const { db, dir, repo, config } = fixture(t);
+  const {
+    db, dir, repo, scratch, config,
+  } = fixture(t);
   const openedPaths = [];
   let checkedRepoClean = false;
   let createdRepoGitChecks = 0;
@@ -482,15 +483,17 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
       writes: [],
       resizes: [],
       killed: false,
+      killCalls: 0,
       onData(listener) {
         dataListener = listener;
         setImmediate(() => dataListener?.('\u001b[32mPTY_READY\u001b[0m'));
         return { dispose: () => { dataListener = null; } };
       },
       onExit() { return { dispose() {} }; },
+      emit(data) { dataListener?.(data); },
       write(data) { this.writes.push(data); },
       resize(cols, rows) { this.resizes.push([cols, rows]); },
-      kill() { this.killed = true; },
+      kill() { this.killed = true; this.killCalls += 1; },
     };
     terminalPtys.push(terminal);
     return terminal;
@@ -625,10 +628,47 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   t.after(() => service.close());
   const { port } = service.server.address();
   const base = `http://127.0.0.1:${port}`;
-  await waitUntil(
-    () => prChecks.some((check) => check.id === repo.id),
-    'startup PR discovery did not check the repo session',
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(prChecks, []);
+
+  const sessionNotesDir = join(
+    config.paths.notes, 'work', '2026', 'workstream', repo.uuid,
   );
+  mkdirSync(sessionNotesDir, { recursive: true });
+  writeFileSync(join(sessionNotesDir, 'sync-note.md'), '# Synced session note\n');
+  const syncResponse = await fetch(`${base}/ws/${repo.id}/sync`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert.equal(syncResponse.status, 200);
+  const synced = await syncResponse.json();
+  assert.equal(synced.notes.changed, true);
+  assert.equal(synced.notes.count, 1);
+  assert.deepEqual(synced.pullRequest, {
+    checked: true,
+    associated: true,
+    added: true,
+    pr: {
+      number: 41,
+      url: 'https://github.com/example/project/pull/41',
+      state: 'MERGED',
+    },
+  });
+  assert.equal(prChecks.filter((check) => check.id === repo.id).length, 1);
+
+  const secondSync = await (await fetch(`${base}/ws/${repo.id}/sync`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })).json();
+  assert.equal(secondSync.pullRequest.checked, false);
+  assert.equal(secondSync.pullRequest.associated, true);
+  assert.equal(prChecks.filter((check) => check.id === repo.id).length, 1);
+
+  const scratchSync = await (await fetch(`${base}/ws/${scratch.id}/sync`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })).json();
+  assert.deepEqual(scratchSync.pullRequest, {
+    checked: false, associated: false, added: false, pr: null,
+  });
+  assert.equal(prChecks.length, 1);
 
   const health = await (await fetch(`${base}/health`)).json();
   assert.match(health.revision, /^[a-f0-9]{16}$/);
@@ -810,6 +850,20 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
       resolve(JSON.parse(event.data));
     }, { once: true });
   });
+  const nextMessageOfType = (type, label = type) => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.removeEventListener('message', listener);
+      reject(new Error(`timed out waiting for websocket message: ${label}`));
+    }, 2000);
+    const listener = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type !== type) return;
+      clearTimeout(timeout);
+      socket.removeEventListener('message', listener);
+      resolve(message);
+    };
+    socket.addEventListener('message', listener);
+  });
   const nextTerminalMessage = (terminalSocket, type) => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`timed out waiting for terminal ${type}`)), 1000);
     const listener = (event) => {
@@ -821,6 +875,56 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     };
     terminalSocket.addEventListener('message', listener);
   });
+
+  const fullPageRefresh = nextMessageOfType('full_page_refresh');
+  const fullPageRefreshResponse = await fetch(`${base}/browser/refresh`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert.equal(fullPageRefreshResponse.status, 200);
+  assert.deepEqual(await fullPageRefreshResponse.json(), { ok: true });
+  assert.deepEqual(await fullPageRefresh, { type: 'full_page_refresh' });
+
+  const watchedMarkdownPath = join(repo.path, 'watched.md');
+  const secondWatchedMarkdownPath = join(repo.path, 'also-watched.md');
+  writeFileSync(watchedMarkdownPath, '# Before\n');
+  writeFileSync(secondWatchedMarkdownPath, '# Second before\n');
+  const markdownWatchReady = nextMessageOfType('markdown_watch');
+  socket.send(JSON.stringify({
+    type: 'markdown_watch', watchId: 'api-test-watch',
+    source: 'file', path: watchedMarkdownPath,
+  }));
+  assert.deepEqual(await markdownWatchReady, {
+    type: 'markdown_watch', watchId: 'api-test-watch', path: watchedMarkdownPath,
+  });
+  const secondMarkdownWatchReady = nextMessageOfType('markdown_watch');
+  socket.send(JSON.stringify({
+    type: 'markdown_watch', watchId: 'api-test-second-watch',
+    source: 'file', path: secondWatchedMarkdownPath,
+  }));
+  assert.deepEqual(await secondMarkdownWatchReady, {
+    type: 'markdown_watch', watchId: 'api-test-second-watch', path: secondWatchedMarkdownPath,
+  });
+  const markdownChanged = nextMessageOfType('markdown_changed', 'first watched Markdown file change');
+  writeFileSync(watchedMarkdownPath, '# After\n');
+  assert.deepEqual(await markdownChanged, {
+    type: 'markdown_changed', watchId: 'api-test-watch',
+    path: watchedMarkdownPath, event: 'change',
+  });
+  const secondMarkdownChanged = nextMessageOfType('markdown_changed', 'second watched Markdown file change');
+  writeFileSync(secondWatchedMarkdownPath, '# Second after\n');
+  assert.deepEqual(await secondMarkdownChanged, {
+    type: 'markdown_changed', watchId: 'api-test-second-watch',
+    path: secondWatchedMarkdownPath, event: 'change',
+  });
+  socket.send(JSON.stringify({ type: 'markdown_unwatch', watchId: 'api-test-watch' }));
+  await new Promise((resolve) => setTimeout(resolve, 125));
+  const secondMarkdownChangedAgain = nextMessageOfType('markdown_changed', 'second watched Markdown file after first unwatch');
+  writeFileSync(secondWatchedMarkdownPath, '# Second after again\n');
+  assert.deepEqual(await secondMarkdownChangedAgain, {
+    type: 'markdown_changed', watchId: 'api-test-second-watch',
+    path: secondWatchedMarkdownPath, event: 'change',
+  });
+  socket.send(JSON.stringify({ type: 'markdown_unwatch', watchId: 'api-test-second-watch' }));
 
   const browserStateChanged = nextMessage('browser state invalidation');
   const savedBottomState = await fetch(`${base}/browser/state`, {
@@ -885,17 +989,72 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   ]);
   const activeBrowserTerminal = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(activeBrowserTerminal.items[0].status, 'active');
+  let resourceLayout = await (await fetch(`${base}/panel-layout`)).json();
+  const activeResourceGroup = resourceLayout.groups.find(
+    (group) => group.ownerId === String(repo.id),
+  );
+  const inactiveResourceGroup = resourceLayout.groups.find(
+    (group) => group.ownerId === String(scratch.id),
+  );
+  const focusedResourceGroup = await (await fetch(
+    `${base}/panel-layout/groups/${inactiveResourceGroup.id}/activate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision: resourceLayout.revision }),
+    },
+  )).json();
+  writeFileSync(join(repo.path, 'active-resource.md'), '# Active resource\n');
+  const activeResourceResponse = await fetch(
+    `${base}/panel-layout/groups/${activeResourceGroup.id}/resources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        revision: focusedResourceGroup.revision,
+        kind: 'markdown', value: 'active-resource.md', open: true,
+      }),
+    },
+  );
+  assert.equal(activeResourceResponse.status, 200);
+  const activeResource = await activeResourceResponse.json();
+  assert.equal(activeResource.opened, true);
+  assert.equal(activeResource.panel.kind, 'markdown');
+  resourceLayout = await (await fetch(`${base}/panel-layout`)).json();
+  assert.equal(
+    resourceLayout.activeGroupId,
+    inactiveResourceGroup.id,
+    'opening a resource on an active session does not focus it',
+  );
+  assert.ok(
+    resourceLayout.groups.find((group) => group.id === activeResourceGroup.id).panels
+      .some((panel) => panel.resourceId === activeResource.resource.id),
+  );
+
+  writeFileSync(join(scratch.path, 'inactive-resource.md'), '# Inactive resource\n');
+  const inactiveResourceResponse = await fetch(
+    `${base}/panel-layout/groups/${inactiveResourceGroup.id}/resources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        revision: resourceLayout.revision,
+        kind: 'markdown', value: 'inactive-resource.md', open: true,
+      }),
+    },
+  );
+  assert.equal(inactiveResourceResponse.status, 200);
+  const inactiveResource = await inactiveResourceResponse.json();
+  assert.equal(inactiveResource.opened, false);
+  assert.equal(inactiveResource.panel, undefined);
   const checkedPrDetail = await (await fetch(`${base}/ws/${repo.id}/?status=all`)).json();
   assert.equal(checkedPrDetail.items[0].prDone, true);
   assert.equal(checkedPrDetail.items[0].issues.some(
     (issue) => issue.ref === 'https://github.com/example/project/pull/41'
   ), true);
   const initialTerminalPrChecks = prChecks.filter((check) => check.id === repo.id).length;
-  sessionTerminalSocket.send(JSON.stringify({ type: 'input', data: 'within throttle\r' }));
+  sessionTerminalSocket.send(JSON.stringify({ type: 'input', data: 'no implicit PR check\r' }));
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(prChecks.filter((check) => check.id === repo.id).length, initialTerminalPrChecks);
   serviceTime += 3 * 60_000 + 1;
-  sessionTerminalSocket.send(JSON.stringify({ type: 'input', data: 'after throttle\r' }));
+  sessionTerminalSocket.send(JSON.stringify({ type: 'input', data: 'still no implicit PR check\r' }));
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(prChecks.filter((check) => check.id === repo.id).length, initialTerminalPrChecks);
   assert.deepEqual(await (await fetch(`${base}/ws/terminal-sessions`)).json(), {
@@ -983,15 +1142,15 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(createdFromWeb.workstream.status, 'paused');
   assert.deepEqual(createdFromWeb.browserWorkspace, { opened: true, panelMode: 'three' });
   assert.equal(createdFromWeb.workstream.gitClean, false);
-  assert.equal(createdFromWeb.workstream.prDone, false);
+  assert.equal(createdFromWeb.workstream.prDone, null);
   assert.equal(createdFromWeb.branchedOffParent, true);
   assert.deepEqual(materializedWorktrees.at(-1).options, { base: repo.branch });
   assert.equal(createdRepoGitChecks > 0, true);
   assert.equal(createdFromWeb.workstream.issues[0].ref, 'https://github.com/example/project/issues/321');
   assert.equal(createdFromWeb.workstream.issues.some(
     (issue) => issue.ref === 'https://github.com/example/project/pull/322'
-  ), true);
-  assert.equal(prChecks.filter((check) => check.id === createdFromWeb.workstream.id).length, 1);
+  ), false);
+  assert.equal(prChecks.filter((check) => check.id === createdFromWeb.workstream.id).length, 0);
   const createdRepoSeed = seededSessions.filter(
     (seeded) => seeded.id === createdFromWeb.workstream.id
   ).at(-1);
@@ -1000,7 +1159,6 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     '',
     'This is a new ws session to work on a repo. The following links are associated with this session. Use the linear skill with the cli and/or the gh cli to retrieve authed information.',
     '* https://github.com/example/project/issues/321',
-    '* https://github.com/example/project/pull/322',
     'These links are for context. No action is to be taken based on these links nor their contents alone.',
     '',
   ].join('\n'));
@@ -1272,6 +1430,89 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.deepEqual(killedTerminalNames().slice(-3), ['shell', 'editor', 'agent'].map((role) => (
     browserTerminalSessionName({ sessionId: String(createdFromWeb.workstream.id), role })
   )));
+
+  // Suspension keeps the browser registration but releases only the live
+  // attachment. Resuming restores the last requested size, and a suspended
+  // client receives no output from its superseded PTY.
+  const suspendedPtyCount = terminalPtys.length;
+  const suspendedSocket = new WebSocket(
+    `ws://127.0.0.1:${port}/ws/terminal?session=${repo.id}&role=shell&terminal=suspend-resume&client=suspended-owner&suspended=1`,
+  );
+  const initiallySuspended = nextTerminalMessage(suspendedSocket, 'suspended');
+  await new Promise((resolve, reject) => {
+    suspendedSocket.addEventListener('open', resolve, { once: true });
+    suspendedSocket.addEventListener('error', () => reject(new Error('suspended terminal websocket failed')), { once: true });
+  });
+  await initiallySuspended;
+  assert.equal(terminalPtys.length, suspendedPtyCount, 'an initially suspended client does not attach');
+  const suspendedDiagnostics = await (
+    await fetch(`${base}/ws/terminal-sessions?diagnostics=1`)
+  ).json();
+  assert.equal(suspendedDiagnostics.socketCount >= 1, true);
+  assert.deepEqual(suspendedDiagnostics.sessions, [{ id: repo.id, count: 1 }]);
+  assert.ok(suspendedDiagnostics.clients.some((client) => (
+    client.clientId === 'suspended-owner' && client.state === 'suspended'
+  )));
+
+  suspendedSocket.send(JSON.stringify({ type: 'resize', cols: 111, rows: 33 }));
+  const resumedClaimed = nextTerminalMessage(suspendedSocket, 'claimed');
+  suspendedSocket.send(JSON.stringify({ type: 'resume' }));
+  await resumedClaimed;
+  const suspendedOwnerPty = terminalPtys.at(-1);
+  assert.equal(suspendedOwnerPty.options.session, browserTerminalSessionName({
+    sessionId: String(repo.id), role: 'shell', terminalId: 'suspend-resume',
+  }));
+  assert.equal(suspendedOwnerPty.options.cols, 111);
+  assert.equal(suspendedOwnerPty.options.rows, 33);
+  const visibleOutput = nextTerminalMessage(suspendedSocket, 'output');
+  suspendedOwnerPty.emit('VISIBLE');
+  assert.deepEqual(await visibleOutput, { type: 'output', data: 'VISIBLE' });
+
+  const suspendedAck = nextTerminalMessage(suspendedSocket, 'suspended');
+  suspendedSocket.send(JSON.stringify({ type: 'suspend' }));
+  await suspendedAck;
+  assert.equal(suspendedOwnerPty.killed, true);
+  assert.equal(suspendedOwnerPty.killCalls, 1);
+  const hiddenOutput = [];
+  const hiddenOutputListener = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === 'output' && message.data === 'HIDDEN') hiddenOutput.push(message);
+  };
+  suspendedSocket.addEventListener('message', hiddenOutputListener);
+  suspendedOwnerPty.emit('HIDDEN');
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  suspendedSocket.removeEventListener('message', hiddenOutputListener);
+  assert.deepEqual(hiddenOutput, []);
+  const duplicateSuspendAck = nextTerminalMessage(suspendedSocket, 'suspended');
+  suspendedSocket.send(JSON.stringify({ type: 'suspend' }));
+  await duplicateSuspendAck;
+  assert.equal(suspendedOwnerPty.killCalls, 1, 'duplicate suspend does not kill twice');
+
+  const suspensionWaiter = new WebSocket(
+    `ws://127.0.0.1:${port}/ws/terminal?session=${repo.id}&role=shell&terminal=suspend-resume&client=suspension-waiter`,
+  );
+  const suspensionWaiterClaimed = nextTerminalMessage(suspensionWaiter, 'claimed');
+  await new Promise((resolve, reject) => {
+    suspensionWaiter.addEventListener('open', resolve, { once: true });
+    suspensionWaiter.addEventListener('error', () => reject(new Error('suspension waiter websocket failed')), { once: true });
+  });
+  await suspensionWaiterClaimed;
+  const suspendedOwnerBusy = nextTerminalMessage(suspendedSocket, 'busy');
+  suspendedSocket.send(JSON.stringify({ type: 'resume' }));
+  await suspendedOwnerBusy;
+  const suspendedOwnerReclaimed = nextTerminalMessage(suspendedSocket, 'claimed');
+  const suspensionWaiterClosed = new Promise((resolve) => suspensionWaiter.addEventListener('close', resolve, { once: true }));
+  suspensionWaiter.close();
+  await suspensionWaiterClosed;
+  await suspendedOwnerReclaimed;
+  const ptyCountAfterReclaim = terminalPtys.length;
+  const duplicateResumeClaimed = nextTerminalMessage(suspendedSocket, 'claimed');
+  suspendedSocket.send(JSON.stringify({ type: 'resume' }));
+  await duplicateResumeClaimed;
+  assert.equal(terminalPtys.length, ptyCountAfterReclaim, 'duplicate resume does not attach twice');
+  const suspendedSocketClosed = new Promise((resolve) => suspendedSocket.addEventListener('close', resolve, { once: true }));
+  suspendedSocket.close();
+  await suspendedSocketClosed;
 
   // Only one browser client owns a Zellij attach at a time. A second client is
   // told who has it, can explicitly take the attachment over, and leaves the

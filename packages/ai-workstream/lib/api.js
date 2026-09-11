@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import chokidar from 'chokidar';
 
 import { AGENT_PROVIDERS, CONFIG, PANEL_ROLES } from './config.js';
 import {
@@ -30,11 +32,11 @@ import {
   listNotes,
   listWorkstreams,
   materializeWorktree,
+  noteDir,
   now,
   openDb,
   parseSelector,
   parentOf,
-  prCheckDue,
   readBrowserUiState,
   recentRepositories,
   removeIssue,
@@ -80,6 +82,7 @@ import {
 } from './suggestions.js';
 import {
   completeMarkdownPath,
+  createMarkdownFile,
   NotesFileError,
   listNotesFiles,
   notesRelativePath,
@@ -87,6 +90,8 @@ import {
   readEditorTabs,
   readMarkdownFile,
   readNotesFile,
+  resolveMarkdownFile,
+  resolveNotesFile,
   weeklyNotePath,
   writeEditorTabs,
   writeMarkdownFile,
@@ -105,6 +110,7 @@ import {
   mergeTerminalGroups,
   migrateLegacyPanelState,
   openResourcePanel,
+  panelLayoutRevision,
   readPanelLayout,
   removePanel,
   removeResource,
@@ -831,6 +837,46 @@ export function workstreamNotes(db, id, { notesRoot = CONFIG.paths.notes } = {})
   return { workstream: briefWorkstream(row), notes: listNotes(row, notesRoot) };
 }
 
+export async function syncWorkstreamSession(db, id, {
+  notesRoot = CONFIG.paths.notes,
+  checkPr = linkPrAsync,
+  checkedAt = now(),
+} = {}) {
+  const row = commandRow(db, id);
+  const groupSync = ensureSessionPanelGroup(db, {
+    id: row.id,
+    type: isScratch(row) ? 'scratchpad' : 'repo',
+    name: row.label || row.branch,
+    path: row.path,
+    source: row.source,
+  }, { bump: true });
+  const noteSync = syncDiscoveredSessionNotes(db, notesRoot, { ownerId: row.id });
+  const hadPullRequest = hasGitHubPullRequest(db, row.id);
+  const pullRequestResult = !isScratch(row) && !hadPullRequest
+    ? await checkPr(db, row, { checkedAt })
+    : null;
+  const issueSync = syncIssueResources(db);
+  const layout = readPanelLayout(db);
+  const group = layout.groups.find((item) => item.ownerId === String(row.id));
+  return {
+    workstream: briefWorkstream(resolveRow(db, String(row.id))),
+    notes: {
+      changed: groupSync.changed || noteSync.changed,
+      count: group?.resources.filter((resource) => resource.kind === 'markdown').length || 0,
+    },
+    pullRequest: {
+      checked: !isScratch(row) && !hadPullRequest,
+      associated: hasGitHubPullRequest(db, row.id),
+      added: pullRequestResult?.added === true,
+      pr: pullRequestResult?.pr || null,
+    },
+    layout: {
+      changed: groupSync.changed || noteSync.changed || issueSync.changed,
+      revision: layout.revision,
+    },
+  };
+}
+
 export function workstreamDigest(db, body = {}, { notesRoot = CONFIG.paths.notes } = {}) {
   if (body.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(body.date)) {
     throw new ApiError(400, 'date must use YYYY-MM-DD');
@@ -981,7 +1027,6 @@ export function createApiService({
   openPath = openPathWithXdg,
   checkGit = worktreeCleanAsync,
   checkPr = linkPrAsync,
-  prCheckIntervalMs = 3 * 60_000,
   materialize = materializeWorktree,
   parseRepoSelector = parseSelector,
   expandIssue = expandIssueReference,
@@ -998,6 +1043,7 @@ export function createApiService({
   resetTerminalSession = resetBrowserTerminalSession,
   resetAllTerminalSessions = resetAllBrowserTerminalSessions,
   terminalSessionConfigFile = browserTerminalConfigFile,
+  createMarkdownWatcher = (path, options) => chokidar.watch(path, options),
   notesRoot = config.paths.notes,
   dataDir = config.paths.data,
 } = {}) {
@@ -1012,8 +1058,9 @@ export function createApiService({
   const terminalOwners = new Map();
   const browserTerminalCounts = new Map();
   const pendingGitRefreshes = new Map();
-  const pendingPrRefreshes = new Map();
   const suggestionCaches = new Map();
+  const markdownSubscriptions = new Map();
+  const markdownWatchers = new Map();
   let closing = false;
   refreshWorkstreamStatuses(db, []);
   let lastEventSequence = latestWorkstreamEventSequence(db);
@@ -1049,10 +1096,121 @@ export function createApiService({
   };
 
   const send = (socket, message) => {
-    if (!socket.destroyed && socket.writable) socket.write(encodeWebSocketFrame(JSON.stringify(message)));
+    if (socket.destroyed || !socket.writable) return false;
+    socket.write(encodeWebSocketFrame(JSON.stringify(message)));
+    return true;
   };
   const broadcast = (message) => {
-    for (const socket of clients) send(socket, message);
+    let recipients = 0;
+    for (const socket of clients) if (send(socket, message)) recipients += 1;
+    return recipients;
+  };
+  const removeMarkdownSubscription = (socket, watchId = null) => {
+    const subscriptions = markdownSubscriptions.get(socket);
+    if (!subscriptions) return;
+    const removed = watchId
+      ? [subscriptions.get(watchId)].filter(Boolean)
+      : [...subscriptions.values()];
+    if (removed.length === 0) return;
+    if (watchId) subscriptions.delete(watchId);
+    else subscriptions.clear();
+    if (subscriptions.size === 0) markdownSubscriptions.delete(socket);
+    for (const subscription of removed) {
+      const entry = markdownWatchers.get(subscription.path);
+      if (!entry) continue;
+      const stillSubscribed = [...subscriptions.values()]
+        .some((candidate) => candidate.path === subscription.path);
+      if (!stillSubscribed) entry.sockets.delete(socket);
+      if (entry.sockets.size > 0) continue;
+      markdownWatchers.delete(subscription.path);
+      Promise.resolve(entry.watcher.close()).catch((error) => {
+        if (!closing) process.stderr.write(`ai-workstream Markdown watcher: ${error.message}\n`);
+      });
+    }
+  };
+  const markdownWatchPath = ({ path: requested, source }) => {
+    if (source === 'notes') {
+      const path = resolveNotesFile(notesRoot, requested);
+      if (!path) throw new ApiError(400, 'path must be a Markdown file inside the notes root');
+      readNotesFile(notesRoot, path, { date: new Date(clock()) });
+      return path;
+    }
+    if (source !== 'file') throw new ApiError(400, 'Markdown source must be file or notes');
+    const path = resolveMarkdownFile(requested, { cwd, home: config.home });
+    if (!path) throw new ApiError(400, 'path must be a Markdown file');
+    readMarkdownFile(path, { cwd, home: config.home });
+    return path;
+  };
+  const addMarkdownSubscription = (socket, message) => {
+    let watchId;
+    let path;
+    try {
+      watchId = browserId(message.watchId, 'watch id');
+      removeMarkdownSubscription(socket, watchId);
+      path = markdownWatchPath(message);
+    } catch (error) {
+      send(socket, {
+        type: 'markdown_watch_error', watchId: watchId || null, message: error.message,
+      });
+      return;
+    }
+    let entry = markdownWatchers.get(path);
+    if (!entry) {
+      let watcher;
+      try {
+        watcher = createMarkdownWatcher(path, { atomic: true, ignoreInitial: true });
+      } catch (error) {
+        send(socket, {
+          type: 'markdown_watch_error', watchId,
+          message: `could not watch Markdown file: ${error.message}`,
+        });
+        return;
+      }
+      entry = { path, ready: false, sockets: new Set(), watcher };
+      markdownWatchers.set(path, entry);
+      watcher.on('ready', () => {
+        entry.ready = true;
+        for (const client of entry.sockets) {
+          for (const subscription of markdownSubscriptions.get(client)?.values() || []) {
+            if (subscription.path === path) {
+              send(client, { type: 'markdown_watch', watchId: subscription.watchId, path });
+            }
+          }
+        }
+      });
+      watcher.on('all', (event) => {
+        if (!['add', 'change', 'unlink'].includes(event)) return;
+        for (const client of entry.sockets) {
+          for (const subscription of markdownSubscriptions.get(client)?.values() || []) {
+            if (subscription.path === path) {
+              send(client, {
+                type: 'markdown_changed', watchId: subscription.watchId, path, event,
+              });
+            }
+          }
+        }
+      });
+      watcher.on('error', (error) => {
+        for (const client of entry.sockets) {
+          for (const subscription of markdownSubscriptions.get(client)?.values() || []) {
+            if (subscription.path === path) {
+              send(client, {
+                type: 'markdown_watch_error', watchId: subscription.watchId,
+                message: `could not watch Markdown file: ${error.message}`,
+              });
+            }
+          }
+        }
+      });
+    }
+    entry.sockets.add(socket);
+    let subscriptions = markdownSubscriptions.get(socket);
+    if (!subscriptions) {
+      subscriptions = new Map();
+      markdownSubscriptions.set(socket, subscriptions);
+    }
+    subscriptions.set(watchId, { path, watchId });
+    if (entry.ready) send(socket, { type: 'markdown_watch', watchId, path });
   };
   const broadcastPanelLayout = (clientId = 'service') => {
     broadcast({ type: 'panel_layout', clientId, revision: readPanelLayout(db).revision });
@@ -1157,7 +1315,10 @@ export function createApiService({
     const current = terminalClients.get(socket);
     if (!current) return;
     terminalClients.delete(socket);
-    if (current.terminal) unregisterBrowserTerminal(current.sessionId);
+    if (current.registered) {
+      current.registered = false;
+      unregisterBrowserTerminal(current.sessionId);
+    }
     if (terminalOwners.get(current.terminalSession)?.socket === socket) {
       terminalOwners.delete(current.terminalSession);
     }
@@ -1167,11 +1328,7 @@ export function createApiService({
     if (claim) queueMicrotask(() => claimWaitingTerminal(current.terminalSession));
   };
 
-  // A manual takeover moves only the live Zellij attachment. The displaced
-  // websocket remains registered as a waiter, so its UI can explain what
-  // happened and offer the same takeover action without touching the backing
-  // Zellij session.
-  const detachTerminalClient = (socket, { preserveRegistration = false } = {}) => {
+  const detachTerminalClient = (socket) => {
     const current = terminalClients.get(socket);
     if (!current?.terminal) return false;
     const terminal = current.terminal;
@@ -1180,9 +1337,25 @@ export function createApiService({
     if (terminalOwners.get(current.terminalSession)?.socket === socket) {
       terminalOwners.delete(current.terminalSession);
     }
-    if (!preserveRegistration) unregisterBrowserTerminal(current.sessionId);
     send(socket, { type: 'busy', message: 'Active on another client' });
     try { terminal.kill(); } catch { /* already exited */ }
+    return true;
+  };
+
+  const suspendTerminalClient = (socket) => {
+    const current = terminalClients.get(socket);
+    if (!current || socket.destroyed) return false;
+    current.suspended = true;
+    current.waiting = false;
+    const terminal = current.terminal;
+    current.terminal = null;
+    const released = terminalOwners.get(current.terminalSession)?.socket === socket;
+    if (released) terminalOwners.delete(current.terminalSession);
+    if (terminal) {
+      try { terminal.kill(); } catch { /* already exited */ }
+    }
+    send(socket, { type: 'suspended' });
+    if (released) queueMicrotask(() => claimWaitingTerminal(current.terminalSession));
     return true;
   };
 
@@ -1253,9 +1426,9 @@ export function createApiService({
     }
   };
 
-  const attachTerminalClient = (socket, { registrationAlreadyHeld = false } = {}) => {
+  const attachTerminalClient = (socket) => {
     const current = terminalClients.get(socket);
-    if (!current || current.terminal || socket.destroyed) return false;
+    if (!current || current.suspended || current.terminal || socket.destroyed) return false;
     const owner = terminalOwners.get(current.terminalSession);
     if (owner && terminalClients.has(owner.socket) && !owner.socket.destroyed) {
       // After a dropped connection (especially across a daemon restart), every
@@ -1264,8 +1437,8 @@ export function createApiService({
       // once a returning owner holds the terminal, other stale ownership claims
       // wait normally instead of bouncing the attachment back and forth.
       if (current.reconnectOwner && !owner.reconnectOwner) {
-        const transferred = detachTerminalClient(owner.socket, { preserveRegistration: true });
-        return attachTerminalClient(socket, { registrationAlreadyHeld: transferred });
+        detachTerminalClient(owner.socket);
+        return attachTerminalClient(socket);
       }
       current.waiting = true;
       send(socket, {
@@ -1290,8 +1463,8 @@ export function createApiService({
         session: current.terminalSession,
         configFile: terminalSessionConfigFile(),
         cwd: current.cwd,
-        cols: 80,
-        rows: 24,
+        cols: current.cols,
+        rows: current.rows,
       });
       current.terminal = terminal;
       current.waiting = false;
@@ -1300,9 +1473,8 @@ export function createApiService({
         clientId: current.clientId,
         reconnectOwner: current.reconnectOwner,
       });
-      if (!registrationAlreadyHeld) registerBrowserTerminal(current.sessionId);
       terminal.onData((data) => {
-        schedulePrRefresh(current.sessionId);
+        if (terminalClients.get(socket)?.terminal !== terminal) return;
         send(socket, { type: 'output', data });
       });
       terminal.onExit(({ exitCode, signal }) => {
@@ -1316,7 +1488,6 @@ export function createApiService({
       send(socket, { type: 'claimed' });
       return true;
     } catch (error) {
-      if (registrationAlreadyHeld) unregisterBrowserTerminal(current.sessionId);
       send(socket, { type: 'error', message: error.message });
       disposeTerminalClient(socket, { claim: false });
       if (!socket.destroyed) socket.end(encodeWebSocketFrame('', 0x8));
@@ -1328,21 +1499,21 @@ export function createApiService({
   const claimWaitingTerminal = (terminalSession) => {
     if (terminalOwners.has(terminalSession)) return false;
     const waiting = [...terminalClients].find(([socket, current]) => (
-      current.terminalSession === terminalSession && !current.terminal && !socket.destroyed
+      current.terminalSession === terminalSession && !current.suspended
+      && !current.terminal && !socket.destroyed
     ));
     return waiting ? attachTerminalClient(waiting[0]) : false;
   };
 
   const takeOverTerminal = (socket) => {
     const current = terminalClients.get(socket);
-    if (!current || current.terminal || socket.destroyed) return false;
+    if (!current || current.suspended || current.terminal || socket.destroyed) return false;
     const owner = terminalOwners.get(current.terminalSession);
-    let registrationAlreadyHeld = false;
     if (owner && owner.socket !== socket
         && terminalClients.has(owner.socket) && !owner.socket.destroyed) {
-      registrationAlreadyHeld = detachTerminalClient(owner.socket, { preserveRegistration: true });
+      detachTerminalClient(owner.socket);
     }
-    return attachTerminalClient(socket, { registrationAlreadyHeld });
+    return attachTerminalClient(socket);
   };
 
   const gitRefreshTarget = (id) => {
@@ -1407,58 +1578,6 @@ export function createApiService({
     }
   };
 
-  const prRefreshTarget = (id) => {
-    const row = resolveRow(db, String(id));
-    return row && !isScratch(row) && !hasGitHubPullRequest(db, row.id) ? row : null;
-  };
-
-  const refreshPr = (id, { force = false } = {}) => {
-    if (closing) return Promise.resolve(null);
-    const key = String(id);
-    if (pendingPrRefreshes.has(key)) return pendingPrRefreshes.get(key);
-    let row;
-    try {
-      row = prRefreshTarget(id);
-    } catch (error) {
-      // This lookup runs synchronously from terminal output callbacks. Never let
-      // an exhausted SQLite busy timeout escape through node-pty and terminate
-      // the daemon; the next input/output event can retry the best-effort check.
-      if (!closing) process.stderr.write(`ai-workstream API PR status: ${error.message}\n`);
-      return Promise.resolve(null);
-    }
-    if (!row || (!force && !prCheckDue(row, {
-      reference: clock(), intervalMs: prCheckIntervalMs,
-    }))) return Promise.resolve(null);
-    const pending = Promise.resolve()
-      .then(() => checkPr(db, row, { checkedAt: clock() }))
-      .then((result) => {
-        if (!closing) broadcastChanges();
-        return result;
-      })
-      .catch((error) => {
-        if (!closing) process.stderr.write(`ai-workstream API PR status: ${error.message}\n`);
-        return null;
-      })
-      .finally(() => pendingPrRefreshes.delete(key));
-    pendingPrRefreshes.set(key, pending);
-    return pending;
-  };
-
-  const schedulePrRefresh = (id) => {
-    if (id !== null && id !== undefined) void refreshPr(id);
-  };
-
-  const discoverPullRequests = () => {
-    if (closing) return;
-    try {
-      for (const row of listWorkstreams(db, { all: true })) {
-        if (row.status !== 'closed') schedulePrRefresh(row.id);
-      }
-    } catch (error) {
-      if (!closing) process.stderr.write(`ai-workstream API PR discovery: ${error.message}\n`);
-    }
-  };
-
   // ---------------------------------------------------------------- notes editor
   //
   // The browser markdown editor reads and writes files under the configured notes
@@ -1466,11 +1585,91 @@ export function createApiService({
   // reload. `notesDate` is derived from `clock` so tests can pin "today".
   const notesDate = () => new Date(clock());
 
+  const resourceGroup = (groupId) => {
+    const group = readPanelLayout(db).groups.find((item) => item.id === String(groupId));
+    if (!group) throw new PanelModelError(404, `no panel group "${groupId}"`);
+    return group;
+  };
+
+  const sessionMarkdownDirectory = (group, date = notesDate()) => {
+    if (!group.ownerId || group.type === 'terminal') return null;
+    const row = resolveRow(db, String(group.ownerId));
+    if (row) return noteDir(row, date, notesRoot);
+    const slug = (value) => String(value || '').trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    const owner = slug(group.ownerId) || 'session';
+    const label = slug(group.label);
+    return join(notesRoot, 'work', String(date.getFullYear()), 'workstream',
+      label && label !== owner ? `${owner}-${label}` : owner);
+  };
+
+  const panelLayoutResponse = () => {
+    const layout = readPanelLayout(db);
+    return {
+      ...layout,
+      groups: layout.groups.map((group) => {
+        const markdownDirectory = sessionMarkdownDirectory(group);
+        return markdownDirectory ? { ...group, markdownDirectory } : group;
+      }),
+    };
+  };
+
+  const associatedResource = (resourceId) => {
+    for (const group of readPanelLayout(db).groups) {
+      const resource = group.resources.find((item) => item.id === String(resourceId));
+      if (resource) return { group, resource };
+    }
+    throw new PanelModelError(404, `no associated resource "${resourceId}"`);
+  };
+
+  const createAssociatedMarkdown = (group, body) => {
+    if (group.type === 'terminal') {
+      throw new PanelModelError(400, 'terminal groups cannot have associated resources');
+    }
+    if (body.kind !== undefined && body.kind !== 'markdown') {
+      throw new PanelModelError(400, 'content can only create a Markdown resource');
+    }
+    if (typeof body.content !== 'string' || body.content.trim() === '') {
+      throw new PanelModelError(400, 'content must be a non-empty string');
+    }
+    if (body.title !== undefined && typeof body.title !== 'string') {
+      throw new PanelModelError(400, 'title must be a string');
+    }
+    const title = body.title?.trim();
+    const date = notesDate();
+    const directory = sessionMarkdownDirectory(group, date);
+    if (!directory && !body.value) {
+      throw new PanelModelError(400, 'a path is required for a group without a session notes directory');
+    }
+    const pad = (value, length = 2) => String(value).padStart(length, '0');
+    const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-`
+      + `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(), 3)}`;
+    const titleSlug = title?.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '').slice(0, 40);
+    const generatedName = `${stamp}${titleSlug ? `-${titleSlug}` : ''}.md`;
+    const requested = body.value || join(directory, generatedName);
+    const content = title ? `# ${title}\n\n${body.content}` : body.content;
+    const file = createMarkdownFile(requested, content, {
+      cwd: group.path || cwd,
+      home: config.home,
+    });
+    return {
+      file,
+      directory: body.value ? dirname(file.path) : directory,
+      resourceBody: {
+        ...body,
+        kind: 'markdown',
+        value: file.path,
+        label: body.label || title || basename(file.path),
+      },
+    };
+  };
+
   const notesRoute = async (req, res, url) => {
     const segment = url.pathname.slice('/notes/'.length);
     try {
       if (req.method === 'GET' && segment === 'files') {
-        // Only the work tree: journal entries and per-session `ws note` files are
+        // Only the work tree: journal entries and per-session resource files are
         // written elsewhere and are not what this editor is for.
         const date = notesDate();
         const { path: weekPath, iso } = weeklyNotePath(notesRoot, 'work', date);
@@ -1552,7 +1751,7 @@ export function createApiService({
         const issueSync = syncIssueResources(db);
         const noteSync = syncDiscoveredSessionNotes(db, notesRoot);
         if (sessionSync.changed || issueSync.changed || noteSync.changed) broadcastPanelLayout();
-        return json(res, 200, readPanelLayout(db));
+        return json(res, 200, panelLayoutResponse());
       }
       if (req.method === 'POST' && parts[1] === 'groups' && parts.length === 2) {
         result = createPanelGroup(db, body, body.revision);
@@ -1567,7 +1766,30 @@ export function createApiService({
       } else if (req.method === 'PUT' && parts[1] === 'groups' && parts[3] === 'order' && parts.length === 4) {
         result = reorderPanels(db, parts[2], body, body.revision);
       } else if (req.method === 'POST' && parts[1] === 'groups' && parts[3] === 'resources' && parts.length === 4) {
-        result = addResource(db, parts[2], body, body.revision, { cwd, home: config.home });
+        let created = null;
+        try {
+          if (body.content !== undefined) {
+            const revision = panelLayoutRevision(db);
+            if (!Number.isInteger(body.revision)) {
+              throw new PanelModelError(400, 'revision must be an integer');
+            }
+            if (body.revision !== revision) {
+              throw new PanelModelError(409, 'panel layout changed on another client', { revision });
+            }
+            created = createAssociatedMarkdown(resourceGroup(parts[2]), body);
+          }
+          result = addResource(db, parts[2], created?.resourceBody || body, body.revision, {
+            cwd, home: config.home, activeSessionIds: terminalSessionIds(),
+          });
+          if (created) {
+            result = { ...result, file: created.file, markdownDirectory: created.directory };
+          }
+        } catch (error) {
+          if (created?.file?.path) {
+            try { unlinkSync(created.file.path); } catch { /* best-effort rollback */ }
+          }
+          throw error;
+        }
       } else if (req.method === 'PUT' && parts[1] === 'panels' && parts.length === 3) {
         result = updatePanel(db, parts[2], body, body.revision);
       } else if (req.method === 'POST' && parts[1] === 'panels' && parts[3] === 'close' && parts.length === 4) {
@@ -1589,6 +1811,28 @@ export function createApiService({
             broadcastChanges();
           }
         }
+      } else if (req.method === 'GET' && parts[1] === 'resources' && parts.length === 3) {
+        const { group, resource } = associatedResource(parts[2]);
+        if (resource.kind !== 'markdown') {
+          throw new PanelModelError(400, 'only Markdown resources have readable content');
+        }
+        return json(res, 200, {
+          resource,
+          group: { id: group.id, ownerId: group.ownerId, label: group.label },
+          file: readMarkdownFile(resource.value, { cwd }),
+        });
+      } else if (req.method === 'PUT' && parts[1] === 'resources' && parts.length === 3) {
+        const { group, resource } = associatedResource(parts[2]);
+        if (resource.kind !== 'markdown') {
+          throw new PanelModelError(400, 'only Markdown resources have writable content');
+        }
+        return json(res, 200, {
+          resource,
+          group: { id: group.id, ownerId: group.ownerId, label: group.label },
+          file: writeMarkdownFile(resource.value, body.content, {
+            version: body.version ?? null, cwd,
+          }),
+        });
       } else {
         throw new ApiError(404, 'not found');
       }
@@ -1598,6 +1842,7 @@ export function createApiService({
       if (error instanceof PanelModelError) {
         throw new ApiError(error.status, error.message, error.details);
       }
+      if (error instanceof NotesFileError) throw new ApiError(error.status, error.message);
       throw error;
     }
   };
@@ -1651,6 +1896,11 @@ export function createApiService({
       if (req.method === 'GET' && url.pathname === '/daemons') {
         return json(res, 200, { daemons: Object.values(config.daemons || {}) });
       }
+      if (req.method === 'POST' && url.pathname === '/browser/refresh') {
+        await jsonBody(req);
+        broadcast({ type: 'full_page_refresh' });
+        return json(res, 200, { ok: true });
+      }
       if (req.method === 'GET' && url.pathname === '/browser/state') {
         return json(res, 200, readBrowserUiState(db, browserUiScope(url.searchParams.get('scope'))));
       }
@@ -1687,12 +1937,25 @@ export function createApiService({
         return json(res, 426, { error: 'upgrade_required', websocket: '/ws/terminal' }, { Upgrade: 'websocket' });
       }
       if (req.method === 'GET' && url.pathname === '/ws/terminal-sessions') {
-        return json(res, 200, {
+        const response = {
           sessions: [...browserTerminalCounts].map(([id, count]) => ({
             id: /^\d+$/.test(id) ? Number(id) : id,
             count,
           })),
-        });
+        };
+        if (url.searchParams.get('diagnostics') === '1') {
+          response.socketCount = terminalClients.size;
+          response.attachmentCount = [...terminalClients.values()]
+            .filter((current) => current.terminal).length;
+          response.clients = [...terminalClients.values()].map((current) => ({
+            clientId: current.clientId,
+            terminalSession: current.terminalSession,
+            state: current.suspended ? 'suspended'
+              : current.terminal ? 'owned'
+                : current.waiting ? 'waiting' : 'disconnected',
+          }));
+        }
+        return json(res, 200, response);
       }
       if (req.method === 'POST' && url.pathname === '/ws/terminal-reset') {
         await jsonBody(req);
@@ -1732,6 +1995,18 @@ export function createApiService({
       }
       if (req.method === 'GET' && parts[0] === 'ws' && parts[2] === 'stack' && parts.length === 3) {
         return json(res, 200, workstreamStack(db, parts[1]));
+      }
+      if (req.method === 'POST' && parts[0] === 'ws' && parts[2] === 'sync' && parts.length === 3) {
+        await jsonBody(req);
+        const result = await syncWorkstreamSession(db, parts[1], {
+          notesRoot, checkPr, checkedAt: clock(),
+        });
+        if (result.layout.changed) broadcastPanelLayout();
+        broadcastChanges();
+        result.workstream = queryWorkstreams(db, {
+          id: result.workstream.id, status: 'all',
+        }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
+        return json(res, 200, { ok: true, ...result });
       }
       if (req.method === 'POST' && parts[0] === 'ws' && parts[2] === 'stack-set' && parts.length === 3) {
         const body = await jsonBody(req);
@@ -1796,23 +2071,6 @@ export function createApiService({
           cwd, config, materialize, parseSelector: parseRepoSelector, expandIssue,
           writeSeed: writeSessionSeed, now: clock,
         });
-        const linkedPr = await refreshPr(result.workstream.id, { force: true });
-        if (linkedPr?.added) {
-          const row = resolveRow(db, String(result.workstream.id));
-          try {
-            writeSessionSeed(row, combinedSeed(
-              requestedSeed(body.seed),
-              linkedSessionSeed('repo', listIssues(db, row.id).map((issue) => issue.ref)),
-            ));
-            result.seeded = true;
-          } catch (error) {
-            throw new ApiError(
-              502,
-              `workstream #${row.id} was created, but its agent seed could not be updated: ${error.message}`,
-              { id: row.id },
-            );
-          }
-        }
         result.workstream = queryWorkstreams(db, {
           id: result.workstream.id, status: 'all',
         }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
@@ -1857,12 +2115,6 @@ export function createApiService({
         if (parts[2] === 'agent-set' && result.result.changed) {
           result.result.replaced = browserAgentConnected;
           result.result.browserTerminalRestart = browserAgentConnected;
-        }
-        if (result.workstream.type === 'repo' && ['pause', 'resume', 'archive', 'close'].includes(parts[2])) {
-          await refreshPr(result.workstream.id, { force: true });
-          result.workstream = queryWorkstreams(db, {
-            id: result.workstream.id, status: 'all',
-          }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
         }
         if (parts[2] === 'pause' || parts[2] === 'archive' || parts[2] === 'close') {
           stopPersistentTerminalSessions(parts[1]);
@@ -1965,6 +2217,7 @@ export function createApiService({
         const clientId = browserId(requestUrl.searchParams.get('client'), 'client', 'legacy');
         const terminalId = browserId(requestUrl.searchParams.get('terminal'), 'terminal', 'default');
         const reconnectOwner = requestUrl.searchParams.get('owner') === '1';
+        const suspended = requestUrl.searchParams.get('suspended') === '1';
         let terminalCwd = process.env.HOME || cwd;
         let workstream = null;
         let terminalSessionId = null;
@@ -2031,6 +2284,7 @@ export function createApiService({
           managedPanel: Boolean(requestedPanelId),
           role: terminalRole,
           reconnectOwner,
+          suspended,
           seedFile: seedContent ? seedFile : null,
           sessionId: terminalSessionId,
           terminalSession: browserTerminalSessionName(identity),
@@ -2059,13 +2313,37 @@ export function createApiService({
     ].join('\r\n'));
     if (eventUpgrade) {
       clients.add(socket);
-      socket.on('close', () => clients.delete(socket));
-      socket.on('error', () => clients.delete(socket));
-      consumeWebSocketFrames(socket, head);
+      const disposeEventClient = () => {
+        clients.delete(socket);
+        removeMarkdownSubscription(socket);
+      };
+      socket.on('close', disposeEventClient);
+      socket.on('error', disposeEventClient);
+      socket.on('ws-close-frame', disposeEventClient);
+      consumeWebSocketFrames(socket, head, (payload, opcode) => {
+        if (opcode !== 0x1) return;
+        let message;
+        try { message = JSON.parse(payload.toString('utf8')); }
+        catch { return; }
+        if (message?.type === 'markdown_watch') {
+          addMarkdownSubscription(socket, message);
+        } else if (message?.type === 'markdown_unwatch') {
+          removeMarkdownSubscription(socket, message.watchId || null);
+        }
+      });
       return;
     }
 
-    terminalClients.set(socket, { ...terminalDescriptor, terminal: null, waiting: false });
+    const terminalClient = {
+      ...terminalDescriptor,
+      cols: 80,
+      rows: 24,
+      registered: true,
+      terminal: null,
+      waiting: false,
+    };
+    terminalClients.set(socket, terminalClient);
+    registerBrowserTerminal(terminalClient.sessionId);
     const disposeTerminal = () => {
       disposeTerminalClient(socket);
     };
@@ -2080,7 +2358,19 @@ export function createApiService({
       catch { send(socket, { type: 'error', message: 'invalid terminal message' }); return; }
       const current = terminalClients.get(socket);
       if (message?.type === 'claim') {
+        if (current) current.suspended = false;
         attachTerminalClient(socket);
+        return;
+      }
+      if (message?.type === 'suspend') {
+        suspendTerminalClient(socket);
+        return;
+      }
+      if (message?.type === 'resume') {
+        if (!current) return;
+        current.suspended = false;
+        if (current.terminal) send(socket, { type: 'claimed' });
+        else attachTerminalClient(socket);
         return;
       }
       if (message?.type === 'takeover') {
@@ -2093,14 +2383,16 @@ export function createApiService({
       }
       if (message?.type === 'input' && typeof message.data === 'string') {
         if (!current?.terminal) return;
-        schedulePrRefresh(current.sessionId);
         current.terminal.write(message.data);
         return;
       }
       if (message?.type === 'resize'
           && Number.isInteger(message.cols) && message.cols >= 2 && message.cols <= 500
           && Number.isInteger(message.rows) && message.rows >= 1 && message.rows <= 300) {
-        if (!current?.terminal) return;
+        if (!current) return;
+        current.cols = message.cols;
+        current.rows = message.rows;
+        if (!current.terminal) return;
         try { current.terminal.resize(message.cols, message.rows); }
         catch (error) { send(socket, { type: 'error', message: error.message }); }
         return;
@@ -2111,7 +2403,12 @@ export function createApiService({
     // keeps the socket out of WebSocket.CONNECTING while a new persistent
     // session is being created and gives the client a chance to report/retry a
     // slow terminal startup separately from the network handshake.
-    setImmediate(() => attachTerminalClient(socket));
+    setImmediate(() => {
+      const current = terminalClients.get(socket);
+      if (!current) return;
+      if (current.suspended) send(socket, { type: 'suspended' });
+      else attachTerminalClient(socket);
+    });
   });
 
   const timer = pollInterval > 0 ? setInterval(() => {
@@ -2119,22 +2416,12 @@ export function createApiService({
       refreshWorkstreamStatuses(db, terminalSessionIds());
       const changes = broadcastChanges();
       scheduleGitRefresh(changes);
-      for (const change of changes) {
-        if (change.type === 'agent_status' || change.type === 'shell_status') {
-          schedulePrRefresh(change.id);
-        }
-      }
       broadcastMiscChanges();
     } catch (error) {
       process.stderr.write(`ai-workstream API poll: ${error.message}\n`);
     }
   }, pollInterval) : null;
   timer?.unref();
-  const prTimer = prCheckIntervalMs > 0
-    ? setInterval(discoverPullRequests, prCheckIntervalMs)
-    : null;
-  prTimer?.unref();
-  setImmediate(discoverPullRequests);
 
   return {
     server,
@@ -2147,7 +2434,10 @@ export function createApiService({
     async close() {
       closing = true;
       if (timer) clearInterval(timer);
-      if (prTimer) clearInterval(prTimer);
+      const markdownWatcherClosures = [...markdownWatchers.values()]
+        .map(({ watcher }) => Promise.resolve(watcher.close()));
+      markdownWatchers.clear();
+      markdownSubscriptions.clear();
       for (const socket of clients) socket.destroy();
       clients.clear();
       for (const [socket] of [...terminalClients]) {
@@ -2157,8 +2447,8 @@ export function createApiService({
       terminalClients.clear();
       terminalOwners.clear();
       if (server.listening) await new Promise((resolve) => server.close(resolve));
+      await Promise.allSettled(markdownWatcherClosures);
       await Promise.allSettled([...pendingGitRefreshes.values()].map(({ promise }) => promise));
-      await Promise.allSettled([...pendingPrRefreshes.values()]);
       if (ownsDb) db.close();
     },
   };

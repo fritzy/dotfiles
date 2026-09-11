@@ -2,6 +2,7 @@ import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
 
+import { syncWorkstream } from './api.js';
 import {
   ArchiveIcon, AssetIcon, EditorIcon, RefreshIcon, RobotIcon, ShellIcon, Spinner, TargetIcon, XIcon,
 } from './icons.jsx';
@@ -48,7 +49,7 @@ function readBoundaries(count) {
 }
 
 export default function SessionWorkspace({
-  session, target, visible, focusedPanel, onPanelFocus, onDetails, onArchive, onClose, onAgentChange, onReset,
+  session, target, visible, active = visible, focusedPanel, onPanelFocus, onDetails, onArchive, onClose, onAgentChange, onReset,
   panelMode = 'two', onPanelModeChange, onOpenNotes, terminalMode, fontFamily, onSidebarFocus,
   onFullscreenChange, fullscreenExitRevision, onToggleSidebar, onNewTerminal,
 }) {
@@ -250,6 +251,11 @@ export default function SessionWorkspace({
           </nav>
         )}
         {(archiveError || terminalResetError) && <span className="max-w-48 truncate text-xs text-danger" role="alert" title={archiveError || terminalResetError}>{archiveError || terminalResetError}</span>}
+        {(session.type === 'repo' || session.type === 'scratchpad') && (
+          <IconButton compact label="Refresh session" title={session.type === 'repo' ? 'Sync session Markdown and current-branch pull request' : 'Sync session Markdown'} onClick={() => { void syncWorkstream(session.id, target).catch(() => {}); }}>
+            <RefreshIcon />
+          </IconButton>
+        )}
         {canArchiveSession(session) && (
           <IconButton compact label="Archive session" title="Archive session" disabled={archiving} onClick={archiveSession}>
             {archiving ? <Spinner /> : <ArchiveIcon />}
@@ -283,6 +289,7 @@ export default function SessionWorkspace({
               Icon={Icon}
               shown={!suppressed}
               visible={visible}
+              active={active && !suppressed}
               focused={focused}
               fullscreen={fullscreenRole === role}
               onPanelFocus={onPanelFocus}

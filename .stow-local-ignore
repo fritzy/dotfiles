@@ -1,5 +1,7 @@
 \.git
 \.gitignore
+\.claude
+\.codex
 .+\.tar\.gz
 .+\.tgz
 bootstrap.sh

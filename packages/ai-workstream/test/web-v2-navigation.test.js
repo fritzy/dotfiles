@@ -73,6 +73,48 @@ async function togglePreview(container) {
   await flush(20);
 }
 
+test('Markdown association opens only when requested in the dialog', async (t) => {
+  const dom = setupJsdom();
+  window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), body: JSON.parse(options.body) });
+    return { ok: true, json: async () => ({ revision: 8 }) };
+  };
+  const React = await import('react');
+  const { default: GroupWorkspace } = await import('../web-v2/src/GroupWorkspace.jsx');
+  const mounted = await mountReact(React.createElement(GroupWorkspace, {
+    group: { id: 'session-1', type: 'repository', ownerId: '1', label: 'Session', path: '/tmp', resources: [], panels: [] },
+    revision: 7, target: { id: 'local', name: 'Local', url: null },
+    onRefresh: async () => {},
+  }));
+  t.after(async () => {
+    await mounted.unmount();
+    delete globalThis.fetch;
+    teardownJsdom(dom);
+  });
+  const { container } = mounted;
+  for (const open of [false, true]) {
+    await actCall(() => container.querySelector('[aria-label="Associate Markdown panel"]').click());
+    const checkbox = container.querySelector('input[type="checkbox"]');
+    assert.equal(checkbox.checked, false, 'each association starts with opening disabled');
+    const input = container.querySelector('dialog input:not([type="checkbox"])');
+    await actCall(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'plan.md');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    if (open) await actCall(() => checkbox.click());
+    await actCall(() => container.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+    await flush();
+    assert.equal(container.querySelector('dialog'), null);
+    assert.equal(requests.at(-1).url, '/panel-layout/groups/session-1/resources');
+    const { client, ...body } = requests.at(-1).body;
+    assert.ok(client);
+    assert.deepEqual(body, { revision: 7, kind: 'markdown', value: 'plan.md', open });
+  }
+});
+
 test('a terminal group can be renamed from its workspace header', async (t) => {
   const dom = setupJsdom();
   t.after(() => teardownJsdom(dom));
@@ -127,24 +169,108 @@ test('a terminal group can be renamed from its workspace header', async (t) => {
   assert.equal(body.label, 'Build logs');
 });
 
+test('repository and scratchpad headers explicitly sync their sessions', async (t) => {
+  const dom = setupJsdom();
+  t.after(() => teardownJsdom(dom));
+  const React = await import('react');
+  const { default: GroupWorkspace } = await import('../web-v2/src/GroupWorkspace.jsx');
+  const requests = [];
+  let refreshes = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+
+  for (const [groupType, sessionType] of [['repository', 'repo'], ['scratchpad', 'scratchpad']]) {
+    const session = {
+      id: `${sessionType}-1`, type: sessionType, name: `${sessionType} session`,
+      branch: 'feature', agent: 'claude', issues: [],
+    };
+    const group = {
+      id: `${groupType}-group`, type: groupType, ownerId: session.id,
+      label: session.name, path: `/tmp/${session.id}`, resources: [], panels: [],
+    };
+    const mounted = await mountReact(React.createElement(GroupWorkspace, {
+      group,
+      revision: 7,
+      target: { id: 'local', name: 'Local', url: null },
+      session,
+      terminalMode: 'dark',
+      fontFamily: 'monospace',
+      onRefresh: async () => { refreshes += 1; },
+    }));
+    const button = mounted.container.querySelector('button[aria-label="Refresh session"]');
+    assert.ok(button, `${groupType} session has a refresh button`);
+    await actCall(() => button.click());
+    await flush(20);
+    await mounted.unmount();
+  }
+
+  assert.deepEqual(requests.map(({ url, options }) => ({
+    url, method: options.method, body: options.body,
+  })), [
+    { url: '/ws/repo-1/sync', method: 'POST', body: '{}' },
+    { url: '/ws/scratchpad-1/sync', method: 'POST', body: '{}' },
+  ]);
+  assert.equal(refreshes, 0, 'the WebSocket invalidation owns client refresh');
+});
+
+test('minimizing a group terminal keeps its renderer mounted and deactivates its attachment', async (t) => {
+  const dom = setupJsdom();
+  t.after(() => teardownJsdom(dom));
+  const React = await import('react');
+  const { default: GroupWorkspace } = await import('../web-v2/src/GroupWorkspace.jsx');
+  const panel = {
+    id: 'terminal-panel-idle', groupId: 'terminal-group-idle', position: 0,
+    kind: 'terminal', minimized: false, width: 1, label: 'Shell',
+    terminalRole: 'shell', fontSize: 14,
+  };
+  const group = {
+    id: 'terminal-group-idle', type: 'terminal', ownerId: null,
+    label: 'Idle terminals', path: null, resources: [], panels: [panel],
+  };
+  const render = (nextGroup) => React.createElement(GroupWorkspace, {
+    group: nextGroup,
+    revision: 1,
+    target: { id: 'local', name: 'Local', url: null },
+    visible: true,
+    active: true,
+    terminalMode: 'dark',
+    fontFamily: 'monospace',
+    onRefresh: async () => {},
+  });
+  const mounted = await mountReact(render(group));
+  const terminal = mounted.container.querySelector('[data-terminal-id="terminal-panel-idle"]');
+  assert.ok(terminal);
+  assert.equal(terminal.dataset.terminalActive, 'true');
+
+  await mounted.update(render({ ...group, panels: [{ ...panel, minimized: true }] }));
+  const minimized = mounted.container.querySelector('[data-terminal-id="terminal-panel-idle"]');
+  assert.equal(minimized, terminal, 'the same renderer survives minimization');
+  assert.equal(minimized.dataset.terminalActive, 'false');
+  await mounted.unmount();
+});
+
 test('Ctrl-E toggles a Markdown tab between Edit and Preview', async (t) => {
   const { ref, container } = await harness(t);
 
   await openNote(ref);
-  const editPane = textarea(container);
-  const toPreview = await dispatchKey(editPane, 'e');
-  assert.equal(toPreview.defaultPrevented, true, 'Ctrl-E must not reach the browser');
   assert.equal(textarea(container), null);
-  assert.equal(document.activeElement, previewPane(container), 'Ctrl-E focuses Preview after switching to it');
+  assert.equal(document.activeElement, previewPane(container), 'opening a note focuses Preview by default');
 
   const toEdit = await dispatchKey(previewPane(container), 'e');
   assert.equal(toEdit.defaultPrevented, true, 'Ctrl-E is captured in Preview too');
   assert.equal(previewPane(container), null);
-  assert.equal(document.activeElement, textarea(container), 'a second Ctrl-E returns focus to Edit');
+  assert.equal(document.activeElement, textarea(container), 'Ctrl-E focuses Edit');
+
+  const toPreview = await dispatchKey(textarea(container), 'e');
+  assert.equal(toPreview.defaultPrevented, true, 'Ctrl-E must not reach the browser');
+  assert.equal(textarea(container), null);
+  assert.equal(document.activeElement, previewPane(container), 'a second Ctrl-E returns focus to Preview');
 });
 
-test('remembered standalone terminals mount and reattach while no session is selected', async (t) => {
-  const { container } = await harness(t, {
+test('remembered standalone terminals stay mounted but only the selected view is active', async (t) => {
+  const { container, ref } = await harness(t, {
     browserState: {
       terminals: [
         { id: 'terminal-one', kind: 'terminal', label: 'terminal 1', fontSize: 13 },
@@ -158,7 +284,25 @@ test('remembered standalone terminals mount and reattach while no session is sel
   assert.deepEqual(
     fakeTerminals(container).map((terminal) => terminal.dataset.terminalId),
     ['terminal-one', 'terminal-two'],
-    'all restored terminals mount, so each one attempts its Zellij claim',
+    'all restored terminal renderers remain mounted',
+  );
+  assert.deepEqual(
+    fakeTerminals(container).map((terminal) => terminal.dataset.terminalActive),
+    ['false', 'false'],
+    'restored terminals do not attach while no standalone view is selected',
+  );
+  await actCall(() => ref.current.activate('terminal-two'));
+  await flush(20);
+  assert.deepEqual(
+    fakeTerminals(container).map((terminal) => terminal.dataset.terminalActive),
+    ['false', 'true'],
+    'only the selected terminal attachment becomes active',
+  );
+  await actCall(() => ref.current.hide());
+  await flush(20);
+  assert.deepEqual(
+    fakeTerminals(container).map((terminal) => terminal.dataset.terminalActive),
+    ['false', 'false'],
   );
   assert.equal(container.querySelector('[data-standalone-sessions] > section').getAttribute('aria-hidden'), 'true');
 });
@@ -167,7 +311,8 @@ test('a lone Markdown session regains keyboard focus in Edit and Preview mode', 
   const { ref, container } = await harness(t);
 
   await openNote(ref);
-  assert.equal(document.activeElement, textarea(container), 'opening the note focuses its textarea');
+  await dispatchKey(previewPane(container), 'e');
+  assert.equal(document.activeElement, textarea(container), 'switching to Edit focuses the textarea');
 
   // Simulate leaving for a workstream. The destination panel normally steals
   // focus, so blur explicitly before exercising the same imperative handoff.
@@ -219,6 +364,7 @@ test('Ctrl-H returns Markdown Edit and Preview sessions to the sidebar', async (
   const { ref, container, sidebarFocused } = await harness(t);
 
   await openNote(ref);
+  await dispatchKey(previewPane(container), 'e');
   const edit = textarea(container);
   for (const key of ['j', 'k', 'l']) {
     const event = await dispatchKey(edit, key);

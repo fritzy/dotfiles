@@ -3,13 +3,18 @@
 *.appimage
 .DS_Store
 
-# Claude Code config: only track intentional, hand-authored config here.
-# Everything else under ~/.claude is runtime/session state and must never
-# be committed (it has held API keys and full conversation history before).
-# Whitelist approach so new Claude-managed files are ignored by default.
-home/.claude/*
-!home/.claude/settings.json
-!home/.claude/skills/
-!home/.claude/plugins/
-home/.claude/plugins/*
-!home/.claude/plugins/known_marketplaces.json
+# AI client runtime directories never belong in the Stow package.
+home/.claude/
+home/.codex/
+
+# Bootstrap copies only these intentional inputs into the runtime directories.
+claude/*
+!claude/settings.json
+!claude/skills/
+!claude/plugins/
+claude/plugins/*
+!claude/plugins/known_marketplaces.json
+
+codex/*
+!codex/config.toml
+!codex/skills/

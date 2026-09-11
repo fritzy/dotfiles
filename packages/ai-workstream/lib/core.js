@@ -16,6 +16,9 @@ import { dirname, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
 import { CONFIG } from './config.js';
+import {
+  isWorkstreamUuid, migrateWorkstreamUuids, newWorkstreamUuid,
+} from './migrations/001-workstream-uuid.js';
 import { initializePanelSchema } from './panels.js';
 
 export const HOME = CONFIG.home;
@@ -60,6 +63,7 @@ export function openDb(path = DB_PATH) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS workstreams (
       id INTEGER PRIMARY KEY,
+      uuid TEXT NOT NULL,
       org TEXT NOT NULL,
       repo TEXT NOT NULL,
       branch TEXT NOT NULL,
@@ -95,6 +99,7 @@ export function openDb(path = DB_PATH) {
   // dangling id (parentOf returns null) rather than trusting referential integrity.
   try { db.exec('ALTER TABLE workstreams ADD COLUMN parent_id INTEGER'); } catch { /* exists */ }
   try { db.exec('ALTER TABLE workstreams DROP COLUMN tab_name'); } catch { /* already dropped */ }
+  migrateWorkstreamUuids(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS issues (
       id INTEGER PRIMARY KEY,
@@ -396,15 +401,17 @@ export const workstreamEventsAfter = (db, sequence) =>
 
 export function upsertWorkstream(db, ws) {
   const status = ws.status === 'paused' ? 'paused' : 'active';
+  const uuid = String(ws.uuid || newWorkstreamUuid()).toLowerCase();
+  if (!isWorkstreamUuid(uuid)) throw new Error('workstream uuid must be a UUID');
   db.prepare(`
-    INSERT INTO workstreams (org, repo, branch, path, source, status, created_at, last_joined_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO workstreams (uuid, org, repo, branch, path, source, status, created_at, last_joined_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(org, repo, branch) DO UPDATE SET
       path = excluded.path,
       source = excluded.source,
       status = excluded.status,
       last_joined_at = excluded.last_joined_at
-  `).run(ws.org, ws.repo, ws.branch, ws.path, ws.source, status, ws.created_at, ws.last_joined_at);
+  `).run(uuid, ws.org, ws.repo, ws.branch, ws.path, ws.source, status, ws.created_at, ws.last_joined_at);
   return db.prepare('SELECT * FROM workstreams WHERE org=? AND repo=? AND branch=?')
     .get(ws.org, ws.repo, ws.branch);
 }
@@ -1060,13 +1067,6 @@ export function prForBranchAsync(org, repo, branch, { run = execFile } = {}) {
   });
 }
 
-export function prCheckDue(row, { reference = new Date(), intervalMs = 3 * 60_000 } = {}) {
-  if (!row || isScratch(row)) return false;
-  const checked = Date.parse(row.pr_checked_at || '');
-  const current = new Date(reference).valueOf();
-  return !Number.isFinite(checked) || !Number.isFinite(current) || current - checked >= intervalMs;
-}
-
 export function recordPrCheck(db, row, pr, { checkedAt = now() } = {}) {
   if (!row || isScratch(row)) return null;
   const done = pr ? String(pr.state).toUpperCase() !== 'OPEN' : null;
@@ -1444,13 +1444,28 @@ export function appendDayEntry(block, d = new Date(), root = NOTES_ROOT) {
 
 // ---------------------------------------------------------------- per-workstream notes
 
-// Longer-form notes (as opposed to `ws log`'s one-liners) live as their own
-// files under <root>/work/<YYYY>/workstream/<slug>/, one per note, keyed to
-// the workstream by an id+name slug so it stays readable and never collides.
+// Longer-form Markdown resources live under the immutable workstream UUID.
 const noteSlug = (s) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 
-export const workstreamSlug = (row) =>
-  isScratch(row) ? `${row.id}-${row.branch}` : `${row.id}-${row.repo}-${sanitize(row.branch)}`;
+export const workstreamSlug = (row) => {
+  if (!isWorkstreamUuid(row.uuid)) throw new Error(`workstream ${row.id} has no valid uuid`);
+  return row.uuid.toLowerCase();
+};
+
+const legacyWorkstreamSlugPrefix = (row) => (
+  isScratch(row) ? `${row.id}-` : `${row.id}-${row.repo}-`
+);
+
+function noteDirectoryNames(row, sessionRoot) {
+  const canonical = workstreamSlug(row);
+  if (!existsSync(sessionRoot)) return [canonical];
+  const legacyPrefix = legacyWorkstreamSlugPrefix(row);
+  const legacy = readdirSync(sessionRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith(legacyPrefix))
+    .map((entry) => entry.name)
+    .sort();
+  return [canonical, ...legacy];
+}
 
 export const noteDir = (row, d = new Date(), root = NOTES_ROOT) =>
   join(root, 'work', String(d.getFullYear()), 'workstream', workstreamSlug(row));
@@ -1461,10 +1476,16 @@ export const noteDir = (row, d = new Date(), root = NOTES_ROOT) =>
 export function existingNoteDir(row, root = NOTES_ROOT) {
   const workDir = join(root, 'work');
   if (!existsSync(workDir)) return null;
-  const slug = workstreamSlug(row);
-  for (const year of readdirSync(workDir).sort().reverse()) {
-    const dir = join(workDir, year, 'workstream', slug);
+  const years = readdirSync(workDir).sort().reverse();
+  const canonical = workstreamSlug(row);
+  for (const year of years) {
+    const dir = join(workDir, year, 'workstream', canonical);
     if (existsSync(dir)) return dir;
+  }
+  for (const year of years) {
+    const sessionRoot = join(workDir, year, 'workstream');
+    const legacy = noteDirectoryNames(row, sessionRoot).find((name) => name !== canonical);
+    if (legacy) return join(sessionRoot, legacy);
   }
   return null;
 }
@@ -1513,13 +1534,15 @@ export function writeSeed(row, content) {
 export function listNotes(row, root = NOTES_ROOT) {
   const workDir = join(root, 'work');
   if (!existsSync(workDir)) return [];
-  const slug = workstreamSlug(row);
   const out = [];
   for (const year of readdirSync(workDir).sort()) {
-    const dir = join(workDir, year, 'workstream', slug);
-    if (!existsSync(dir)) continue;
-    for (const f of readdirSync(dir).filter((f) => f.endsWith('.md')).sort()) {
-      out.push({ year, file: f, path: join(dir, f) });
+    const sessionRoot = join(workDir, year, 'workstream');
+    for (const name of noteDirectoryNames(row, sessionRoot)) {
+      const dir = join(sessionRoot, name);
+      if (!existsSync(dir)) continue;
+      for (const f of readdirSync(dir).filter((f) => f.endsWith('.md')).sort()) {
+        out.push({ year, file: f, path: join(dir, f) });
+      }
     }
   }
   return out;
@@ -1620,6 +1643,7 @@ export function workstreamView(db, r, cwd) {
   const children = childrenOf(db, r);
   return {
     id: r.id,
+    uuid: r.uuid,
     repo: scratch ? 'scratch' : `${r.org}/${r.repo}`,
     repoUrl: scratch ? null : `https://github.com/${r.org}/${r.repo}`,
     branch: r.branch,

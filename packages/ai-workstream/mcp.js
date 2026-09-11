@@ -103,6 +103,16 @@ server.registerTool('ws_config', {
   return serviceJson(service, { config: service.result });
 });
 
+server.registerTool('ws_browser_refresh', {
+  description: 'Ask every browser connected to the selected daemon to reload the full page and re-request its HTML, JavaScript, styles, images, and SVG assets.',
+  inputSchema: withDaemon(),
+}, async ({ daemon }) => {
+  const service = await requestDaemonService('/browser/refresh', {
+    daemon, method: 'POST', body: {},
+  });
+  return serviceJson(service, service.result);
+});
+
 server.registerTool('ws_daemons', {
   description: 'List daemon ids available to this MCP server. Pass one of these ids as daemon to any other ws tool.',
   inputSchema: withDaemon(),
@@ -132,17 +142,48 @@ server.registerTool('ws_list', {
   });
 });
 
+server.registerTool('ws_sync', {
+  description: 'Explicitly sync a session’s Markdown resources and, when needed, look up its current branch PR.',
+  inputSchema: withDaemon({ workstream: workstreamArg }),
+}, async ({ workstream, daemon }) => {
+  const id = workstreamTarget(workstream, daemon);
+  const service = await requestDaemonService(workstreamPath(id, 'sync'), {
+    daemon, method: 'POST', body: {},
+  });
+  return serviceJson(service, service.result);
+});
+
 async function currentPanelLayout(daemon) {
   return requestDaemonService('/panel-layout', { daemon });
 }
 
-async function mutatePanelLayout(path, body, daemon) {
-  const current = await currentPanelLayout(daemon);
+async function mutatePanelLayout(path, body, daemon, current = null) {
+  current ||= await currentPanelLayout(daemon);
   return requestDaemonService(path, {
     daemon,
     method: path.endsWith('/order') || /^\/panel-layout\/panels\/[^/]+$/.test(path) ? 'PUT' : 'POST',
     body: { client: 'mcp', revision: current.result.revision, ...body },
   });
+}
+
+async function selectedResourceGroup({ daemon, group, workstream }) {
+  if (group && workstream) throw new Error('group and workstream are mutually exclusive');
+  const current = await currentPanelLayout(daemon);
+  if (group) {
+    const selected = current.result.groups.find((item) => item.id === group);
+    if (!selected) throw new Error(`no panel group "${group}"`);
+    return { current, group: selected };
+  }
+  const target = workstreamTarget(workstream, daemon, { configuredLocation: true });
+  let ownerId = target;
+  let selected = current.result.groups.find((item) => String(item.ownerId) === ownerId);
+  if (!selected) {
+    const detail = await requestDaemonService(`${workstreamPath(target)}?status=all`, { daemon });
+    ownerId = String(detail.result.items?.[0]?.id ?? target);
+    selected = current.result.groups.find((item) => String(item.ownerId) === ownerId);
+  }
+  if (!selected) throw new Error(`no resource group for workstream "${target}"`);
+  return { current, group: selected };
 }
 
 server.registerTool('ws_panel_layout', {
@@ -200,17 +241,92 @@ server.registerTool('ws_panel_close', {
 });
 
 server.registerTool('ws_resource_add', {
-  description: 'Associate an HTTP(S) link or existing Markdown file with a repository, scratchpad, or configured-session group.',
+  description: 'Add a link or Markdown resource. With content and no value, creates Markdown in the workstream’s configured session-notes directory.',
   inputSchema: withDaemon({
-    group: z.string().min(1).describe('Panel group id from ws_panel_layout.'),
-    kind: z.enum(['link', 'markdown']),
-    value: z.string().min(1).describe('URL, or a Markdown path relative to the owning session, absolute, or ~/.'),
+    group: z.string().min(1).optional().describe('Panel group id. Otherwise resolve workstream.'),
+    workstream: workstreamArg,
+    kind: z.enum(['link', 'markdown']).optional().describe('Defaults to markdown when content is supplied.'),
+    value: z.string().min(1).optional().describe('URL or Markdown path. Omit when creating a session note.'),
+    content: z.string().min(1).optional().describe('Create a new Markdown file with this content.'),
+    title: z.string().min(1).optional().describe('Optional H1, filename slug, and label for new Markdown.'),
     label: z.string().min(1).optional(),
+    open: z.boolean().optional()
+      .describe('Defaults to false. Set true to immediately open the resource as a panel if its owning session is active. Markdown opens in Preview. Does not focus the session.'),
   }),
-}, async ({ group, kind, value, label, daemon }) => {
+}, async ({ group, workstream, kind, value, content, title, label, open, daemon }) => {
+  if (content === undefined && (!kind || !value)) {
+    throw new Error('provide kind and value, or provide content to create Markdown');
+  }
+  if (content !== undefined && kind && kind !== 'markdown') {
+    throw new Error('content can only create a Markdown resource');
+  }
+  const selected = await selectedResourceGroup({ daemon, group, workstream });
   const service = await mutatePanelLayout(
-    `/panel-layout/groups/${encodeURIComponent(group)}/resources`,
-    { kind, value, ...(label ? { label } : {}) }, daemon,
+    `/panel-layout/groups/${encodeURIComponent(selected.group.id)}/resources`,
+    {
+      kind: kind || 'markdown',
+      ...(value ? { value } : {}),
+      ...(content !== undefined ? { content } : {}),
+      ...(title ? { title } : {}),
+      ...(label ? { label } : {}),
+      ...(open === undefined ? {} : { open }),
+    }, daemon, selected.current,
+  );
+  return serviceJson(service, service.result);
+});
+
+server.registerTool('ws_resource_list', {
+  description: 'List resources for a workstream or group. Defaults to the current local workstream.',
+  inputSchema: withDaemon({
+    group: z.string().min(1).optional().describe('Panel group id. Otherwise resolve workstream.'),
+    workstream: workstreamArg,
+    kind: z.enum(['link', 'markdown']).optional(),
+    all: z.boolean().optional().describe('List resources across every group on the daemon.'),
+  }),
+}, async ({ group, workstream, kind, all, daemon }) => {
+  if (all && (group || workstream)) throw new Error('all cannot be combined with group or workstream');
+  let current;
+  let groups;
+  if (all) {
+    current = await currentPanelLayout(daemon);
+    groups = current.result.groups;
+  } else {
+    const selected = await selectedResourceGroup({ daemon, group, workstream });
+    current = selected.current;
+    groups = [selected.group];
+  }
+  return serviceJson(current, {
+    groups: groups.map((item) => ({
+      id: item.id,
+      ownerId: item.ownerId,
+      label: item.label,
+      markdownDirectory: item.markdownDirectory,
+      resources: kind ? item.resources.filter((resource) => resource.kind === kind) : item.resources,
+    })),
+  });
+});
+
+server.registerTool('ws_resource_read', {
+  description: 'Read an associated Markdown resource by resource id.',
+  inputSchema: withDaemon({ resource: z.string().min(1).describe('Resource id from ws_resource_list.') }),
+}, async ({ resource, daemon }) => {
+  const service = await requestDaemonService(
+    `/panel-layout/resources/${encodeURIComponent(resource)}`, { daemon },
+  );
+  return serviceJson(service, service.result);
+});
+
+server.registerTool('ws_resource_write', {
+  description: 'Replace an associated Markdown resource by resource id.',
+  inputSchema: withDaemon({
+    resource: z.string().min(1).describe('Resource id from ws_resource_list.'),
+    content: z.string().describe('Complete Markdown content.'),
+    version: z.string().optional().describe('Version from ws_resource_read; omit to force.'),
+  }),
+}, async ({ resource, content, version, daemon }) => {
+  const service = await requestDaemonService(
+    `/panel-layout/resources/${encodeURIComponent(resource)}`,
+    { daemon, method: 'PUT', body: { content, ...(version ? { version } : {}) } },
   );
   return serviceJson(service, service.result);
 });
@@ -527,36 +643,6 @@ server.registerTool('ws_log', {
   const id = workstreamTarget(workstream, daemon);
   const service = await workstreamCommand(id, 'log', { body, done: Boolean(done) }, { daemon });
   return serviceJson(service, { workstream: service.result.workstream, logged: service.result.result });
-});
-
-server.registerTool('ws_note', {
-  description: 'Write a longer-form note file for a workstream under the configured notes root, filed as '
-    + 'work/<year>/workstream/<id-name>/<timestamp>[-<title>].md — for writeups that outgrow a '
-    + "one-line ws_log entry (a design decision, a debugging writeup, a plan). This is the only way notes "
-    + 'get written for a workstream; use ws_log instead for short digest-feeding one-liners. Defaults to '
-    + 'the worktree containing the current directory.',
-  inputSchema: withDaemon({
-    body: z.string().min(1).describe('The note content (markdown).'),
-    title: z.string().optional().describe('Optional short title; becomes an H1 and part of the filename.'),
-    workstream: workstreamArg,
-  }),
-}, async ({ body, title, workstream, daemon }) => {
-  const id = workstreamTarget(workstream, daemon);
-  const service = await requestDaemonService(workstreamPath(id, 'note'), {
-    daemon,
-    method: 'POST',
-    body: { body, ...(title ? { title } : {}) },
-  });
-  return serviceJson(service, service.result);
-});
-
-server.registerTool('ws_note_list', {
-  description: 'List the longer-form note files written for a workstream via ws_note.',
-  inputSchema: withDaemon({ workstream: workstreamArg }),
-}, async ({ workstream, daemon }) => {
-  const id = workstreamTarget(workstream, daemon);
-  const service = await requestDaemonService(workstreamPath(id, 'notes'), { daemon });
-  return serviceJson(service, service.result);
 });
 
 server.registerTool('ws_digest', {
