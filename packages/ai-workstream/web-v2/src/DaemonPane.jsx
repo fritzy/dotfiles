@@ -1,21 +1,24 @@
 import {
-  forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState,
+  forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 } from 'react';
 
 import {
-  getWorkstream, listActivePausedWorkstreams, postCommand, readBrowserState,
-  resetAllTerminalSessions, writeBrowserState, wsUrl,
+  activatePanelGroup as activatePanelGroupApi, createGroupPanel, createTerminalGroup,
+  getWorkstream, listActivePausedWorkstreams, postCommand, readBrowserState, readPanelLayout,
+  mergeTerminalGroups, openPanelResource, resetAllTerminalSessions, writeBrowserState, wsUrl,
 } from './api.js';
 import {
   DEFAULT_WORKSPACE_ROLES, SOCKET_MESSAGE_TYPES,
 } from './constants.js';
 import BottomTabs from './BottomTabs.jsx';
+import GroupWorkspace from './GroupWorkspace.jsx';
 import { browserClientId } from './browser-client.js';
 import NewSessionModal from './NewSessionModal.jsx';
 import SessionDetailModal from './SessionDetailModal.jsx';
 import SessionWorkspace from './SessionWorkspace.jsx';
 import { TargetProvider } from './target-context.js';
 import { websocketReconnectDelay } from './websocket-retry.js';
+import { panelCapacity } from './panel-layout.js';
 
 const REFRESH_DEBOUNCE_MS = 75;
 const STATE_SAVE_DEBOUNCE_MS = 400;
@@ -38,6 +41,7 @@ const DaemonPane = forwardRef(function DaemonPane({
   const targetId = target?.id || 'local';
   const sidebarSessionsPanel = `sidebar-${targetId}-sessions`;
   const workspacePanelId = (id, role) => `workspace-${targetId}-${id}-${role}`;
+  const groupPanelId = (id) => `group-panel-${targetId}-${id}`;
 
   const [sessionId, setSessionId] = useState(() => (visible ? readSessionId() : null));
   const sessionIdRef = useRef(sessionId);
@@ -54,6 +58,10 @@ const DaemonPane = forwardRef(function DaemonPane({
   const [workspaceStateRestored, setWorkspaceStateRestored] = useState(false);
   const [workspaceStateRevision, setWorkspaceStateRevision] = useState(0);
   const [bottomTerminalStateRevision, setBottomTerminalStateRevision] = useState(0);
+  const [panelLayoutStateRevision, setPanelLayoutStateRevision] = useState(0);
+  const [panelLayout, setPanelLayout] = useState(null);
+  const [mountedPanelGroupIds, setMountedPanelGroupIds] = useState(() => new Set());
+  const [dirtyPanelResources, setDirtyPanelResources] = useState(() => new Set());
   const [standaloneSessions, setStandaloneSessions] = useState({ items: [], activeId: null });
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -65,9 +73,76 @@ const DaemonPane = forwardRef(function DaemonPane({
     (item) => String(item.id) === activeWorkspaceId,
   ) || null;
   const activeStandaloneId = standaloneSessions.activeId;
+  const panelModelEnabled = panelLayout?.version === 1 && Array.isArray(panelLayout.groups);
+  const activePanelGroup = panelModelEnabled
+    ? panelLayout.groups.find((group) => group.id === panelLayout.activeGroupId) || null
+    : null;
+  const sidebarPanelGroups = useMemo(() => panelLayout?.groups?.map((group) => ({
+    ...group,
+    resources: group.resources.map((resource) => ({
+      ...resource, dirty: dirtyPanelResources.has(resource.id),
+    })),
+  })) || null, [dirtyPanelResources, panelLayout]);
 
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   useEffect(() => { onConnectionChange?.(targetId, connection); }, [connection, onConnectionChange, targetId]);
+
+  const mountPanelGroup = useCallback((groupId) => {
+    if (!groupId) return;
+    setMountedPanelGroupIds((current) => {
+      if (current.has(groupId)) return current;
+      const next = new Set(current);
+      next.add(groupId);
+      return next;
+    });
+  }, []);
+
+  const unmountPanelGroup = useCallback((groupId) => {
+    if (!groupId) return;
+    setMountedPanelGroupIds((current) => {
+      if (!current.has(groupId)) return current;
+      const next = new Set(current);
+      next.delete(groupId);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!panelModelEnabled) return;
+    const valid = new Set(panelLayout.groups.map((group) => group.id));
+    setMountedPanelGroupIds((current) => {
+      const next = new Set([...current].filter((groupId) => valid.has(groupId)));
+      if (panelLayout.activeGroupId && valid.has(panelLayout.activeGroupId)) {
+        next.add(panelLayout.activeGroupId);
+      }
+      if (next.size === current.size && [...next].every((groupId) => current.has(groupId))) {
+        return current;
+      }
+      return next;
+    });
+  }, [panelLayout, panelModelEnabled]);
+
+  const refreshPanelLayout = useCallback(async () => {
+    try {
+      const layout = await readPanelLayout(undefined, target);
+      if (layout?.version === 1 && Array.isArray(layout.groups)) setPanelLayout(layout);
+      return layout;
+    } catch {
+      return null;
+    }
+  }, [target]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    readPanelLayout(controller.signal, target)
+      .then((layout) => {
+        if (!controller.signal.aborted && layout?.version === 1 && Array.isArray(layout.groups)) {
+          setPanelLayout(layout);
+        }
+      })
+      .catch(() => { /* legacy daemon fallback */ });
+    return () => controller.abort();
+  }, [panelLayoutStateRevision, target]);
 
   useEffect(() => {
     const requestId = ++workspaceStateRequestRef.current;
@@ -110,7 +185,7 @@ const DaemonPane = forwardRef(function DaemonPane({
   }, [target, workspaceStateRevision]);
 
   useEffect(() => {
-    if (!workspaceStateRestored) return undefined;
+    if (!workspaceStateRestored || panelModelEnabled) return undefined;
     if (skipWorkspaceStateSaveRef.current) {
       skipWorkspaceStateSaveRef.current = false;
       return undefined;
@@ -125,7 +200,7 @@ const DaemonPane = forwardRef(function DaemonPane({
       }, target).catch(() => { /* remembering terminals is best-effort */ });
     }, STATE_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [activeWorkspaceId, target, workspaceSessions, workspaceStateRestored]);
+  }, [activeWorkspaceId, panelModelEnabled, target, workspaceSessions, workspaceStateRestored]);
 
   const writeSessionUrl = useCallback((nextSession, { replace = false, modal = false } = {}) => {
     const url = new URL(location.href);
@@ -143,6 +218,16 @@ const DaemonPane = forwardRef(function DaemonPane({
   const activateSession = useCallback((item) => {
     const selected = String(item.id);
     onRequestFullscreenExit();
+    const group = panelLayout?.groups?.find((candidate) => String(candidate.ownerId) === selected);
+    if (panelLayout?.version === 1 && group) {
+      mountPanelGroup(group.id);
+      void activatePanelGroupApi(group.id, panelLayout.revision, target)
+        .then(refreshPanelLayout)
+        .catch(refreshPanelLayout);
+      const panel = group.panels.find((candidate) => !candidate.minimized) || group.panels[0];
+      if (panel) onPanelFocus(groupPanelId(panel.id));
+      return;
+    }
     bottomTabsRef.current?.hide();
     setWorkspaceSessions((current) => {
       const existing = current.find((session) => String(session.id) === selected);
@@ -151,12 +236,22 @@ const DaemonPane = forwardRef(function DaemonPane({
     });
     setActiveWorkspaceId(selected);
     onPanelFocus(workspacePanelId(item.id, DEFAULT_WORKSPACE_ROLES[0]));
-  }, [onPanelFocus, onRequestFullscreenExit, targetId]);
+  }, [mountPanelGroup, onPanelFocus, onRequestFullscreenExit, panelLayout, refreshPanelLayout, target, targetId]);
 
   const activateStandalone = useCallback((id) => {
     onRequestFullscreenExit();
+    const group = panelLayout?.groups?.find((candidate) => candidate.id === id);
+    if (panelLayout?.version === 1 && group) {
+      mountPanelGroup(group.id);
+      void activatePanelGroupApi(group.id, panelLayout.revision, target)
+        .then(refreshPanelLayout)
+        .catch(refreshPanelLayout);
+      const panel = group.panels.find((candidate) => !candidate.minimized) || group.panels[0];
+      if (panel) onPanelFocus(groupPanelId(panel.id));
+      return true;
+    }
     return bottomTabsRef.current?.activate(id) || false;
-  }, [onRequestFullscreenExit]);
+  }, [mountPanelGroup, onPanelFocus, onRequestFullscreenExit, panelLayout, refreshPanelLayout, target, targetId]);
 
   const closeWorkspace = useCallback((id) => {
     const selected = String(id);
@@ -275,6 +370,7 @@ const DaemonPane = forwardRef(function DaemonPane({
         setRevision((value) => value + 1);
         setWorkspaceStateRevision((value) => value + 1);
         setBottomTerminalStateRevision((value) => value + 1);
+        setPanelLayoutStateRevision((value) => value + 1);
       });
       socket.addEventListener('message', (event) => {
         let message;
@@ -283,6 +379,10 @@ const DaemonPane = forwardRef(function DaemonPane({
           if (message.clientId === browserClientId()) return;
           if (message.scope === WORKSPACE_STATE_SCOPE) setWorkspaceStateRevision((value) => value + 1);
           if (message.scope === 'bottom-terminals') setBottomTerminalStateRevision((value) => value + 1);
+          return;
+        }
+        if (message?.type === 'panel_layout') {
+          if (message.clientId !== browserClientId()) setPanelLayoutStateRevision((value) => value + 1);
           return;
         }
         if (message && SOCKET_MESSAGE_TYPES.has(message.type)) setRevision((value) => value + 1);
@@ -308,9 +408,15 @@ const DaemonPane = forwardRef(function DaemonPane({
     const result = await postCommand(item.id, command, payload, target);
     setRevision((value) => value + 1);
     if (command === 'resume' && result.workstream) activateSession(result.workstream);
-    if (command === 'pause' || command === 'archive' || command === 'close') closeWorkspace(item.id);
+    if (command === 'pause' || command === 'archive' || command === 'close') {
+      const group = panelLayout?.groups?.find(
+        (candidate) => String(candidate.ownerId) === String(item.id),
+      );
+      unmountPanelGroup(group?.id);
+      closeWorkspace(item.id);
+    }
     return result;
-  }, [activateSession, closeWorkspace, target]);
+  }, [activateSession, closeWorkspace, panelLayout, target, unmountPanelGroup]);
 
   const changeWorkspaceAgent = useCallback(async (item, agent) => {
     const result = await mutate(item, 'agent-set', { agent });
@@ -341,6 +447,15 @@ const DaemonPane = forwardRef(function DaemonPane({
     setStandaloneSessions(state);
   }, []);
 
+  const reportPanelResourceDirty = useCallback((resourceId, dirty) => {
+    setDirtyPanelResources((current) => {
+      if (current.has(resourceId) === dirty) return current;
+      const next = new Set(current);
+      if (dirty) next.add(resourceId); else next.delete(resourceId);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     onSidebarStateChange?.(targetId, {
       items: activeSessions,
@@ -349,10 +464,13 @@ const DaemonPane = forwardRef(function DaemonPane({
       selectedId: activeStandaloneId ? null : activeWorkspaceId,
       standaloneSessions: standaloneSessions.items,
       activeStandaloneId,
+      panelGroups: sidebarPanelGroups,
+      activePanelGroupId: panelLayout?.activeGroupId || null,
       keyboardEnabled: !sessionId && !newKind,
     });
   }, [activeSessions, activeSessionsError, activeSessionsLoading, activeStandaloneId,
-    activeWorkspaceId, newKind, onSidebarStateChange, sessionId, standaloneSessions.items, targetId]);
+    activeWorkspaceId, newKind, onSidebarStateChange, panelLayout, sessionId, sidebarPanelGroups,
+    standaloneSessions.items, targetId]);
 
   const focusSessionsSidebar = useCallback(() => {
     onShowSidebar();
@@ -366,18 +484,43 @@ const DaemonPane = forwardRef(function DaemonPane({
   }, [activeWorkspaceSession, onPanelFocus, targetId]);
 
   const focusActiveContent = useCallback(() => {
+    if (panelModelEnabled && activePanelGroup) {
+      const panel = activePanelGroup.panels.find((item) => !item.minimized) || activePanelGroup.panels[0];
+      if (!panel) return false;
+      onPanelFocus(groupPanelId(panel.id));
+      return true;
+    }
     if (activeStandaloneId) return bottomTabsRef.current?.activate(activeStandaloneId) || false;
     return focusActiveWorkspace();
-  }, [activeStandaloneId, focusActiveWorkspace]);
+  }, [activePanelGroup, activeStandaloneId, focusActiveWorkspace, onPanelFocus, panelModelEnabled]);
 
   const openNewBottomTerminal = useCallback(() => (
-    bottomTabsRef.current?.createTerminal() || false
-  ), []);
+    panelModelEnabled
+      ? createTerminalGroup(panelLayout.revision, target).then(refreshPanelLayout).then(() => true)
+      : bottomTabsRef.current?.createTerminal() || false
+  ), [panelLayout, panelModelEnabled, refreshPanelLayout, target]);
 
   const openMarkdown = useCallback(() => {
+    if (panelModelEnabled) return false;
     bottomTabsRef.current?.openMarkdown();
     return true;
-  }, []);
+  }, [panelModelEnabled]);
+
+  const openResource = useCallback((resourceId) => {
+    if (!panelModelEnabled) return false;
+    const group = panelLayout.groups.find((candidate) => candidate.resources.some((resource) => resource.id === resourceId));
+    const panel = group?.panels.find((candidate) => candidate.resourceId === resourceId);
+    const width = document.querySelector(`[data-daemon-pane="${targetId}"]`)?.getBoundingClientRect().width || 0;
+    const visibleCount = group?.panels.filter((candidate) => !candidate.minimized).length || 0;
+    if ((!panel || panel.minimized) && width > 0 && visibleCount >= panelCapacity(width)) {
+      window.alert('Minimize another panel to open this.');
+      return false;
+    }
+    void openPanelResource(resourceId, panelLayout.revision, target)
+      .then(refreshPanelLayout)
+      .catch(refreshPanelLayout);
+    return true;
+  }, [panelLayout, panelModelEnabled, refreshPanelLayout, target, targetId]);
 
   const closeStandalone = useCallback((id) => (
     bottomTabsRef.current?.close(id) || false
@@ -385,8 +528,15 @@ const DaemonPane = forwardRef(function DaemonPane({
 
   const groupStandalone = useCallback((sourceId, destinationId) => {
     onRequestFullscreenExit();
+    if (panelModelEnabled) {
+      if (sourceId === destinationId) return false;
+      void mergeTerminalGroups(sourceId, destinationId, panelLayout.revision, target)
+        .then(refreshPanelLayout)
+        .catch(refreshPanelLayout);
+      return true;
+    }
     return bottomTabsRef.current?.groupTerminals(sourceId, destinationId, 'right') || false;
-  }, [onRequestFullscreenExit]);
+  }, [onRequestFullscreenExit, panelLayout, panelModelEnabled, refreshPanelLayout, target]);
 
   const minimizeStandalone = useCallback((id) => {
     onRequestFullscreenExit();
@@ -421,8 +571,9 @@ const DaemonPane = forwardRef(function DaemonPane({
     createTerminal: openNewBottomTerminal,
     focusActiveContent,
     openMarkdown,
+    openResource,
   }), [activateSession, activateStandalone, closeStandalone, focusActiveContent, groupStandalone,
-    minimizeStandalone, openMarkdown, openNewBottomTerminal, openSession, resetDaemonTerminals]);
+    minimizeStandalone, openMarkdown, openNewBottomTerminal, openResource, openSession, resetDaemonTerminals]);
 
   return (
     <TargetProvider value={target}>
@@ -433,7 +584,36 @@ const DaemonPane = forwardRef(function DaemonPane({
         data-daemon-pane={targetId}
       >
         <div className="relative min-h-screen min-w-0 overflow-hidden">
-          {workspaceSessions.map((workspaceSession) => (
+          {panelModelEnabled && panelLayout.groups
+            .filter((group) => mountedPanelGroupIds.has(group.id))
+            .map((group) => {
+              const groupSession = group.ownerId == null ? null : activeSessions.find(
+                (item) => String(item.id) === String(group.ownerId),
+              ) || null;
+              return (
+                <GroupWorkspace
+                  key={group.id}
+                  group={group}
+                  revision={panelLayout.revision}
+                  target={target}
+                  session={groupSession}
+                  visible={visible && group.id === activePanelGroup?.id}
+                  focusedPanel={focusedPanel}
+                  onPanelFocus={onPanelFocus}
+                  onRefresh={refreshPanelLayout}
+                  terminalMode={terminalMode}
+                  fontFamily={fontFamily}
+                  onSidebarFocus={() => focusSessionsSidebar()}
+                  onToggleSidebar={onToggleSidebar}
+                  onAgentChange={changeWorkspaceAgent}
+                  onDetails={openSession}
+                  onArchive={archiveWorkspace}
+                  onReset={resetWorkspaceTerminals}
+                  onResourceDirtyChange={reportPanelResourceDirty}
+                />
+              );
+            })}
+          {!panelModelEnabled && workspaceSessions.map((workspaceSession) => (
             <SessionWorkspace
               key={workspaceSession.id}
               session={workspaceSession}
@@ -458,7 +638,8 @@ const DaemonPane = forwardRef(function DaemonPane({
               onNewTerminal={openNewBottomTerminal}
             />
           ))}
-          {!activeWorkspaceSession && !activeStandaloneId && <div className="min-h-screen min-w-0" aria-hidden="true" />}
+          {panelModelEnabled && !activePanelGroup && <div className="min-h-screen min-w-0" aria-hidden="true" />}
+          {!panelModelEnabled && !activeWorkspaceSession && !activeStandaloneId && <div className="min-h-screen min-w-0" aria-hidden="true" />}
         </div>
 
         <div className="fixed right-2 bottom-2 z-[60] rounded-full border border-primary/40 bg-page/95 px-2.5 py-1.5 shadow-lg backdrop-blur-sm">
@@ -484,7 +665,7 @@ const DaemonPane = forwardRef(function DaemonPane({
           />
         )}
 
-        <BottomTabs
+        {!panelModelEnabled && <BottomTabs
           ref={bottomTabsRef}
           visible={visible}
           focusedPanel={focusedPanel}
@@ -499,7 +680,7 @@ const DaemonPane = forwardRef(function DaemonPane({
           onToggleSidebar={onToggleSidebar}
           onSessionsChange={reportStandaloneSessions}
           onCloseActive={focusAfterStandaloneClose}
-        />
+        />}
       </div>
     </TargetProvider>
   );

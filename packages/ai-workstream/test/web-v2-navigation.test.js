@@ -73,6 +73,60 @@ async function togglePreview(container) {
   await flush(20);
 }
 
+test('a terminal group can be renamed from its workspace header', async (t) => {
+  const dom = setupJsdom();
+  t.after(() => teardownJsdom(dom));
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ ok: true, revision: 8 }) };
+  };
+
+  const React = await import('react');
+  const { default: GroupWorkspace } = await import('../web-v2/src/GroupWorkspace.jsx');
+  const group = {
+    id: 'terminal-group-1',
+    type: 'terminal',
+    ownerId: null,
+    label: 'Terminal 1',
+    path: null,
+    resources: [],
+    panels: [{
+      id: 'terminal-panel-1', groupId: 'terminal-group-1', position: 0,
+      kind: 'terminal', minimized: false, width: 1, label: 'Shell',
+      terminalRole: 'shell', fontSize: 14,
+    }],
+  };
+  const { container } = await mountReact(React.createElement(GroupWorkspace, {
+    group,
+    revision: 7,
+    target: { id: 'local', name: 'Local', url: null },
+    terminalMode: 'dark',
+    fontFamily: 'monospace',
+    onRefresh: async () => {},
+  }));
+
+  const renameButton = container.querySelector('button[aria-label="Rename Terminal 1"]');
+  assert.ok(renameButton, 'the group name in the top header is clickable');
+  await actCall(() => renameButton.click());
+  const renameInput = container.querySelector('input[aria-label="Rename Terminal 1"]');
+  await actCall(() => {
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setValue.call(renameInput, 'Build logs');
+    renameInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+  await dispatchKey(renameInput, 'Enter', { ctrlKey: false });
+  await flush(20);
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/panel-layout/groups/terminal-group-1');
+  assert.equal(requests[0].options.method, 'PUT');
+  const body = JSON.parse(requests[0].options.body);
+  assert.equal(typeof body.client, 'string');
+  assert.equal(body.revision, 7);
+  assert.equal(body.label, 'Build logs');
+});
+
 test('Ctrl-E toggles a Markdown tab between Edit and Preview', async (t) => {
   const { ref, container } = await harness(t);
 

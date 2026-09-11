@@ -42,8 +42,9 @@ export function MarkdownPreview({ children }) {
 
 export default function MarkdownEditor({
   path, name, source = 'notes', focused, fontFamily, fontSize = 14, fullscreen = false,
-  onDirtyChange, onFocusRequest, onFontSizeChange,
+  initialMode = 'edit', modeRevision, onModeChange, onDirtyChange, onFocusRequest, onFontSizeChange,
   onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar, onNewTerminal, onClose,
+  headerActions = null, headerProps = null, titleContent = null,
 }) {
   const target = useTarget();
   const [content, setContent] = useState('');
@@ -54,12 +55,22 @@ export default function MarkdownEditor({
   const [error, setError] = useState('');
   const [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [preview, setPreview] = useState(false);
+  const [preview, setPreview] = useState(initialMode === 'preview');
   const textareaRef = useRef(null);
   const previewRef = useRef(null);
   const stateRef = useRef({ content: '', version: null });
   const dirty = content !== saved;
   stateRef.current = { content, version };
+
+  function changePreview(next) {
+    setPreview((current) => {
+      const value = typeof next === 'function' ? next(current) : next;
+      if (value !== current) onModeChange?.(value ? 'preview' : 'edit');
+      return value;
+    });
+  }
+
+  useEffect(() => { setPreview(initialMode === 'preview'); }, [initialMode, modeRevision]);
 
   useEffect(() => { onDirtyChange?.(path, dirty); }, [dirty, onDirtyChange, path]);
 
@@ -155,7 +166,7 @@ export default function MarkdownEditor({
     if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
     const key = event.key.toLowerCase();
     const handlers = {
-      e: () => setPreview((value) => !value),
+      e: () => changePreview((value) => !value),
       f: onToggleFullscreen,
       p: onToggleSidebar,
       t: onNewTerminal,
@@ -205,7 +216,7 @@ export default function MarkdownEditor({
       setError(`this file has no "${todayHeading}" heading`);
       return;
     }
-    setPreview(false);
+    changePreview(false);
     applyEdit(appended);
     onFocusRequest?.();
     requestAnimationFrame(() => textareaRef.current?.focus());
@@ -216,7 +227,7 @@ export default function MarkdownEditor({
     if (!textarea || !todayHeading) return;
     const at = content.indexOf(todayHeading);
     if (at === -1) return;
-    setPreview(false);
+    changePreview(false);
     requestAnimationFrame(() => {
       textarea.focus();
       textarea.selectionStart = at;
@@ -233,9 +244,12 @@ export default function MarkdownEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-primary/30 px-2 py-1.5">
+      <div
+        {...headerProps}
+        className={`flex shrink-0 flex-wrap items-center gap-2 border-b border-primary/30 px-2 py-1.5 ${headerProps?.className || ''}`}
+      >
         <TargetIcon target={target} className="size-4" />
-        <span className="min-w-0 truncate font-mono text-xs font-bold text-primary" title={path}>{name}</span>
+        {titleContent || <span className="min-w-0 truncate font-mono text-xs font-bold text-primary" title={path}>{name}</span>}
         <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide ${conflict ? 'border-danger text-danger' : dirty ? 'border-soft text-primary' : 'border-primary/40 text-muted'}`}>{status}</span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {todayHeading && (
@@ -252,7 +266,7 @@ export default function MarkdownEditor({
                 className={`rounded px-2 py-0.5 text-xs font-semibold transition-colors ${preview === value ? 'bg-accent text-on-accent' : 'text-primary hover:bg-soft hover:text-on-soft'}`}
                 aria-pressed={preview === value}
                 title={`Switch to ${label} (Ctrl-E toggles)`}
-                onClick={() => setPreview(value)}
+                onClick={() => changePreview(value)}
               >{label}</button>
             ))}
           </div>
@@ -275,6 +289,7 @@ export default function MarkdownEditor({
               onClick={() => onFontSizeChange?.(1)}
             >+</button>
           </div>
+          {headerActions}
           <button
             type="button"
             className="flex size-6 items-center justify-center rounded-md border border-primary bg-page text-primary transition-colors hover:bg-soft hover:text-on-soft"

@@ -12,8 +12,12 @@ import { stripVTControlCharacters } from 'node:util';
 import { AGENT_PROVIDERS, CONFIG } from './config.js';
 import { isScratch } from './core.js';
 
+const ZELLIJ_COMMAND_TIMEOUT_MS = 15_000;
+
 function zellij(args, opts = {}) {
-  return spawnSync('zellij', args, { encoding: 'utf8', ...opts });
+  return spawnSync('zellij', args, {
+    encoding: 'utf8', timeout: ZELLIJ_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', ...opts,
+  });
 }
 
 function detachedZellij(args, opts = {}) {
@@ -114,7 +118,14 @@ function compactBrowserTerminalSessionName(session, prefix) {
   return `${prefix}h-${digest}`;
 }
 
-export function browserTerminalSessionName({ sessionId = null, role = 'shell', terminalId = 'default' } = {}) {
+export function browserTerminalSessionName({
+  sessionId = null, role = 'shell', terminalId = 'default', panelId = null,
+} = {}) {
+  if (panelId) {
+    const prefix = 'ws-browser-panel-';
+    const owner = sessionId !== null && sessionId !== undefined ? `${sessionId}-` : '';
+    return compactBrowserTerminalSessionName(`${prefix}${owner}${panelId}`, prefix);
+  }
   const prefix = sessionId !== null && sessionId !== undefined
     ? `ws-browser-${role}-`
     : 'ws-browser-terminal-';

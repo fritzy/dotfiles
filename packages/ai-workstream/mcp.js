@@ -132,6 +132,109 @@ server.registerTool('ws_list', {
   });
 });
 
+async function currentPanelLayout(daemon) {
+  return requestDaemonService('/panel-layout', { daemon });
+}
+
+async function mutatePanelLayout(path, body, daemon) {
+  const current = await currentPanelLayout(daemon);
+  return requestDaemonService(path, {
+    daemon,
+    method: path.endsWith('/order') || /^\/panel-layout\/panels\/[^/]+$/.test(path) ? 'PUT' : 'POST',
+    body: { client: 'mcp', revision: current.result.revision, ...body },
+  });
+}
+
+server.registerTool('ws_panel_layout', {
+  description: 'List this daemon’s panel groups, ordered panels, associated resources, active group, and optimistic revision.',
+  inputSchema: withDaemon(),
+}, async ({ daemon }) => {
+  const service = await currentPanelLayout(daemon);
+  return serviceJson(service, { layout: service.result });
+});
+
+server.registerTool('ws_panel_add', {
+  description: 'Add a persistent terminal or the single allowed AI panel to an existing panel group.',
+  inputSchema: withDaemon({
+    group: z.string().min(1).describe('Panel group id from ws_panel_layout.'),
+    kind: z.enum(['terminal', 'ai']),
+    label: z.string().min(1).optional(),
+    minimized: z.boolean().optional(),
+  }),
+}, async ({ group, kind, label, minimized, daemon }) => {
+  const service = await mutatePanelLayout(
+    `/panel-layout/groups/${encodeURIComponent(group)}/panels`,
+    { kind, ...(label ? { label } : {}), ...(minimized === undefined ? {} : { minimized }) },
+    daemon,
+  );
+  return serviceJson(service, service.result);
+});
+
+server.registerTool('ws_panel_update', {
+  description: 'Minimize, restore, rename, resize, or change the Edit/Preview mode of a panel.',
+  inputSchema: withDaemon({
+    panel: z.string().min(1).describe('Panel id from ws_panel_layout.'),
+    minimized: z.boolean().optional(),
+    label: z.string().min(1).optional(),
+    width: z.number().positive().optional(),
+    markdownMode: z.enum(['edit', 'preview']).optional(),
+  }),
+}, async ({ panel, daemon, ...changes }) => {
+  if (Object.values(changes).every((value) => value === undefined)) throw new Error('provide at least one panel change');
+  const service = await mutatePanelLayout(
+    `/panel-layout/panels/${encodeURIComponent(panel)}`,
+    Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)),
+    daemon,
+  );
+  return serviceJson(service, service.result);
+});
+
+server.registerTool('ws_panel_close', {
+  description: 'Close a terminal or AI panel and kill its persistent process. Minimize it instead to keep the process running.',
+  inputSchema: withDaemon({ panel: z.string().min(1).describe('Panel id from ws_panel_layout.') }),
+}, async ({ panel, daemon }) => {
+  const service = await mutatePanelLayout(
+    `/panel-layout/panels/${encodeURIComponent(panel)}/close`, {}, daemon,
+  );
+  return serviceJson(service, service.result);
+});
+
+server.registerTool('ws_resource_add', {
+  description: 'Associate an HTTP(S) link or existing Markdown file with a repository, scratchpad, or configured-session group.',
+  inputSchema: withDaemon({
+    group: z.string().min(1).describe('Panel group id from ws_panel_layout.'),
+    kind: z.enum(['link', 'markdown']),
+    value: z.string().min(1).describe('URL, or a Markdown path relative to the owning session, absolute, or ~/.'),
+    label: z.string().min(1).optional(),
+  }),
+}, async ({ group, kind, value, label, daemon }) => {
+  const service = await mutatePanelLayout(
+    `/panel-layout/groups/${encodeURIComponent(group)}/resources`,
+    { kind, value, ...(label ? { label } : {}) }, daemon,
+  );
+  return serviceJson(service, service.result);
+});
+
+server.registerTool('ws_resource_open', {
+  description: 'Open or restore an associated Markdown or link resource panel and select its owning group.',
+  inputSchema: withDaemon({ resource: z.string().min(1).describe('Resource id from ws_panel_layout.') }),
+}, async ({ resource, daemon }) => {
+  const service = await mutatePanelLayout(
+    `/panel-layout/resources/${encodeURIComponent(resource)}/open`, {}, daemon,
+  );
+  return serviceJson(service, service.result);
+});
+
+server.registerTool('ws_resource_remove', {
+  description: 'Disassociate an explicit resource. Automatically discovered session notes cannot be removed.',
+  inputSchema: withDaemon({ resource: z.string().min(1).describe('Resource id from ws_panel_layout.') }),
+}, async ({ resource, daemon }) => {
+  const service = await mutatePanelLayout(
+    `/panel-layout/resources/${encodeURIComponent(resource)}/disassociate`, {}, daemon,
+  );
+  return serviceJson(service, service.result);
+});
+
 server.registerTool('ws_scratch', {
   description: 'Create a scratchpad in the configured scratchpad root (not a git worktree), '
     + 'and open it as the active FritzWorks browser workspace. With no name a random one is generated.',

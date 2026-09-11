@@ -3,10 +3,12 @@ import {
 } from 'react';
 
 import {
-  AssetIcon, ChevronIcon, EditorIcon, GearIcon, GripIcon, MaskIcon, MinimizeIcon, ProviderIcon, ShellIcon, Spinner, XIcon,
+  AssetIcon, ChevronIcon, EditorIcon, GearIcon, GripIcon, LinkIcon, MaskIcon, MinimizeIcon, ProviderIcon, ShellIcon, Spinner, XIcon,
 } from './icons.jsx';
 import BrandLogo from './BrandLogo.jsx';
-import { STANDALONE_TERMINAL_DRAG_TYPE, TERMINAL_FONTS, THEMES } from './constants.js';
+import {
+  SIDEBAR_TREE_STORAGE_KEY, STANDALONE_TERMINAL_DRAG_TYPE, TERMINAL_FONTS, THEMES,
+} from './constants.js';
 import { useTarget } from './target-context.js';
 import {
   Button, selectClass,
@@ -21,7 +23,7 @@ function SessionStatus({ status }) {
     : 'bg-paused ring-on-paused';
   return (
     <span
-      className={`size-2.5 shrink-0 rounded-full ring-1 ${classes}`}
+      className={`inline-block size-3.5 shrink-0 rounded-full ring-1 ${classes}`}
       role="img"
       aria-label={`${status} session`}
       title={status}
@@ -30,9 +32,8 @@ function SessionStatus({ status }) {
 }
 
 function SessionActivity({ item }) {
-  const active = item.status === 'active';
-  const agentWorking = active && item.agentStatus === 'working';
-  const shellWorking = active && item.shellStatus === 'working';
+  const agentWorking = item.agentStatus === 'working';
+  const shellWorking = item.shellStatus === 'working';
   const provider = item.agent === 'codex' ? 'codex' : 'claude';
   if (!agentWorking && !shellWorking) return <SessionStatus status={item.status} />;
   const classes = item.status === 'active'
@@ -74,7 +75,19 @@ const targetNavigationKey = (targetId) => `target:${targetId}`;
 const groupNavigationKey = (targetId, kind, label) => `group:${targetId}:${kind}:${label}`;
 const sessionNavigationKey = (targetId, id) => `session:${targetId}:${id}`;
 const standaloneNavigationKey = (targetId, id) => `standalone:${targetId}:${id}`;
+const panelGroupNavigationKey = (targetId, id) => `panel-group:${targetId}:${id}`;
+const resourceNavigationKey = (targetId, id) => `resource:${targetId}:${id}`;
 const SIDEBAR_VIEWS = ['sessions', 'settings'];
+
+function storedExpandedKeys(name) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SIDEBAR_TREE_STORAGE_KEY));
+    if (!Array.isArray(stored?.[name])) return new Set();
+    return new Set(stored[name].filter((key) => typeof key === 'string').slice(0, 2000));
+  } catch {
+    return new Set();
+  }
+}
 
 function terminalDragPayload(dataTransfer) {
   try {
@@ -104,6 +117,25 @@ export function orderStandaloneTerminals(items) {
     emittedGroups.add(item.splitGroupId);
     return groups.get(item.splitGroupId) || [item];
   });
+}
+
+export function organizePanelGroups(groups) {
+  const collections = new Map();
+  for (const group of groups) {
+    const kind = group.type;
+    const label = kind === 'repository' ? group.session?.repo || 'Repositories'
+      : kind === 'scratchpad' ? 'Scratchpads'
+        : kind === 'configured' ? 'Directories' : 'Terminals';
+    const key = `${kind}:${label}`;
+    if (!collections.has(key)) collections.set(key, { key, kind, label, groups: [] });
+    collections.get(key).groups.push(group);
+  }
+  const priority = new Map([
+    ['repository', 0], ['scratchpad', 1], ['configured', 2], ['terminal', 3],
+  ]);
+  return [...collections.values()].sort((left, right) => (
+    (priority.get(left.kind) ?? 4) - (priority.get(right.kind) ?? 4)
+  ));
 }
 
 function SessionRow({
@@ -239,6 +271,111 @@ function StandaloneSessionRow({
   );
 }
 
+function PanelGroupNode({
+  group, session, targetId, selected, highlighted, collapsed, navigationKey,
+  onHighlight, onActivate, onToggle, onOpenResource, onMergeTerminalGroup,
+  rowRef, resourceRowRef,
+}) {
+  const fallbackIcon = group.type === 'repository' ? 'git-branch'
+    : group.type === 'scratchpad' ? 'folder' : group.type === 'configured' ? 'local' : null;
+  const iconState = group.type === 'repository' && session ? branchState(session) : null;
+  const hasChildren = group.resources.length > 0;
+  const [dropTarget, setDropTarget] = useState(false);
+  useEffect(() => {
+    if (!dropTarget) return undefined;
+    const clearDropTarget = () => setDropTarget(false);
+    document.addEventListener('dragend', clearDropTarget, { once: true });
+    return () => document.removeEventListener('dragend', clearDropTarget);
+  }, [dropTarget]);
+  return (
+    <section className="min-w-0 pl-2" data-sidebar-panel-group={group.id}>
+      <div
+        className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center rounded-md ${dropTarget ? 'bg-accent/20 outline-2 -outline-offset-2 outline-accent' : selected ? 'bg-row-highlight text-on-row-highlight' : highlighted ? 'outline-2 -outline-offset-2 outline-accent' : 'hover:bg-soft hover:text-on-soft'}`}
+        onDragOver={(event) => {
+          if (group.type !== 'terminal'
+              || !Array.from(event.dataTransfer.types || []).includes(STANDALONE_TERMINAL_DRAG_TYPE)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          setDropTarget(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setDropTarget(false);
+        }}
+        onDrop={(event) => {
+          if (group.type !== 'terminal') return;
+          event.preventDefault();
+          event.stopPropagation();
+          setDropTarget(false);
+          const payload = terminalDragPayload(event.dataTransfer);
+          if (payload?.targetId !== targetId || typeof payload.terminalGroupId !== 'string'
+              || payload.terminalGroupId === group.id) return;
+          onMergeTerminalGroup?.(payload.terminalGroupId, group.id);
+        }}
+      >
+        {group.type === 'terminal' ? (
+          <span
+            draggable
+            className="ml-0.5 flex size-6 cursor-grab items-center justify-center rounded opacity-65 hover:bg-page/30 hover:opacity-100 active:cursor-grabbing"
+            aria-label={`Drag ${group.label} into another terminal group`}
+            title="Drag into another terminal group"
+            onDragStart={(event) => {
+              event.stopPropagation();
+              event.dataTransfer.effectAllowed = 'move';
+              event.dataTransfer.setData(STANDALONE_TERMINAL_DRAG_TYPE, JSON.stringify({
+                targetId, terminalGroupId: group.id,
+              }));
+            }}
+          ><GripIcon className="size-4" /></span>
+        ) : hasChildren ? (
+          <button type="button" className="flex size-7 items-center justify-center" aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${group.label}`} aria-expanded={!collapsed} onClick={onToggle}>
+            <ChevronIcon className={`size-3.5 transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+          </button>
+        ) : <span className="size-7" aria-hidden="true" />}
+        <button
+          ref={rowRef}
+          type="button"
+          className="flex min-w-0 items-center gap-1.5 px-1 py-1.5 text-left font-mono text-sm focus-visible:outline-2 focus-visible:outline-accent"
+          aria-current={selected ? 'true' : undefined}
+          onClick={onActivate}
+          onFocus={() => onHighlight(navigationKey)}
+        >
+          {fallbackIcon
+            ? <AssetIcon name={iconState?.icon || fallbackIcon} className={`size-3.5 shrink-0 ${iconState?.color || ''}`} title={iconState?.label} />
+            : <ShellIcon className="size-3.5 shrink-0" />}
+          <span className="truncate">{group.label}</span>
+        </button>
+        <span className="mr-2">{session ? <SessionActivity item={session} /> : <span className="text-[0.65rem] text-muted">{group.panels.length}</span>}</span>
+      </div>
+      {hasChildren && <div className={`grid transition-[grid-template-rows,opacity] duration-200 ${collapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}>
+        <div className="min-h-0 overflow-hidden">
+          <div className="grid gap-0.5 pb-1 pl-7">
+            {group.resources.map((resource) => {
+              const key = resourceNavigationKey(targetId, resource.id);
+              return (
+                <button
+                  key={resource.id}
+                  ref={(node) => resourceRowRef(key, node)}
+                  type="button"
+                  data-sidebar-resource={resource.id}
+                  className={`flex min-w-0 items-center gap-1.5 rounded px-2 py-1 text-left font-mono text-xs hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent ${resource.discovered ? 'opacity-80' : ''}`}
+                  title={`${resource.value}${resource.discovered ? '\nAutomatically discovered session note' : ''}`}
+                  onClick={() => onOpenResource(resource.id)}
+                  onFocus={() => onHighlight(key)}
+                >
+                  {resource.kind === 'markdown' ? <EditorIcon className="size-3.5 shrink-0" /> : <LinkIcon className="size-3.5 shrink-0" />}
+                  <span className="truncate">{resource.label}</span>
+                  {resource.dirty && <span className="size-1.5 shrink-0 rounded-full bg-current" title="Unsaved changes" aria-label="Unsaved changes" />}
+                  {resource.discovered && <span className="ml-auto text-[0.6rem] uppercase">auto</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>}
+    </section>
+  );
+}
+
 function SidebarResizeHandle({
   open, left, width, resizing, onFocus, onResizeStart, onResize, onResizeEnd,
 }) {
@@ -320,7 +457,7 @@ function SidebarResizeHandle({
 export default function ActiveSessionsSidebar({
   sections, open, onActivate, onOpenDetails,
   onActivateStandalone, onCloseStandalone, onGroupStandalone, onMinimizeStandalone,
-  onCreateTerminal, onOpenMarkdown,
+  onCreateTerminal, onOpenMarkdown, onOpenResource,
   onToggle, onNewRepo, onNewScratchpad,
   currentTargetId, onTargetChange,
   theme, onThemeChange,
@@ -335,6 +472,19 @@ export default function ActiveSessionsSidebar({
   const target = useTarget();
   const targetId = target?.id || 'local';
   const targetSections = useMemo(() => sections.map((section) => {
+    if (Array.isArray(section.panelGroups)) {
+      const activeItems = new Map(section.items.map((item) => [String(item.id), item]));
+      const panelGroups = section.panelGroups
+        .filter((group) => group.type === 'terminal' || activeItems.has(String(group.ownerId)))
+        .map((group) => ({ ...group, session: activeItems.get(String(group.ownerId)) || null }));
+      return {
+        ...section,
+        panelGroups,
+        panelGroupCollections: organizePanelGroups(panelGroups),
+        workstreamGroups: [],
+        groups: [],
+      };
+    }
     const workstreamGroups = groupActiveSessionsByRepo(section.items)
       .map((group) => ({ ...group, kind: 'workstream' }));
     const terminals = orderStandaloneTerminals(
@@ -351,9 +501,10 @@ export default function ActiveSessionsSidebar({
       groups: [...workstreamGroups, ...standaloneGroups],
     };
   }), [sections]);
-  const [collapsedTargets, setCollapsedTargets] = useState(() => new Set());
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
-  const seenTargets = useRef(new Set());
+  // Unknown nodes remain collapsed, while nodes this browser has seen retain
+  // their last explicit state across client refreshes.
+  const [expandedTargets, setExpandedTargets] = useState(() => storedExpandedKeys('targets'));
+  const [expandedGroups, setExpandedGroups] = useState(() => storedExpandedKeys('groups'));
   const [view, setView] = useState('sessions');
   const [terminalsResetting, setTerminalsResetting] = useState(false);
   const [terminalResetError, setTerminalResetError] = useState('');
@@ -369,13 +520,37 @@ export default function ActiveSessionsSidebar({
     const targetItem = {
       kind: 'target', key: targetNavigationKey(sectionId), targetId: sectionId,
     };
-    if (collapsedTargets.has(sectionId)) return [targetItem];
+    if (!expandedTargets.has(sectionId)) return [targetItem];
+    if (section.panelGroups) {
+      return [targetItem, ...section.panelGroupCollections.flatMap((collection) => {
+        const collectionItem = {
+          kind: 'panel-collection',
+          key: groupNavigationKey(sectionId, 'panel-collection', collection.key),
+          targetId: sectionId,
+          groupKind: 'panel-collection',
+          groupLabel: collection.key,
+          collection,
+        };
+        if (!expandedGroups.has(collectionItem.key)) return [collectionItem];
+        return [collectionItem, ...collection.groups.flatMap((group) => {
+          const groupItem = {
+            kind: 'panel-group', key: panelGroupNavigationKey(sectionId, group.id),
+            targetId: sectionId, group, collection,
+          };
+          if (!expandedGroups.has(groupItem.key)) return [groupItem];
+          return [groupItem, ...group.resources.map((resource) => ({
+            kind: 'resource', key: resourceNavigationKey(sectionId, resource.id),
+            targetId: sectionId, group, collection, resource,
+          }))];
+        })];
+      })];
+    }
     return [targetItem, ...section.groups.flatMap((group) => {
       const groupItem = {
         kind: 'group', key: groupNavigationKey(sectionId, group.kind, group.label),
         targetId: sectionId, groupKind: group.kind, groupLabel: group.label,
       };
-      if (collapsedGroups.has(groupItem.key)) return [groupItem];
+      if (!expandedGroups.has(groupItem.key)) return [groupItem];
       return [groupItem, ...group.items.map((item) => (group.kind === 'standalone' ? {
         kind: 'standalone', key: standaloneNavigationKey(sectionId, item.id),
         targetId: sectionId, groupKind: group.kind, groupLabel: group.label, item,
@@ -384,24 +559,16 @@ export default function ActiveSessionsSidebar({
         targetId: sectionId, groupKind: group.kind, groupLabel: group.label, item,
       }))];
     })];
-  }), [collapsedGroups, collapsedTargets, targetSections]);
+  }), [expandedGroups, expandedTargets, targetSections]);
 
   useEffect(() => {
-    setCollapsedTargets((current) => {
-      const next = new Set(current);
-      let changed = false;
-      for (const section of targetSections) {
-        const id = section.target.id;
-        if (seenTargets.current.has(id)) continue;
-        seenTargets.current.add(id);
-        if (id !== currentTargetId) {
-          next.add(id);
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
-  }, [currentTargetId, targetSections]);
+    try {
+      localStorage.setItem(SIDEBAR_TREE_STORAGE_KEY, JSON.stringify({
+        targets: [...expandedTargets],
+        groups: [...expandedGroups],
+      }));
+    } catch { /* browser storage is optional */ }
+  }, [expandedGroups, expandedTargets]);
 
   useEffect(() => {
     setHighlightedNavigationKey((current) => (
@@ -422,7 +589,9 @@ export default function ActiveSessionsSidebar({
     if (focusedPanel !== sessionsPanel) return;
     const section = targetSections.find((item) => item.target.id === currentTargetId);
     if (!section) return;
-    const selectedKey = section.activeStandaloneId
+    const selectedKey = section.activePanelGroupId
+      ? panelGroupNavigationKey(currentTargetId, section.activePanelGroupId)
+      : section.activeStandaloneId
       ? standaloneNavigationKey(currentTargetId, section.activeStandaloneId)
       : section.selectedId != null ? sessionNavigationKey(currentTargetId, section.selectedId) : null;
     if (selectedKey && navigationItems.some((item) => item.key === selectedKey)) {
@@ -475,7 +644,19 @@ export default function ActiveSessionsSidebar({
       const current = navigationItems[currentIndex];
       if (event.key === 'h') {
         event.preventDefault();
-        if (current.kind === 'session' || current.kind === 'standalone') {
+        if (current.kind === 'resource') {
+          const groupKey = panelGroupNavigationKey(current.targetId, current.group.id);
+          setHighlightedNavigationKey(groupKey);
+          setPanelGroupCollapsed(current.targetId, current.group.id, true);
+          requestAnimationFrame(() => navigationRows.current.get(groupKey)?.focus());
+        } else if (current.kind === 'panel-group') {
+          const collectionKey = groupNavigationKey(
+            current.targetId, 'panel-collection', current.collection.key,
+          );
+          setHighlightedNavigationKey(collectionKey);
+          setPanelGroupCollapsed(current.targetId, current.group.id, true);
+          requestAnimationFrame(() => navigationRows.current.get(collectionKey)?.focus());
+        } else if (current.kind === 'session' || current.kind === 'standalone') {
           const groupKey = groupNavigationKey(current.targetId, current.groupKind, current.groupLabel);
           setHighlightedNavigationKey(groupKey);
           setGroupCollapsed(current.targetId, current.groupKind, current.groupLabel, true);
@@ -489,9 +670,12 @@ export default function ActiveSessionsSidebar({
         return;
       }
       if (event.key === 'l') {
-        if (current.kind === 'session' || current.kind === 'standalone') return;
+        if (current.kind === 'session' || current.kind === 'standalone' || current.kind === 'resource') return;
         event.preventDefault();
         if (current.kind === 'target') setTargetCollapsed(current.targetId, false);
+        else if (current.kind === 'panel-group' && current.group.resources.length > 0) {
+          setPanelGroupCollapsed(current.targetId, current.group.id, false);
+        }
         else setGroupCollapsed(current.targetId, current.groupKind, current.groupLabel, false);
         return;
       }
@@ -499,13 +683,18 @@ export default function ActiveSessionsSidebar({
       event.preventDefault();
       if (current.kind === 'target') chooseTargetSection(current.targetId);
       else if (current.kind === 'group') toggleGroup(current.targetId, current.groupKind, current.groupLabel);
+      else if (current.kind === 'panel-collection') toggleGroup(current.targetId, current.groupKind, current.groupLabel);
+      else if (current.kind === 'panel-group') {
+        if (current.group.type === 'terminal') onActivateStandalone(current.targetId, current.group.id);
+        else if (current.group.session) onActivate(current.targetId, current.group.session);
+      } else if (current.kind === 'resource') onOpenResource(current.targetId, current.resource.id);
       else if (current.kind === 'standalone') onActivateStandalone(current.targetId, current.item.id);
       else onActivate(current.targetId, current.item);
     }
     document.addEventListener('keydown', shortcuts);
     return () => document.removeEventListener('keydown', shortcuts);
   }, [currentTargetId, focusedPanel, highlightedNavigationKey, keyboardEnabled, navigationItems,
-    onActivate, onActivateStandalone, onTargetChange, open, sessionsPanel, view]);
+    onActivate, onActivateStandalone, onOpenResource, onTargetChange, open, sessionsPanel, view]);
 
   function focusContent() {
     const highlighted = navigationItems.find((item) => item.key === highlightedNavigationKey);
@@ -517,20 +706,29 @@ export default function ActiveSessionsSidebar({
       onActivate(highlighted.targetId, highlighted.item);
       return;
     }
+    if (highlighted?.kind === 'panel-group') {
+      if (highlighted.group.type === 'terminal') onActivateStandalone(highlighted.targetId, highlighted.group.id);
+      else if (highlighted.group.session) onActivate(highlighted.targetId, highlighted.group.session);
+      return;
+    }
+    if (highlighted?.kind === 'resource') {
+      onOpenResource(highlighted.targetId, highlighted.resource.id);
+      return;
+    }
     onContentFocus();
   }
 
   function setTargetCollapsed(id, collapsed) {
-    setCollapsedTargets((current) => {
-      if (current.has(id) === collapsed) return current;
+    setExpandedTargets((current) => {
+      if (current.has(id) === !collapsed) return current;
       const next = new Set(current);
-      if (collapsed) next.add(id); else next.delete(id);
+      if (collapsed) next.delete(id); else next.add(id);
       return next;
     });
   }
 
   function chooseTargetSection(id) {
-    const collapsed = collapsedTargets.has(id);
+    const collapsed = !expandedTargets.has(id);
     onTargetChange(id);
     if (collapsed) setTargetCollapsed(id, false);
     else if (id === currentTargetId) setTargetCollapsed(id, true);
@@ -538,17 +736,32 @@ export default function ActiveSessionsSidebar({
 
   function setGroupCollapsed(sectionId, kind, label, collapsed) {
     const key = groupNavigationKey(sectionId, kind, label);
-    setCollapsedGroups((current) => {
-      if (current.has(key) === collapsed) return current;
+    setExpandedGroups((current) => {
+      if (current.has(key) === !collapsed) return current;
       const next = new Set(current);
-      if (collapsed) next.add(key); else next.delete(key);
+      if (collapsed) next.delete(key); else next.add(key);
       return next;
     });
   }
 
   function toggleGroup(sectionId, kind, label) {
     const key = groupNavigationKey(sectionId, kind, label);
-    setGroupCollapsed(sectionId, kind, label, !collapsedGroups.has(key));
+    setGroupCollapsed(sectionId, kind, label, expandedGroups.has(key));
+  }
+
+  function setPanelGroupCollapsed(sectionId, groupId, collapsed) {
+    const key = panelGroupNavigationKey(sectionId, groupId);
+    setExpandedGroups((current) => {
+      if (current.has(key) === !collapsed) return current;
+      const next = new Set(current);
+      if (collapsed) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  function togglePanelGroup(sectionId, groupId) {
+    const key = panelGroupNavigationKey(sectionId, groupId);
+    setPanelGroupCollapsed(sectionId, groupId, expandedGroups.has(key));
   }
 
   function chooseView(nextView) {
@@ -601,18 +814,10 @@ export default function ActiveSessionsSidebar({
         onFocusCapture={() => onPanelFocus(currentPanel)}
       >
         <div className="sticky top-0 grid h-screen min-w-60 content-start gap-1 overflow-y-auto pr-1.5">
-          <div className="grid gap-2 border-b-4 border-accent px-2 pt-2 pb-2">
+          <div className="border-b-4 border-accent px-2 pt-2 pb-2">
             <div className="flex min-w-0 items-center gap-2">
               <BrandLogo className="size-11 shrink-0 drop-shadow-sm" />
               <h1 className="truncate text-2xl font-black tracking-tight">FritzWorks</h1>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button className="min-w-10 gap-1 px-2" aria-label={`New repository session on ${target?.name || 'Local'}`} title={`New repository session on ${target?.name || 'Local'}`} onClick={onNewRepo}>
-                <span className="text-lg leading-none" aria-hidden="true">+</span><AssetIcon name="git-branch" />
-              </Button>
-              <Button className="min-w-10 gap-1 px-2" aria-label={`New scratchpad session on ${target?.name || 'Local'}`} title={`New scratchpad session on ${target?.name || 'Local'}`} onClick={onNewScratchpad}>
-                <span className="text-lg leading-none" aria-hidden="true">+</span><AssetIcon name="folder" />
-              </Button>
             </div>
           </div>
           {view === 'sessions' ? (
@@ -622,7 +827,7 @@ export default function ActiveSessionsSidebar({
               </div>
               {targetSections.map((section) => {
                 const sectionId = section.target.id;
-                const collapsed = collapsedTargets.has(sectionId);
+                const collapsed = !expandedTargets.has(sectionId);
                 const navigationKey = targetNavigationKey(sectionId);
                 const highlighted = highlightedNavigationKey === navigationKey;
                 const selected = sectionId === currentTargetId;
@@ -637,7 +842,7 @@ export default function ActiveSessionsSidebar({
                       type="button"
                       className={`flex min-h-9 w-full items-center gap-1.5 border-y border-primary/30 px-2 py-1.5 text-left text-sm font-black transition-colors focus-visible:outline-2 focus-visible:outline-accent ${highlighted ? 'bg-row-highlight text-on-row-highlight outline-2 -outline-offset-2 outline-accent' : selected ? 'bg-soft text-on-soft' : 'text-primary hover:bg-soft hover:text-on-soft'}`}
                       aria-expanded={!collapsed}
-                      aria-label={`${section.target.name}; ${connectionLabel}; ${section.items.length + section.standaloneSessions.length} sessions`}
+                      aria-label={`${section.target.name}; ${connectionLabel}; ${section.panelGroups?.length ?? (section.items.length + section.standaloneSessions.length)} sessions`}
                       onClick={() => chooseTargetSection(sectionId)}
                       onFocus={() => setHighlightedNavigationKey(navigationKey)}
                     >
@@ -647,31 +852,108 @@ export default function ActiveSessionsSidebar({
                       <span className="truncate">{section.target.name}</span>
                       {section.loading
                         ? <Spinner className="ml-auto size-3.5" />
-                        : <span className={`ml-auto text-[0.65rem] font-normal tabular-nums ${highlighted ? 'text-on-row-highlight/70' : 'text-muted'}`}>{section.items.length + section.standaloneSessions.length}</span>}
+                        : <span className={`ml-auto text-[0.65rem] font-normal tabular-nums ${highlighted ? 'text-on-row-highlight/70' : 'text-muted'}`}>{section.panelGroups?.length ?? (section.items.length + section.standaloneSessions.length)}</span>}
                     </button>
                     <div className={`grid transition-[grid-template-rows,opacity] duration-200 ${collapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}>
                       <div className="min-h-0 overflow-hidden">
                         <div className="flex items-center gap-1.5 px-2 py-1.5" data-sidebar-session-actions={sectionId}>
                           <button
                             type="button"
-                            className="inline-flex min-h-7 flex-1 items-center justify-center gap-1 rounded-md border border-primary/60 px-2 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+                            className="inline-flex min-h-7 min-w-9 shrink-0 items-center justify-center gap-1 rounded-md border border-primary/60 px-2 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+                            aria-label={`New repository session on ${section.target.name}`}
+                            title={`New repository session on ${section.target.name}`}
+                            onClick={() => onNewRepo(sectionId)}
+                          ><span className="text-sm font-bold" aria-hidden="true">+</span><AssetIcon name="git-branch" className="size-3.5" /></button>
+                          <button
+                            type="button"
+                            className="inline-flex min-h-7 min-w-9 shrink-0 items-center justify-center gap-1 rounded-md border border-primary/60 px-2 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+                            aria-label={`New scratchpad session on ${section.target.name}`}
+                            title={`New scratchpad session on ${section.target.name}`}
+                            onClick={() => onNewScratchpad(sectionId)}
+                          ><span className="text-sm font-bold" aria-hidden="true">+</span><AssetIcon name="folder" className="size-3.5" /></button>
+                          <button
+                            type="button"
+                            className="inline-flex min-h-7 min-w-0 flex-1 items-center justify-center gap-1 overflow-hidden rounded-md border border-primary/60 px-1 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
                             aria-label={`New ${section.target.name} terminal`}
                             title={`New ${section.target.name} terminal`}
                             onClick={() => onCreateTerminal(sectionId)}
-                          ><span className="text-sm font-bold" aria-hidden="true">+</span><ShellIcon className="size-3.5" /> Terminal</button>
-                          <button
+                          ><span className="text-sm font-bold" aria-hidden="true">+</span><ShellIcon className="size-3.5 shrink-0" /><span className="truncate">Terminal</span></button>
+                          {!section.panelGroups && <button
                             type="button"
-                            className="inline-flex min-h-7 flex-1 items-center justify-center gap-1 rounded-md border border-primary/60 px-2 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
+                            className="inline-flex min-h-7 min-w-0 flex-1 items-center justify-center gap-1 overflow-hidden rounded-md border border-primary/60 px-1 text-xs font-semibold text-primary transition-colors hover:bg-soft hover:text-on-soft focus-visible:outline-2 focus-visible:outline-accent"
                             aria-label={`Open ${section.target.name} Markdown`}
                             title={`Open ${section.target.name} Markdown`}
                             onClick={() => onOpenMarkdown(sectionId)}
-                          ><span className="text-sm font-bold" aria-hidden="true">+</span><EditorIcon className="size-3.5" /> Markdown</button>
+                          ><span className="text-sm font-bold" aria-hidden="true">+</span><EditorIcon className="size-3.5 shrink-0" /><span className="truncate">Markdown</span></button>}
                         </div>
                         {section.error && <p className="m-1 rounded border border-danger/40 bg-danger/10 p-2 text-xs text-danger">{section.error}</p>}
-                        {!section.loading && !section.error && section.workstreamGroups.length === 0 && <p className="px-3 py-2 text-xs text-muted">No active or paused workstreams.</p>}
+                        {!section.loading && !section.error && section.workstreamGroups.length === 0 && (!section.panelGroups || section.panelGroups.length === 0) && <p className="px-3 py-2 text-xs text-muted">No active or paused workstreams.</p>}
+                        {section.panelGroupCollections?.map((collection) => {
+                          const collectionKey = groupNavigationKey(
+                            sectionId, 'panel-collection', collection.key,
+                          );
+                          const collectionCollapsed = !expandedGroups.has(collectionKey);
+                          const collectionHighlighted = highlightedNavigationKey === collectionKey;
+                          return (
+                            <section key={collection.key} className="min-w-0 pl-2">
+                              <button
+                                ref={(node) => {
+                                  if (node) navigationRows.current.set(collectionKey, node); else navigationRows.current.delete(collectionKey);
+                                }}
+                                type="button"
+                                data-sidebar-group={collection.label}
+                                className={`flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-sm font-bold transition-colors focus-visible:outline-2 focus-visible:outline-accent ${collectionHighlighted ? 'bg-row-highlight text-on-row-highlight outline-2 -outline-offset-2 outline-accent' : 'text-primary hover:bg-soft hover:text-on-soft'}`}
+                                aria-expanded={!collectionCollapsed}
+                                onClick={() => toggleGroup(
+                                  sectionId, 'panel-collection', collection.key,
+                                )}
+                                onFocus={() => setHighlightedNavigationKey(collectionKey)}
+                              >
+                                <ChevronIcon className={`size-3.5 transition-transform ${collectionCollapsed ? '-rotate-90' : ''}`} />
+                                <span className="truncate">{collection.label}</span>
+                                <span className={`ml-auto text-[0.65rem] font-normal tabular-nums ${collectionHighlighted ? 'text-on-row-highlight/70' : 'text-muted'}`}>{collection.groups.length}</span>
+                              </button>
+                              <div className={`grid transition-[grid-template-rows,opacity] duration-200 ${collectionCollapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}>
+                                <div className="min-h-0 overflow-hidden">
+                                  {collection.groups.map((group) => {
+                                    const itemKey = panelGroupNavigationKey(sectionId, group.id);
+                                    return (
+                                      <PanelGroupNode
+                                        key={group.id}
+                                        group={group}
+                                        session={group.session}
+                                        targetId={sectionId}
+                                        selected={section.activePanelGroupId === group.id}
+                                        highlighted={highlightedNavigationKey === itemKey}
+                                        collapsed={!expandedGroups.has(itemKey)}
+                                        navigationKey={itemKey}
+                                        onHighlight={setHighlightedNavigationKey}
+                                        onActivate={() => {
+                                          if (group.type === 'terminal') onActivateStandalone(sectionId, group.id);
+                                          else if (group.session) onActivate(sectionId, group.session);
+                                        }}
+                                        onToggle={() => togglePanelGroup(sectionId, group.id)}
+                                        onOpenResource={(resourceId) => onOpenResource(sectionId, resourceId)}
+                                        onMergeTerminalGroup={(sourceId, destinationId) => (
+                                          onGroupStandalone(sectionId, sourceId, destinationId)
+                                        )}
+                                        rowRef={(node) => {
+                                          if (node) navigationRows.current.set(itemKey, node); else navigationRows.current.delete(itemKey);
+                                        }}
+                                        resourceRowRef={(key, node) => {
+                                          if (node) navigationRows.current.set(key, node); else navigationRows.current.delete(key);
+                                        }}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </section>
+                          );
+                        })}
                         {section.groups.map((group) => {
                           const groupKey = groupNavigationKey(sectionId, group.kind, group.label);
-                          const groupCollapsed = collapsedGroups.has(groupKey);
+                          const groupCollapsed = !expandedGroups.has(groupKey);
                           const groupHighlighted = highlightedNavigationKey === groupKey;
                           return (
                             <section key={`${group.kind}:${group.label}`} className="min-w-0 pl-2">

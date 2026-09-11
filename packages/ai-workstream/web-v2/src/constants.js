@@ -56,6 +56,7 @@ export const TERMINAL_MODE_STORAGE_KEY = 'ai-workstream-terminal-mode';
 export const TERMINAL_FONT_STORAGE_KEY = 'ai-workstream-terminal-font';
 export const SYNC_WINDOW_FULLSCREEN_STORAGE_KEY = 'ai-workstream-sync-window-fullscreen';
 export const SIDEBAR_WIDTH_STORAGE_KEY = 'ai-workstream-sidebar-width';
+export const SIDEBAR_TREE_STORAGE_KEY = 'ai-workstream-sidebar-tree';
 export const STANDALONE_TERMINAL_DRAG_TYPE = 'application/x-fritzworks-terminal';
 // Every stack falls back to Symbols Nerd Font Mono, which supplies the Nerd Font
 // glyphs the chosen family does not have. Text still renders from the family

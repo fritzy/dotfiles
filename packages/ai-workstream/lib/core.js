@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
 import { CONFIG } from './config.js';
+import { initializePanelSchema } from './panels.js';
 
 export const HOME = CONFIG.home;
 export const GITHUB_ROOT = CONFIG.paths.repositories;
@@ -335,6 +336,7 @@ export function openDb(path = DB_PATH) {
       INSERT INTO workstream_events (workstream_id, type) VALUES (OLD.workstream_id, 'update_session');
     END;
   `);
+  initializePanelSchema(db);
   return db;
 }
 

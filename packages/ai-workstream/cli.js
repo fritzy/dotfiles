@@ -215,6 +215,101 @@ async function cmdList(args) {
   });
 }
 
+async function panelLayout() {
+  return (await requestLocalService('/panel-layout')).result;
+}
+
+async function panelMutation(path, method, body = {}) {
+  const layout = await panelLayout();
+  return (await requestLocalService(path, {
+    method,
+    body: { client: 'cli', revision: layout.revision, ...body },
+  })).result;
+}
+
+async function cmdPanels() {
+  const layout = await panelLayout();
+  console.log(`revision ${layout.revision}${layout.activeGroupId ? ` · active ${layout.activeGroupId}` : ''}`);
+  for (const group of layout.groups) {
+    console.log(`${group.id}  [${group.type}] ${group.label}`);
+    for (const panel of group.panels) {
+      console.log(`  ${panel.id}  ${panel.kind}${panel.minimized ? ' (minimized)' : ''}  ${panel.label}`);
+    }
+    for (const resource of group.resources) {
+      console.log(`  ${resource.id}  ${resource.kind} [${resource.source}]  ${resource.value}`);
+    }
+  }
+}
+
+async function cmdPanel(args) {
+  const [action, first, second, ...rest] = positionals(args, ['--label']);
+  if (!action || action === 'list') return cmdPanels();
+  if (action === 'group') {
+    return console.log(JSON.stringify(await panelMutation('/panel-layout/groups', 'POST', {
+      type: 'terminal', ...(first ? { label: [first, second, ...rest].filter(Boolean).join(' ') } : {}),
+    }), null, 2));
+  }
+  if (action === 'add') {
+    if (!first || !['terminal', 'ai'].includes(second)) {
+      die('usage: ws panel add <group-id> <terminal|ai> [--label <name>]');
+    }
+    return console.log(JSON.stringify(await panelMutation(
+      `/panel-layout/groups/${encodeURIComponent(first)}/panels`, 'POST',
+      { kind: second, ...(flagValue(args, '--label') ? { label: flagValue(args, '--label') } : {}) },
+    ), null, 2));
+  }
+  if (['minimize', 'restore'].includes(action)) {
+    if (!first) die(`usage: ws panel ${action} <panel-id>`);
+    return console.log(JSON.stringify(await panelMutation(
+      `/panel-layout/panels/${encodeURIComponent(first)}`, 'PUT',
+      { minimized: action === 'minimize' },
+    ), null, 2));
+  }
+  if (action === 'rename') {
+    const label = flagValue(args, '--label') || [second, ...rest].filter(Boolean).join(' ');
+    if (!first || !label) die('usage: ws panel rename <panel-id> <name>');
+    return console.log(JSON.stringify(await panelMutation(
+      `/panel-layout/panels/${encodeURIComponent(first)}`, 'PUT', { label },
+    ), null, 2));
+  }
+  if (action === 'close') {
+    if (!first) die('usage: ws panel close <panel-id>');
+    return console.log(JSON.stringify(await panelMutation(
+      `/panel-layout/panels/${encodeURIComponent(first)}/close`, 'POST',
+    ), null, 2));
+  }
+  die(`unknown panel action "${action}" (try: list | group | add | minimize | restore | rename | close)`);
+}
+
+async function cmdResource(args) {
+  const [action, first, second, ...rest] = positionals(args, ['--label']);
+  if (action === 'add') {
+    if (!first || !['link', 'markdown'].includes(second) || rest.length === 0) {
+      die('usage: ws resource add <group-id> <link|markdown> <value> [--label <name>]');
+    }
+    return console.log(JSON.stringify(await panelMutation(
+      `/panel-layout/groups/${encodeURIComponent(first)}/resources`, 'POST', {
+        kind: second,
+        value: rest.join(' '),
+        ...(flagValue(args, '--label') ? { label: flagValue(args, '--label') } : {}),
+      },
+    ), null, 2));
+  }
+  if (action === 'remove') {
+    if (!first) die('usage: ws resource remove <resource-id>');
+    return console.log(JSON.stringify(await panelMutation(
+      `/panel-layout/resources/${encodeURIComponent(first)}/disassociate`, 'POST',
+    ), null, 2));
+  }
+  if (action === 'open') {
+    if (!first) die('usage: ws resource open <resource-id>');
+    return console.log(JSON.stringify(await panelMutation(
+      `/panel-layout/resources/${encodeURIComponent(first)}/open`, 'POST',
+    ), null, 2));
+  }
+  die('unknown resource action (try: add | open | remove)');
+}
+
 async function cmdNew(args) {
   const positional = positionals(args);
   const orgRepo = positional[0] || await prompt('Repo (org/repo): ');
@@ -743,6 +838,13 @@ Usage:
                                    (scratchpads keep their dir by default; --delete removes it)
                                    (aliases: close, rm)
   ws rename [id|branch] <name>     Rename the FritzWorks display name
+  ws panels                        List panel groups, panels, resources, and revision
+  ws panel group [label]           Create and select a terminal-only group
+  ws panel add <group> <terminal|ai> [--label <name>]
+  ws panel minimize|restore|close <panel-id>
+  ws panel rename <panel-id> <name>
+  ws resource add <group> <link|markdown> <value> [--label <name>]
+  ws resource open|remove <resource-id>
   ws issue add <link...> [--ws X]       Link Linear/GitHub issues to a workstream
   ws issue remove <link> [--ws X]       Unlink an issue (by link or issue id)
   ws issue list [--ws X]                Show issues linked to a workstream
@@ -818,6 +920,9 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'resume': return cmdJoin(rest, 'resume');
     case 'pause': return cmdPause(rest);
     case 'rename': return cmdRename(rest);
+    case 'panels': return cmdPanels();
+    case 'panel': return cmdPanel(rest);
+    case 'resource': case 'resources': return cmdResource(rest);
     case 'archive': case 'close': case 'rm': return cmdArchive(rest);
     case 'issue': case 'issues': return cmdIssue(rest);
     case 'stack': return cmdStack(rest);

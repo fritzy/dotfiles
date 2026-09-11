@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-const MIN_PANEL_PIXELS = 160;
+export const MIN_PANEL_PIXELS = 320;
 
 export function defaultSplitBoundaries(count) {
   return Array.from({ length: Math.max(0, count - 1) }, (_, index) => ((index + 1) * 100) / count);
@@ -38,7 +38,7 @@ function SplitHandle({
   function constrainedValue(clientX) {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect?.width) return value;
-    const minimum = Math.min(25, Math.max(6, (MIN_PANEL_PIXELS / rect.width) * 100));
+    const minimum = Math.min(49, Math.max(6, (MIN_PANEL_PIXELS / rect.width) * 100));
     const lower = (boundaries[index - 1] ?? 0) + minimum;
     const upper = (boundaries[index + 1] ?? 100) - minimum;
     return Math.max(lower, Math.min(upper, ((clientX - rect.left) / rect.width) * 100));

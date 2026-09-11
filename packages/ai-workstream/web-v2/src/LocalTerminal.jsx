@@ -11,6 +11,9 @@ import { trackOsc52Clipboard } from './osc52-clipboard.js';
 import { useTarget } from './target-context.js';
 import { websocketReconnectDelay } from './websocket-retry.js';
 
+const TERMINAL_CONNECT_TIMEOUT_MS = 10_000;
+const TERMINAL_READY_TIMEOUT_MS = 20_000;
+
 const TERMINAL_THEMES = {
   dark: {
     background: '#0f172a',
@@ -60,7 +63,7 @@ function terminalTheme(mode) {
 
 export default function LocalTerminal({
   visible = true, sessionId = null, autoFocus = true, focused = null,
-  role = null, terminalId = 'default', onPanelNavigate = null, onNavigateUp = null, onNavigateDown = null,
+  role = null, terminalId = 'default', panelId = null, onPanelNavigate = null, onNavigateUp = null, onNavigateDown = null,
   onToggleFullscreen = null, onToggleSidebar = null, onNewTerminal = null, onExit = null,
   onControlReady = null,
   label = 'Local zsh terminal', className = '',
@@ -101,6 +104,8 @@ export default function LocalTerminal({
     let exited = false;
     let resizeFrame = null;
     let reconnectTimer = null;
+    let connectionTimer = null;
+    let readyTimer = null;
     let reconnectAttempt = 0;
     let socket = null;
     let ownedTerminal = false;
@@ -189,8 +194,15 @@ export default function LocalTerminal({
     const terminalQuery = new URLSearchParams();
     terminalQuery.set('client', browserClientId());
     terminalQuery.set('terminal', terminalId);
-    if (sessionId != null) terminalQuery.set('session', String(sessionId));
-    if (role) terminalQuery.set('role', role);
+    if (panelId) {
+      // The persisted panel is authoritative for its owner, role, and cwd.
+      // Omitting the redundant fields also keeps terminal-only group panels
+      // from looking like session-role terminals to the WebSocket endpoint.
+      terminalQuery.set('panel', panelId);
+    } else {
+      if (sessionId != null) terminalQuery.set('session', String(sessionId));
+      if (role) terminalQuery.set('role', role);
+    }
     const terminalUrl = () => {
       const reconnectQuery = new URLSearchParams(terminalQuery);
       if (ownedTerminal) reconnectQuery.set('owner', '1');
@@ -227,6 +239,9 @@ export default function LocalTerminal({
 
     const reconnect = () => {
       if (disposed || exited) return;
+      clearTimeout(connectionTimer);
+      clearTimeout(readyTimer);
+      clearTimeout(reconnectTimer);
       setStatus('reconnecting');
       reconnectTimer = setTimeout(connect, websocketReconnectDelay(reconnectAttempt));
       reconnectAttempt += 1;
@@ -243,13 +258,21 @@ export default function LocalTerminal({
       }
       socket = candidate;
       socketRef.current = candidate;
+      connectionTimer = setTimeout(() => {
+        if (disposed || candidate !== socket || candidate.readyState !== WebSocket.CONNECTING) return;
+        setStatus('connection timed out');
+        try { candidate.close(); } catch { reconnect(); }
+      }, TERMINAL_CONNECT_TIMEOUT_MS);
       candidate.addEventListener('open', () => {
         if (disposed || candidate !== socket) return;
+        clearTimeout(connectionTimer);
         reconnectAttempt = 0;
-        setStatus('connected');
-        scheduleResize();
-        const shouldFocus = focusedRef.current == null ? autoFocusRef.current : focusedRef.current;
-        if (visibleRef.current && shouldFocus) terminal.focus();
+        setStatus('starting terminal');
+        readyTimer = setTimeout(() => {
+          if (disposed || candidate !== socket || ownedTerminal) return;
+          setStatus('terminal startup timed out');
+          candidate.close();
+        }, TERMINAL_READY_TIMEOUT_MS);
       });
       candidate.addEventListener('message', (event) => {
         if (disposed || candidate !== socket) return;
@@ -257,15 +280,23 @@ export default function LocalTerminal({
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === 'output' && typeof message.data === 'string') terminal.write(message.data);
         if (message.type === 'claimed') {
+          clearTimeout(readyTimer);
           ownedTerminal = true;
           setStatus('connected');
           scheduleResize();
+          const shouldFocus = focusedRef.current == null ? autoFocusRef.current : focusedRef.current;
+          if (visibleRef.current && shouldFocus) terminal.focus();
         }
         if (message.type === 'busy') {
+          clearTimeout(readyTimer);
           ownedTerminal = false;
           setStatus('active on another client');
         }
-        if (message.type === 'error') terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
+        if (message.type === 'error') {
+          clearTimeout(readyTimer);
+          setStatus('terminal error');
+          terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
+        }
         if (message.type === 'exit') {
           exited = true;
           clearTimeout(reconnectTimer);
@@ -276,6 +307,8 @@ export default function LocalTerminal({
       });
       candidate.addEventListener('close', () => {
         if (candidate !== socket) return;
+        clearTimeout(connectionTimer);
+        clearTimeout(readyTimer);
         if (socketRef.current === candidate) socketRef.current = null;
         socket = null;
         reconnect();
@@ -292,6 +325,8 @@ export default function LocalTerminal({
       disposed = true;
       if (resizeFrame != null) cancelAnimationFrame(resizeFrame);
       clearTimeout(reconnectTimer);
+      clearTimeout(connectionTimer);
+      clearTimeout(readyTimer);
       resizeObserver.disconnect();
       input.dispose();
       osc52Clipboard.dispose();
@@ -302,7 +337,7 @@ export default function LocalTerminal({
       if (fitRef.current === fit) fitRef.current = null;
       socketRef.current = null;
     };
-  }, [generation, role, sessionId, target, terminalId]);
+  }, [generation, panelId, role, sessionId, target, terminalId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -368,7 +403,6 @@ export default function LocalTerminal({
         <button
           type="button"
           className="absolute top-3 right-3 rounded-md border border-primary bg-page/90 px-2 py-1 text-xs font-semibold text-primary shadow-sm hover:bg-soft hover:text-on-soft disabled:cursor-wait disabled:opacity-70"
-          disabled={status === 'connecting'}
           onClick={() => {
             if (status === 'active on another client' && socketRef.current?.readyState === WebSocket.OPEN) {
               socketRef.current.send(JSON.stringify({ type: 'takeover' }));
@@ -377,7 +411,7 @@ export default function LocalTerminal({
             }
           }}
           title={status === 'active on another client' ? 'Take over this terminal' : undefined}
-        >{status === 'connecting' ? 'connecting…'
+        >{status === 'connecting' ? 'connecting… · retry now'
             : status === 'active on another client' ? 'Active on another client · waiting'
               : status === 'reconnecting' ? 'reconnecting… · retry now'
               : `${status} · reconnect`}</button>

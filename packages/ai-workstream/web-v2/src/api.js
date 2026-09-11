@@ -31,6 +31,65 @@ export function writeBrowserState(scope, state, target) {
   }, target);
 }
 
+export function readPanelLayout(signal, target) {
+  return request('/panel-layout', { signal }, target);
+}
+
+function panelMutation(path, method, revision, body = {}, target) {
+  return request(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client: browserClientId(), revision, ...body }),
+  }, target);
+}
+
+export const activatePanelGroup = (groupId, revision, target) => panelMutation(
+  `/panel-layout/groups/${encodeURIComponent(groupId)}/activate`, 'POST', revision, {}, target,
+);
+
+export const createTerminalGroup = (revision, target) => panelMutation(
+  '/panel-layout/groups', 'POST', revision, { type: 'terminal', activate: true }, target,
+);
+
+export const changePanelGroup = (groupId, changes, revision, target) => panelMutation(
+  `/panel-layout/groups/${encodeURIComponent(groupId)}`, 'PUT', revision, changes, target,
+);
+
+export const createGroupPanel = (groupId, kind, revision, target, options = {}) => panelMutation(
+  `/panel-layout/groups/${encodeURIComponent(groupId)}/panels`, 'POST', revision,
+  { kind, ...options }, target,
+);
+
+export const mergeTerminalGroups = (sourceGroupId, destinationGroupId, revision, target) => panelMutation(
+  `/panel-layout/groups/${encodeURIComponent(destinationGroupId)}/merge`, 'POST', revision,
+  { sourceGroupId }, target,
+);
+
+export const changePanel = (panelId, changes, revision, target) => panelMutation(
+  `/panel-layout/panels/${encodeURIComponent(panelId)}`, 'PUT', revision, changes, target,
+);
+
+export const closePanel = (panelId, revision, target) => panelMutation(
+  `/panel-layout/panels/${encodeURIComponent(panelId)}/close`, 'POST', revision, {}, target,
+);
+
+export const savePanelOrder = (groupId, panelIds, widths, revision, target) => panelMutation(
+  `/panel-layout/groups/${encodeURIComponent(groupId)}/order`, 'PUT', revision,
+  { panelIds, widths }, target,
+);
+
+export const associateResource = (groupId, resource, revision, target) => panelMutation(
+  `/panel-layout/groups/${encodeURIComponent(groupId)}/resources`, 'POST', revision, resource, target,
+);
+
+export const disassociateResource = (resourceId, options, revision, target) => panelMutation(
+  `/panel-layout/resources/${encodeURIComponent(resourceId)}/disassociate`, 'POST', revision, options, target,
+);
+
+export const openPanelResource = (resourceId, revision, target, options = {}) => panelMutation(
+  `/panel-layout/resources/${encodeURIComponent(resourceId)}/open`, 'POST', revision, options, target,
+);
+
 async function request(path, options = {}, target) {
   const response = await fetch(`${target?.url || ''}${path}`, options);
   let body;

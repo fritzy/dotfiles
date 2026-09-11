@@ -29,7 +29,8 @@ export default function TerminalPanel({
   panelName, label, title = label, titleContent = null, Icon,
   shown = true, visible = true, focused = false, fullscreen = false,
   onPanelFocus, onToggleFullscreen, onFontSizeChange, headerActions = null, headerMessage = null,
-  terminalKey, target, sessionId = null, role = null, terminalId = 'default',
+  headerProps = null,
+  terminalKey, target, sessionId = null, role = null, terminalId = 'default', persistentPanelId = null,
   fontSize = DEFAULT_TERMINAL_FONT_SIZE, fontFamily, themeMode,
   autoFocus = false, onPanelNavigate, onToggleSidebar, onNewTerminal,
   onControlReady, onExit, terminalLabel = label,
@@ -50,7 +51,10 @@ export default function TerminalPanel({
       onPointerDownCapture={focusPanel}
       onFocusCapture={focusPanel}
     >
-      <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-primary/30 px-2 font-mono text-xs font-bold text-primary">
+      <div
+        {...headerProps}
+        className={`flex h-8 shrink-0 items-center gap-1.5 border-b border-primary/30 px-2 font-mono text-xs font-bold text-primary ${headerProps?.className || ''}`}
+      >
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <TargetIcon target={target} className="size-3.5" />
           {Icon && <Icon className="size-3.5" />}
@@ -79,6 +83,7 @@ export default function TerminalPanel({
             sessionId={sessionId}
             role={role}
             terminalId={terminalId}
+            panelId={persistentPanelId}
             fontSize={fontSize}
             fontFamily={fontFamily}
             themeMode={themeMode}

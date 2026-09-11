@@ -183,6 +183,8 @@ export default function App() {
           && previous.selectedId === state.selectedId
           && previous.standaloneSessions === state.standaloneSessions
           && previous.activeStandaloneId === state.activeStandaloneId
+          && previous.panelGroups === state.panelGroups
+          && previous.activePanelGroupId === state.activePanelGroupId
           && previous.keyboardEnabled === state.keyboardEnabled) return current;
       return { ...current, [id]: state };
     });
@@ -208,9 +210,10 @@ export default function App() {
     paneControllers.current.get(targetId)?.openSession(id);
   }, [selectTarget]);
 
-  const openNewSession = useCallback((kind) => {
-    paneControllers.current.get(currentTargetId)?.openNewSession(kind);
-  }, [currentTargetId]);
+  const openNewSession = useCallback((targetId, kind) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.openNewSession(kind);
+  }, [selectTarget]);
 
   const activateStandalone = useCallback((targetId, id) => {
     selectTarget(targetId);
@@ -239,6 +242,11 @@ export default function App() {
   const openMarkdown = useCallback((targetId) => {
     selectTarget(targetId);
     paneControllers.current.get(targetId)?.openMarkdown();
+  }, [selectTarget]);
+
+  const openResource = useCallback((targetId, resourceId) => {
+    selectTarget(targetId);
+    paneControllers.current.get(targetId)?.openResource(resourceId);
   }, [selectTarget]);
 
   const resetCurrentTargetTerminals = useCallback(() => {
@@ -274,6 +282,8 @@ export default function App() {
     selectedId: sidebarStates[target.id]?.selectedId ?? null,
     standaloneSessions: sidebarStates[target.id]?.standaloneSessions || [],
     activeStandaloneId: sidebarStates[target.id]?.activeStandaloneId ?? null,
+    panelGroups: sidebarStates[target.id]?.panelGroups || null,
+    activePanelGroupId: sidebarStates[target.id]?.activePanelGroupId ?? null,
   })), [connections, sidebarStates, targets]);
 
   return (
@@ -297,9 +307,10 @@ export default function App() {
               onMinimizeStandalone={minimizeStandalone}
               onCreateTerminal={createTerminal}
               onOpenMarkdown={openMarkdown}
+              onOpenResource={openResource}
               onToggle={toggleSidebar}
-              onNewRepo={() => openNewSession('repo')}
-              onNewScratchpad={() => openNewSession('scratchpad')}
+              onNewRepo={(targetId) => openNewSession(targetId, 'repo')}
+              onNewScratchpad={(targetId) => openNewSession(targetId, 'scratchpad')}
               theme={theme}
               onThemeChange={setTheme}
               terminalMode={terminalMode}

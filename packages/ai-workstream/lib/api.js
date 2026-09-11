@@ -94,6 +94,29 @@ import {
 } from './notes-files.js';
 import { DAEMON_REVISION } from './daemon.js';
 import { spawnZellijAttachTerminal } from './pty.js';
+import {
+  PanelModelError,
+  activatePanelGroup,
+  addPanel,
+  addResource,
+  createPanelGroup,
+  deactivatePanelGroup,
+  ensureSessionPanelGroup,
+  mergeTerminalGroups,
+  migrateLegacyPanelState,
+  openResourcePanel,
+  readPanelLayout,
+  removePanel,
+  removeResource,
+  reorderPanels,
+  syncDiscoveredSessionNotes,
+  syncIssueResources,
+  syncSessionPanelGroups,
+  terminalPanelDescriptor,
+  terminalPanelsForOwner,
+  updatePanelGroup,
+  updatePanel,
+} from './panels.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
@@ -868,7 +891,7 @@ function staticFile(res, path, contentType, headOnly = false) {
     'Cache-Control': 'no-store',
     // img-src is widened so markdown previews can show images a note links to;
     // everything else stays same-origin (plus the configured daemons above).
-    'Content-Security-Policy': `default-src 'self'; connect-src 'self' ws: wss: ${DAEMON_CONNECT_SRC}; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:`,
+    'Content-Security-Policy': `default-src 'self'; connect-src 'self' ws: wss: ${DAEMON_CONNECT_SRC}; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-src 'self' https: http:`,
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(headOnly ? undefined : body);
@@ -937,6 +960,7 @@ function consumeWebSocketFrames(socket, initial = Buffer.alloc(0), onMessage = n
       const opcode = buffered[0] & 0x0f;
       buffered = buffered.subarray(offset + 4 + length);
       if (opcode === 0x8) {
+        socket.emit('ws-close-frame');
         socket.write(encodeWebSocketFrame(payload, 0x8));
         return socket.end();
       }
@@ -979,6 +1003,10 @@ export function createApiService({
 } = {}) {
   const db = suppliedDb || openDb();
   const ownsDb = !suppliedDb;
+  migrateLegacyPanelState(db, { dataDir, config, cwd });
+  syncSessionPanelGroups(db, stateItems(db, { cwd, config, terminalSessionIds: [] }));
+  syncIssueResources(db);
+  syncDiscoveredSessionNotes(db, notesRoot);
   const clients = new Set();
   const terminalClients = new Map();
   const terminalOwners = new Map();
@@ -1026,6 +1054,9 @@ export function createApiService({
   const broadcast = (message) => {
     for (const socket of clients) send(socket, message);
   };
+  const broadcastPanelLayout = (clientId = 'service') => {
+    broadcast({ type: 'panel_layout', clientId, revision: readPanelLayout(db).revision });
+  };
   const setBrowserWorkspaceOpen = (sessionId, open, panels = DEFAULT_BROWSER_PANELS) => {
     const id = String(sessionId);
     const current = readBrowserUiState(db, 'workspaces').state;
@@ -1043,6 +1074,16 @@ export function createApiService({
     const state = { ...current, workspaces, activeWorkspaceId };
     const saved = writeBrowserUiState(db, 'workspaces', state, { updatedAt: clock() });
     broadcast({ type: 'browser_state', scope: 'workspaces', clientId: 'service' });
+    const item = stateItems(db, { cwd, config, terminalSessionIds: terminalSessionIds() })
+      .find((candidate) => String(candidate.id) === id);
+    if (item) {
+      const roles = panels.includes('editor') ? ['shell', 'editor', 'agent'] : ['shell', 'agent'];
+      const { group } = ensureSessionPanelGroup(db, item, { roles, bump: true });
+      if (open) activatePanelGroup(db, group.id, readPanelLayout(db).revision);
+      else deactivatePanelGroup(db, group.id, readPanelLayout(db).revision);
+      syncIssueResources(db);
+      broadcastPanelLayout();
+    }
     return saved;
   };
   const broadcastChanges = () => {
@@ -1072,14 +1113,21 @@ export function createApiService({
     const count = browserTerminalCounts.get(id) || 0;
     browserTerminalCounts.set(id, count + 1);
     if (count > 0) return;
-    if (config.locations?.[id]) {
-      broadcastMiscChanges();
-      return;
+    try {
+      if (config.locations?.[id]) {
+        broadcastMiscChanges();
+        return;
+      }
+      const row = resolveRow(db, id);
+      if (!row || row.status === 'closed') return;
+      setStatus(db, row.id, 'active', true);
+      broadcastChanges();
+    } catch (error) {
+      // Terminal ownership is authoritative even if a short-lived hook has the
+      // database locked. The poller will reconcile the display status later;
+      // failing this bookkeeping must never tear down a healthy terminal.
+      if (!closing) process.stderr.write(`ai-workstream terminal status: ${error.message}\n`);
     }
-    const row = resolveRow(db, id);
-    if (!row || row.status === 'closed') return;
-    setStatus(db, row.id, 'active', true);
-    broadcastChanges();
   };
 
   const unregisterBrowserTerminal = (sessionId) => {
@@ -1091,14 +1139,18 @@ export function createApiService({
       return;
     }
     browserTerminalCounts.delete(id);
-    if (config.locations?.[id]) {
-      broadcastMiscChanges();
-      return;
+    try {
+      if (config.locations?.[id]) {
+        broadcastMiscChanges();
+        return;
+      }
+      const row = resolveRow(db, id);
+      if (!row || row.status !== 'active') return;
+      setStatus(db, row.id, 'paused');
+      broadcastChanges();
+    } catch (error) {
+      if (!closing) process.stderr.write(`ai-workstream terminal status: ${error.message}\n`);
     }
-    const row = resolveRow(db, id);
-    if (!row || row.status !== 'active') return;
-    setStatus(db, row.id, 'paused');
-    broadcastChanges();
   };
 
   const disposeTerminalClient = (socket, { kill = true, claim = true } = {}) => {
@@ -1162,18 +1214,32 @@ export function createApiService({
   // agents stops only the agent role. Best-effort cleanup must not make the
   // original command fail.
   const stopPersistentTerminalSessions = (sessionId, role = null) => {
-    const roles = role ? [role] : PANEL_ROLES;
-    for (const terminalRole of roles) {
-      try { killTerminalSession({ sessionId: String(sessionId), role: terminalRole }); }
+    const descriptors = terminalPanelsForOwner(db, sessionId, { role });
+    const legacyClient = [...terminalClients.values()].some((current) => (
+      current.sessionId === String(sessionId) && !current.managedPanel
+    ));
+    const identities = descriptors.map(({ identity }) => identity);
+    if (!descriptors.length || legacyClient) {
+      identities.push(...(role ? [role] : PANEL_ROLES).map((terminalRole) => ({
+        sessionId: String(sessionId), role: terminalRole,
+      })));
+    }
+    const unique = new Map(identities.map((identity) => [browserTerminalSessionName(identity), identity]));
+    for (const identity of unique.values()) {
+      try { killTerminalSession(identity); }
       catch (error) {
-        process.stderr.write(`ai-workstream: could not stop ${terminalRole} terminal session for "${sessionId}": ${error.message}\n`);
+        process.stderr.write(`ai-workstream: could not stop terminal session for "${sessionId}": ${error.message}\n`);
       }
     }
   };
 
-  const resetPersistentTerminalSessions = (sessionId) => PANEL_ROLES.map((role) => (
-    resetTerminalSession({ sessionId: String(sessionId), role })
-  ));
+  const resetPersistentTerminalSessions = (sessionId) => {
+    const descriptors = terminalPanelsForOwner(db, sessionId);
+    const identities = descriptors.length
+      ? descriptors.map(({ identity }) => identity)
+      : PANEL_ROLES.map((role) => ({ sessionId: String(sessionId), role }));
+    return identities.map((identity) => resetTerminalSession(identity));
+  };
 
   const terminateBrowserTerminal = (terminalSession, identity) => {
     for (const [clientSocket, current] of [...terminalClients]) {
@@ -1473,6 +1539,69 @@ export function createApiService({
     throw new ApiError(404, 'not found');
   };
 
+  const panelRoute = async (req, res, url) => {
+    const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
+    const body = req.method === 'GET' ? {} : await jsonBody(req);
+    const clientId = browserId(body.client, 'client', 'service');
+    try {
+      let result;
+      if (req.method === 'GET' && parts.length === 1) {
+        const sessionSync = syncSessionPanelGroups(db, stateItems(db, {
+          cwd, config, terminalSessionIds: terminalSessionIds(),
+        }));
+        const issueSync = syncIssueResources(db);
+        const noteSync = syncDiscoveredSessionNotes(db, notesRoot);
+        if (sessionSync.changed || issueSync.changed || noteSync.changed) broadcastPanelLayout();
+        return json(res, 200, readPanelLayout(db));
+      }
+      if (req.method === 'POST' && parts[1] === 'groups' && parts.length === 2) {
+        result = createPanelGroup(db, body, body.revision);
+      } else if (req.method === 'PUT' && parts[1] === 'groups' && parts.length === 3) {
+        result = updatePanelGroup(db, parts[2], body, body.revision);
+      } else if (req.method === 'POST' && parts[1] === 'groups' && parts[3] === 'activate' && parts.length === 4) {
+        result = activatePanelGroup(db, parts[2], body.revision);
+      } else if (req.method === 'POST' && parts[1] === 'groups' && parts[3] === 'panels' && parts.length === 4) {
+        result = addPanel(db, parts[2], body, body.revision);
+      } else if (req.method === 'POST' && parts[1] === 'groups' && parts[3] === 'merge' && parts.length === 4) {
+        result = mergeTerminalGroups(db, body.sourceGroupId, parts[2], body.revision);
+      } else if (req.method === 'PUT' && parts[1] === 'groups' && parts[3] === 'order' && parts.length === 4) {
+        result = reorderPanels(db, parts[2], body, body.revision);
+      } else if (req.method === 'POST' && parts[1] === 'groups' && parts[3] === 'resources' && parts.length === 4) {
+        result = addResource(db, parts[2], body, body.revision, { cwd, home: config.home });
+      } else if (req.method === 'PUT' && parts[1] === 'panels' && parts.length === 3) {
+        result = updatePanel(db, parts[2], body, body.revision);
+      } else if (req.method === 'POST' && parts[1] === 'panels' && parts[3] === 'close' && parts.length === 4) {
+        const descriptor = terminalPanelDescriptor(db, parts[2]);
+        result = removePanel(db, parts[2], body.revision);
+        terminateBrowserTerminal(browserTerminalSessionName(descriptor.identity), descriptor.identity);
+      } else if (req.method === 'POST' && parts[1] === 'resources' && parts[3] === 'open' && parts.length === 4) {
+        result = openResourcePanel(db, parts[2], body, body.revision);
+      } else if (req.method === 'POST' && parts[1] === 'resources' && parts[3] === 'disassociate' && parts.length === 4) {
+        result = removeResource(db, parts[2], body, body.revision);
+        if (result.resource.kind === 'link' && result.resource.source === 'legacy') {
+          const group = readPanelLayout(db).groups.find((item) => item.id === result.resource.groupId);
+          if (group?.ownerId && /^\d+$/.test(group.ownerId)) {
+            for (const issue of listIssues(db, Number(group.ownerId))) {
+              let normalized = issue.ref;
+              try { normalized = new URL(issue.ref).href; } catch { /* non-URL legacy reference */ }
+              if (normalized === result.resource.value) removeIssue(db, Number(group.ownerId), issue.ref);
+            }
+            broadcastChanges();
+          }
+        }
+      } else {
+        throw new ApiError(404, 'not found');
+      }
+      broadcastPanelLayout(clientId);
+      return json(res, 200, { ok: true, ...result });
+    } catch (error) {
+      if (error instanceof PanelModelError) {
+        throw new ApiError(error.status, error.message, error.details);
+      }
+      throw error;
+    }
+  };
+
   const server = createServer((req, res) => {
     Promise.resolve().then(async () => {
       const corsOrigin = loopbackOrigin(req);
@@ -1537,6 +1666,18 @@ export function createApiService({
         }
         const result = writeBrowserUiState(db, scope, body.state);
         broadcast({ type: 'browser_state', scope, clientId });
+        if (scope === 'workspaces') {
+          for (const spec of Array.isArray(body.state.workspaces) ? body.state.workspaces : []) {
+            const item = stateItems(db, { cwd, config, terminalSessionIds: terminalSessionIds() })
+              .find((candidate) => String(candidate.id) === String(spec?.id));
+            if (!item) continue;
+            ensureSessionPanelGroup(db, item, {
+              roles: spec.panelMode === 'three' ? ['shell', 'editor', 'agent'] : ['shell', 'agent'],
+              bump: true,
+            });
+          }
+          broadcastPanelLayout(clientId);
+        }
         return json(res, 200, result);
       }
       if (req.method === 'GET' && url.pathname === '/ws/events') {
@@ -1580,6 +1721,9 @@ export function createApiService({
       if (url.pathname.startsWith('/markdown/')) {
         return await markdownRoute(req, res, url);
       }
+      if (url.pathname === '/panel-layout' || url.pathname.startsWith('/panel-layout/')) {
+        return await panelRoute(req, res, url);
+      }
 
       const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
       if (req.method === 'POST' && parts[0] === 'ws' && parts[1] === 'digest' && parts.length === 2) {
@@ -1606,6 +1750,7 @@ export function createApiService({
         const body = await jsonBody(req);
         const result = createWorkstreamNote(db, parts[1], body, { notesRoot });
         broadcast({ id: result.workstream.id, type: 'update_session' });
+        if (syncDiscoveredSessionNotes(db, notesRoot).changed) broadcastPanelLayout();
         return json(res, 201, result);
       }
       if (req.method === 'GET' && parts[0] === 'ws' && parts[2] === 'notes' && parts.length === 3) {
@@ -1707,7 +1852,7 @@ export function createApiService({
           && browserTerminalConnected(parts[1], 'agent');
         const result = executeWorkstreamCommand(db, parts[1], parts[2], body, {
           cwd, config, terminalSessionIds: terminalSessionIds(),
-          openPath,
+          openPath, writeSeed: writeSessionSeed,
         });
         if (parts[2] === 'agent-set' && result.result.changed) {
           result.result.replaced = browserAgentConnected;
@@ -1720,8 +1865,8 @@ export function createApiService({
           }, { cwd, config, terminalSessionIds: terminalSessionIds() }).items[0];
         }
         if (parts[2] === 'pause' || parts[2] === 'archive' || parts[2] === 'close') {
-          closeBrowserTerminals(parts[1]);
           stopPersistentTerminalSessions(parts[1]);
+          closeBrowserTerminals(parts[1]);
         }
         if (parts[2] === 'agent-set' && result.result.changed) {
           closeBrowserTerminals(parts[1], 'agent');
@@ -1750,6 +1895,14 @@ export function createApiService({
           result.browserWorkspace = { opened: false };
         }
         broadcastChanges();
+        if (parts[2] === 'rename') {
+          const groupSync = syncSessionPanelGroups(db, [result.workstream]);
+          if (groupSync.changed) broadcastPanelLayout();
+        }
+        if (parts[2] === 'issue-add' || parts[2] === 'issue-remove') {
+          syncIssueResources(db);
+          broadcastPanelLayout();
+        }
         if (result.workstream.type === 'misc') broadcastMiscChanges();
         json(res, 200, result);
         scheduleGitRefresh([result.workstream]);
@@ -1800,12 +1953,13 @@ export function createApiService({
     let terminalDescriptor = null;
     if (terminalUpgrade) {
       try {
+        const requestedPanelId = requestUrl.searchParams.get('panel');
         const requestedSessionId = requestUrl.searchParams.get('session');
         const requestedRole = requestUrl.searchParams.get('role');
         if (requestedRole && !PANEL_ROLES.includes(requestedRole)) {
           throw new ApiError(400, `role must be one of: ${PANEL_ROLES.join(', ')}`);
         }
-        if (requestedRole && !requestedSessionId) {
+        if (requestedRole && !requestedSessionId && !requestedPanelId) {
           throw new ApiError(400, 'role requires a workstream session');
         }
         const clientId = browserId(requestUrl.searchParams.get('client'), 'client', 'legacy');
@@ -1814,8 +1968,21 @@ export function createApiService({
         let terminalCwd = process.env.HOME || cwd;
         let workstream = null;
         let terminalSessionId = null;
-        const terminalRole = requestedRole || 'shell';
-        if (requestedSessionId) {
+        let terminalRole = requestedRole || 'shell';
+        let identity = null;
+        if (requestedPanelId) {
+          const descriptor = terminalPanelDescriptor(db, browserId(requestedPanelId, 'panel'));
+          identity = descriptor.identity;
+          terminalRole = descriptor.panel.terminalRole || (descriptor.panel.kind === 'ai' ? 'agent' : 'shell');
+          terminalSessionId = descriptor.group.owner_id == null ? null : String(descriptor.group.owner_id);
+          terminalCwd = descriptor.group.path || terminalCwd;
+          if (terminalSessionId != null) {
+            workstream = queryWorkstreams(db, { id: terminalSessionId, status: 'all' }, {
+              cwd, config, terminalSessionIds: terminalSessionIds(),
+            }).items[0];
+            if (!workstream) throw new ApiError(404, `no session for panel "${requestedPanelId}"`);
+          }
+        } else if (requestedSessionId) {
           workstream = queryWorkstreams(db, { id: requestedSessionId, status: 'all' }, {
             cwd, config, terminalSessionIds: terminalSessionIds(),
           }).items[0];
@@ -1829,6 +1996,12 @@ export function createApiService({
           terminalSessionId = String(workstream.id);
           terminalCwd = workstream.path;
         }
+        if (workstream?.status === 'closed') {
+          throw new ApiError(409, `workstream "${terminalSessionId}" must be reopened before starting a terminal`);
+        }
+        if (!existsSync(terminalCwd)) {
+          throw new ApiError(409, `terminal directory does not exist: ${terminalCwd}`);
+        }
         const seedFile = terminalRole === 'agent' && workstream
           ? join(dataDir, 'seeds', `${workstream.id}.md`)
           : null;
@@ -1836,7 +2009,7 @@ export function createApiService({
           ? readFileSync(seedFile, 'utf8')
           : null;
         const launch = browserTerminalLaunch(terminalRole, workstream, config, seedContent);
-        const identity = { sessionId: terminalSessionId, role: terminalRole, terminalId };
+        identity ||= { sessionId: terminalSessionId, role: terminalRole, terminalId };
         // The daemon is commonly launched from a desktop entry, where TERM is
         // either absent or "dumb". These commands run in a real xterm.js-backed
         // PTY, so give shells and terminal UIs the capabilities they actually
@@ -1845,7 +2018,8 @@ export function createApiService({
           'env',
           'TERM=xterm-256color',
           'COLORTERM=truecolor',
-          ...(terminalSessionId ? [`AI_WORKSTREAM_ID=${terminalSessionId}`] : []),
+          ...(terminalSessionId && workstream?.type !== 'misc'
+            ? [`AI_WORKSTREAM_ID=${terminalSessionId}`] : []),
           launch.command,
           ...launch.args,
         ];
@@ -1854,6 +2028,7 @@ export function createApiService({
           command,
           cwd: terminalCwd,
           identity,
+          managedPanel: Boolean(requestedPanelId),
           role: terminalRole,
           reconnectOwner,
           seedFile: seedContent ? seedFile : null,
@@ -1894,8 +2069,10 @@ export function createApiService({
     const disposeTerminal = () => {
       disposeTerminalClient(socket);
     };
+    socket.on('end', disposeTerminal);
     socket.on('close', disposeTerminal);
     socket.on('error', disposeTerminal);
+    socket.on('ws-close-frame', disposeTerminal);
     consumeWebSocketFrames(socket, head, (payload, opcode) => {
       if (opcode !== 0x1) return;
       let message;
@@ -1930,7 +2107,11 @@ export function createApiService({
       }
       send(socket, { type: 'error', message: 'unsupported terminal message' });
     });
-    attachTerminalClient(socket);
+    // Let the 101 response reach the browser before Zellij startup work. This
+    // keeps the socket out of WebSocket.CONNECTING while a new persistent
+    // session is being created and gives the client a chance to report/retry a
+    // slow terminal startup separately from the network handshake.
+    setImmediate(() => attachTerminalClient(socket));
   });
 
   const timer = pollInterval > 0 ? setInterval(() => {

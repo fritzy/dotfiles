@@ -374,6 +374,25 @@ test('HTTP service exposes daemon-side stack, note, digest, and config routes', 
     body: JSON.stringify({ date: 'tomorrow' }),
   });
   assert.equal(invalidDigest.status, 400);
+
+  const initialLayout = await (await fetch(`${base}/panel-layout`)).json();
+  const createdGroupResponse = await fetch(`${base}/panel-layout/groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'terminal', revision: initialLayout.revision }),
+  });
+  assert.equal(createdGroupResponse.status, 200);
+  const createdGroup = await createdGroupResponse.json();
+  const renamedGroupResponse = await fetch(`${base}/panel-layout/groups/${createdGroup.groupId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label: 'Build logs', revision: createdGroup.revision }),
+  });
+  assert.equal(renamedGroupResponse.status, 200);
+  const renamedGroup = await renamedGroupResponse.json();
+  assert.equal(renamedGroup.group.label, 'Build logs');
+  const updatedLayout = await (await fetch(`${base}/panel-layout`)).json();
+  assert.equal(updatedLayout.groups.find((group) => group.id === createdGroup.groupId).label, 'Build logs');
 });
 
 test('path opener invokes xdg-open without shell interpolation', () => {
@@ -1186,10 +1205,12 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     browserTerminalSessionName({ sessionId: 'dotfiles', role: 'agent' }),
   ]);
   dotfilesTerminalSocket = new WebSocket(`ws://127.0.0.1:${port}/ws/terminal?session=dotfiles&role=agent`);
+  const replacementDotfilesAgentClaimed = nextTerminalMessage(dotfilesTerminalSocket, 'claimed');
   await new Promise((resolve, reject) => {
     dotfilesTerminalSocket.addEventListener('open', resolve, { once: true });
     dotfilesTerminalSocket.addEventListener('error', () => reject(new Error('replacement configured terminal websocket failed')), { once: true });
   });
+  await replacementDotfilesAgentClaimed;
   assert.deepEqual(ensuredTerminalSessions.at(-1).command.slice(0, 4), [
     'env', 'TERM=xterm-256color', 'COLORTERM=truecolor', 'sh',
   ]);
@@ -1207,9 +1228,12 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal((await dotfilesPaused.json()).workstream.status, 'paused');
   await dotfilesTerminalClosed;
   assert.deepEqual(await dotfilesPausePromise, { id: 'dotfiles', type: 'update_session' });
-  assert.deepEqual(killedTerminalNames().slice(-3), ['shell', 'editor', 'agent'].map((role) => (
-    browserTerminalSessionName({ sessionId: 'dotfiles', role })
-  )));
+  assert.deepEqual(
+    killedTerminalNames().slice(-3).sort(),
+    ['shell', 'editor', 'agent'].map((role) => (
+      browserTerminalSessionName({ sessionId: 'dotfiles', role })
+    )).sort(),
+  );
 
   const notesResumed = await fetch(`${base}/ws/notes/resume`, {
     method: 'POST',
@@ -1359,6 +1383,59 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
     result: { count: 2, sessions: ['ws-browser-shell-7', 'ws-browser-agent-7'] },
   });
   assert.equal(resetAllCalls, 1);
+
+  const panelLayout = await (await fetch(`${base}/panel-layout`)).json();
+  const terminalGroup = await (await fetch(`${base}/panel-layout/groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'terminal', revision: panelLayout.revision }),
+  })).json();
+  const secondPanel = await (await fetch(`${base}/panel-layout/groups/${terminalGroup.groupId}/panels`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'terminal', revision: terminalGroup.revision }),
+  })).json();
+  assert.equal(secondPanel.panel.terminalRole, null);
+  const terminalGroupLayout = await (await fetch(`${base}/panel-layout`)).json();
+  const terminalPanels = terminalGroupLayout.groups
+    .find((group) => group.id === terminalGroup.groupId).panels;
+  const ensuredBeforeManagedPanels = ensuredTerminalSessions.length;
+  const firstManagedSocket = new WebSocket(
+    `ws://127.0.0.1:${port}/ws/terminal?panel=${terminalPanels[0].id}&client=managed-one`,
+  );
+  const firstManagedClaimed = nextTerminalMessage(firstManagedSocket, 'claimed');
+  await new Promise((resolve, reject) => {
+    firstManagedSocket.addEventListener('open', resolve, { once: true });
+    firstManagedSocket.addEventListener('error', () => reject(new Error('first managed terminal websocket failed')), { once: true });
+  });
+  await firstManagedClaimed;
+  // Older clients redundantly sent role=shell for this panel. A panel ID is
+  // authoritative, so that query must remain accepted for persisted layouts.
+  const secondManagedSocket = new WebSocket(
+    `ws://127.0.0.1:${port}/ws/terminal?panel=${terminalPanels[1].id}&role=shell&client=managed-two`,
+  );
+  const secondManagedClaimed = nextTerminalMessage(secondManagedSocket, 'claimed');
+  await new Promise((resolve, reject) => {
+    secondManagedSocket.addEventListener('open', resolve, { once: true });
+    secondManagedSocket.addEventListener('error', () => reject(new Error('second managed terminal websocket failed')), { once: true });
+  });
+  await secondManagedClaimed;
+  assert.deepEqual(
+    ensuredTerminalSessions.slice(ensuredBeforeManagedPanels).map(({ identity }) => identity),
+    terminalPanels.map((panel) => ({
+      sessionId: null, role: 'shell', terminalId: panel.id, panelId: panel.id,
+    })),
+  );
+  assert.notEqual(
+    terminalPtys.at(-2).options.session,
+    terminalPtys.at(-1).options.session,
+    'each panel attaches to its own persistent terminal session',
+  );
+  const firstManagedClosed = new Promise((resolve) => firstManagedSocket.addEventListener('close', resolve, { once: true }));
+  const secondManagedClosed = new Promise((resolve) => secondManagedSocket.addEventListener('close', resolve, { once: true }));
+  firstManagedSocket.close();
+  secondManagedSocket.close();
+  await Promise.all([firstManagedClosed, secondManagedClosed]);
 });
 
 test('notes editor endpoints read, write, and remember markdown files', async (t) => {
