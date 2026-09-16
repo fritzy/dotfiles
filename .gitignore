@@ -9,6 +9,7 @@ home/.codex/
 
 # Bootstrap copies only these intentional inputs into the runtime directories.
 claude/*
+!claude/CLAUDE.md
 !claude/settings.json
 !claude/skills/
 !claude/plugins/
@@ -16,5 +17,6 @@ claude/plugins/*
 !claude/plugins/known_marketplaces.json
 
 codex/*
+!codex/AGENTS.md
 !codex/config.toml
 !codex/skills/

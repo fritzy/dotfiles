@@ -321,8 +321,10 @@ sync_ai_skills() {
 
 echo
 echo "Syncing Claude and Codex config..."
+sync_ai_file "$dotfiles_root/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" 644
 sync_ai_file "$dotfiles_root/claude/settings.json" "$HOME/.claude/settings.json" 600
 sync_ai_file "$dotfiles_root/claude/plugins/known_marketplaces.json" "$HOME/.claude/plugins/known_marketplaces.json" 600
+sync_ai_file "$dotfiles_root/codex/AGENTS.md" "$HOME/.codex/AGENTS.md" 644
 sync_ai_file "$dotfiles_root/codex/config.toml" "$HOME/.codex/config.toml" 600
 sync_ai_skills "$dotfiles_root/claude/skills" "$HOME/.claude/skills"
 sync_ai_skills "$dotfiles_root/codex/skills" "$HOME/.codex/skills"
