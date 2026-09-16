@@ -1,8 +1,8 @@
 ---
 name: work-summary
-description: "Summarize what Nathan has been working on over a period (default: last week) by pulling from ws, git/GitHub PRs, Linear tickets, and Slack discussions, formatted as a first-person bullet tree ready to paste into Slack or notes. Use when asked to summarize my work, write a weekly/standup update, recap what I did, or 'what have I been working on'. Trigger terms: work summary, weekly summary, what did I work on, recap my week, standup."
+description: "Summarize what Nathan has been working on over a period (default: last week) by pulling from fw, git/GitHub PRs, Linear tickets, and Slack discussions, formatted as a first-person bullet tree ready to paste into Slack or notes. Use when asked to summarize my work, write a weekly/standup update, recap what I did, or 'what have I been working on'. Trigger terms: work summary, weekly summary, what did I work on, recap my week, standup."
 metadata:
-  tags: work-summary, weekly, standup, ws, linear, slack, prs
+  tags: work-summary, weekly, standup, fw, linear, slack, prs
 ---
 
 # work-summary
@@ -13,16 +13,16 @@ to absolute before querying.
 
 ## Gather (run in parallel)
 
-1. **Workstreams** — `mcp__ws__ws_list {all: true}`. This is the spine: each active
+1. **Workstreams** — `mcp__fw__ws_list {all: true}`. This is the spine: each active
    workstream maps to a branch, a repo, and linked Linear/GitHub issues. Use it to
    discover which PRs and tickets to pull.
-2. **PRs** — for the repos/branches ws surfaces:
+2. **PRs** — for the repos/branches fw surfaces:
    `gh pr view <num> --repo <owner/repo> --json title,state,createdAt,updatedAt,body`.
-   Also `gh search prs --author=@me --updated ">=<date>"` to catch anything ws missed.
+   Also `gh search prs --author=@me --updated ">=<date>"` to catch anything fw missed.
    Read the PR `body` for the real "what/why" — summarize from it, don't just restate the title.
 3. **Tickets** — invoke the **[[linear]]** skill, which documents the `linear` CLI
    (authenticated as Nathan, default team ECO). Use it for:
-   - `linear issue view <CODE>` on each issue ws links (title, state, description).
+   - `linear issue view <CODE>` on each issue fw links (title, state, description).
    - `bash ~/.scripts/linear-activity.sh -d <days> -t ECO` — cycles + assigned/created
      issues with state changes (moved to In Review, Canceled, etc.) over the window. This
      is the fastest "what did I do" read.

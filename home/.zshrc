@@ -185,5 +185,5 @@ if [ -f "$HOME/.local/opt/google-cloud-sdk/completion.zsh.inc" ]; then . "$HOME/
 
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
 
-# ai-workstream shell status hook (generated at runtime by `ws`; absent until it's been run)
-[ -f "$HOME/.config/ai-workstream/shell.zsh" ] && source "$HOME/.config/ai-workstream/shell.zsh"
+# fritzworks shell status hook (generated at runtime by `fw`; absent until it's been run)
+[ -f "$HOME/.config/fritzworks/shell.zsh" ] && source "$HOME/.config/fritzworks/shell.zsh"

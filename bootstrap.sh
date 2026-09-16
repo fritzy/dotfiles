@@ -260,7 +260,7 @@ if [[ $have_stow = true ]]; then
 else
   # A workstation can lose its system packages while retaining $HOME. Restore
   # the login-shell chain even when stow itself is temporarily unavailable;
-  # otherwise `ws hooks install` would create a hook-only .zshrc and hide the
+  # otherwise `fw hooks install` would create a hook-only .zshrc and hide the
   # actual prompt configuration in this repo.
   echo "stow not available. Linking persistent shell config directly..."
   for rel in .bash_profile .bashrc .zprofile .zshrc; do
@@ -327,31 +327,48 @@ sync_ai_file "$dotfiles_root/codex/config.toml" "$HOME/.codex/config.toml" 600
 sync_ai_skills "$dotfiles_root/claude/skills" "$HOME/.claude/skills"
 sync_ai_skills "$dotfiles_root/codex/skills" "$HOME/.codex/skills"
 
-# ai-workstream: install dependencies and put its commands on PATH.
-ws_pkg="$dotfiles_root/packages/ai-workstream"
-if [[ -f "$ws_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
+# Remove the retired aliases only when they belong to this package.
+for skill_root in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+  for old_skill in ws workstream; do
+    if [[ -f "$skill_root/$old_skill/SKILL.md" ]] && grep -q 'FritzWorks workstreams' "$skill_root/$old_skill/SKILL.md"; then
+      rm -rf "$skill_root/$old_skill"
+    fi
+  done
+done
+
+# fritzworks: install dependencies and put its commands on PATH.
+fw_pkg="$dotfiles_root/packages/fritzworks"
+if [[ -f "$fw_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
   echo
-  echo "Setting up ws (workstream manager)..."
-  (cd "$ws_pkg" && npm install --no-audit --no-fund >/dev/null 2>&1) \
-    && echo "  installed ws dependencies" || echo "  warning: ws npm install failed"
-  ln -sfn "$ws_pkg/cli.js" "$HOME/.local/bin/ws" && echo "  linked ws -> $ws_pkg/cli.js"
-  ln -sfn "$ws_pkg/mcp.js" "$HOME/.local/bin/ws-mcp" && echo "  linked ws-mcp -> $ws_pkg/mcp.js"
-  ln -sfn "$ws_pkg/app.js" "$HOME/.local/bin/fritzworks" && echo "  linked fritzworks -> $ws_pkg/app.js"
-  if "$HOME/.local/bin/ws" hooks install >/dev/null 2>&1; then
-    echo "  installed ws activity hooks"
+  echo "Setting up fw (workstream manager)..."
+  (cd "$fw_pkg" && npm install --no-audit --no-fund >/dev/null 2>&1) \
+    && echo "  installed fw dependencies" || echo "  warning: fw npm install failed"
+  ln -sfn "$fw_pkg/cli.js" "$HOME/.local/bin/fw" && echo "  linked fw -> $fw_pkg/cli.js"
+  ln -sfn "$fw_pkg/mcp.js" "$HOME/.local/bin/fw-mcp" && echo "  linked fw-mcp -> $fw_pkg/mcp.js"
+  ln -sfn "$fw_pkg/app.js" "$HOME/.local/bin/fritzworks" && echo "  linked fritzworks -> $fw_pkg/app.js"
+  for old_command in ws ws-mcp; do
+    old_link="$HOME/.local/bin/$old_command"
+    if [[ -L "$old_link" && $(readlink "$old_link") == "$dotfiles_root/packages/ai-workstream/"* ]]; then
+      # Running agents and shells retain their previously loaded hook commands.
+      old_target=$(readlink "$old_link")
+      ln -sfn "$fw_pkg/${old_target##*/}" "$old_link"
+    fi
+  done
+  if "$HOME/.local/bin/fw" hooks install >/dev/null 2>&1; then
+    echo "  installed fw activity hooks"
   else
-    echo "  warning: ws activity hook installation failed"
+    echo "  warning: fw activity hook installation failed"
   fi
-  if [[ $(uname -s) == "Linux" && -f "$ws_pkg/desktop/fritzworks.desktop" ]]; then
+  if [[ $(uname -s) == "Linux" && -f "$fw_pkg/desktop/fritzworks.desktop" ]]; then
     applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
     icon_theme_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
     icons_dir="$icon_theme_dir/scalable/apps"
     mkdir -p "$applications_dir" "$icons_dir"
-    ln -sfn "$ws_pkg/desktop/fritzworks.desktop" "$applications_dir/fritzworks.desktop"
-    ln -sfn "$ws_pkg/desktop/fritzworks.svg" "$icons_dir/fritzworks.svg"
+    ln -sfn "$fw_pkg/desktop/fritzworks.desktop" "$applications_dir/fritzworks.desktop"
+    ln -sfn "$fw_pkg/desktop/fritzworks.svg" "$icons_dir/fritzworks.svg"
     desktop_dir=$(xdg-user-dir DESKTOP 2>/dev/null || true)
     if [[ -n "$desktop_dir" && -d "$desktop_dir" ]]; then
-      ln -sfn "$ws_pkg/desktop/fritzworks.desktop" "$desktop_dir/FritzWorks.desktop"
+      ln -sfn "$fw_pkg/desktop/fritzworks.desktop" "$desktop_dir/FritzWorks.desktop"
     fi
     if command -v update-desktop-database >/dev/null 2>&1; then
       update-desktop-database "$applications_dir" >/dev/null 2>&1
@@ -364,13 +381,24 @@ if [[ -f "$ws_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
     fi
     echo "  installed FritzWorks KDE launcher"
   fi
-  if command -v claude >/dev/null 2>&1 && ! claude mcp get ws >/dev/null 2>&1; then
-    claude mcp add --scope user ws -- node --no-warnings "$ws_pkg/mcp.js" >/dev/null 2>&1 \
-      && echo "  registered ws MCP server with Claude Code (user scope)"
+  if command -v claude >/dev/null 2>&1 && ! claude mcp get fw >/dev/null 2>&1; then
+    claude mcp add --scope user fw -- node --no-warnings "$fw_pkg/mcp.js" >/dev/null 2>&1 \
+      && echo "  registered fw MCP server with Claude Code (user scope)"
   fi
-  if command -v codex >/dev/null 2>&1 && ! codex mcp get ws >/dev/null 2>&1; then
-    codex mcp add ws -- node --no-warnings "$ws_pkg/mcp.js" >/dev/null 2>&1 \
-      && echo "  registered ws MCP server with Codex"
+  if command -v codex >/dev/null 2>&1 && ! codex mcp get fw >/dev/null 2>&1; then
+    codex mcp add fw -- node --no-warnings "$fw_pkg/mcp.js" >/dev/null 2>&1 \
+      && echo "  registered fw MCP server with Codex"
+  fi
+  # Retire the previous MCP registration after its replacement is available.
+  if command -v claude >/dev/null 2>&1 && claude mcp get fw >/dev/null 2>&1; then
+    if claude mcp get ws 2>/dev/null | grep -Eq 'ai-workstream|ws-mcp'; then
+      claude mcp remove --scope user ws >/dev/null 2>&1 || true
+    fi
+  fi
+  if command -v codex >/dev/null 2>&1 && codex mcp get fw >/dev/null 2>&1; then
+    if codex mcp get ws 2>/dev/null | grep -Eq 'ai-workstream|ws-mcp'; then
+      codex mcp remove ws >/dev/null 2>&1 || true
+    fi
   fi
 fi
 

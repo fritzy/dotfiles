@@ -25,7 +25,7 @@ not automatically.
 ## Work notes
 
 A running record of what was accomplished each day. Keep them updated as work completes
-— especially when a `ws` workstream finishes a chunk of work (see the **ws** skill).
+— especially when a `fw` workstream finishes a chunk of work (see the **fw** skill).
 
 **Structure:** one section per weekday, items as checked bullets with nested links and
 follow-ups:
@@ -49,7 +49,7 @@ follow-ups:
 3. Nest supporting links (Slack threads, PRs, Linear/GitHub issues) and any `- [ ]`
    follow-ups indented beneath the item.
 
-When logging work tied to a `ws` workstream, reference its linked issues — `ws issue
+When logging work tied to a `fw` workstream, reference its linked issues — `fw issue
 list` (from inside the worktree) gives the Linear/GitHub links to drop under the day's
 entry.
 

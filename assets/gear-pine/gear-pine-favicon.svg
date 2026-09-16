@@ -1,14 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" role="img" aria-labelledby="title desc">
   <title id="title">Gear and pine favicon</title>
-  <desc id="desc">A simplified green pine tree centered over a pale blue eight-tooth gear.</desc>
-
-  <!-- The contained background guarantees contrast in browser chrome and at 16 px. -->
-  <rect x="2" y="2" width="60" height="60" rx="15" fill="#102d3b"/>
-  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" fill="none" stroke="#406173" stroke-width="1.5"/>
+  <desc id="desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
 
   <!-- Eight broad teeth replace the detailed twelve-tooth desktop gear. -->
-  <g fill="#8fb8c8">
-    <circle cx="32" cy="37" r="18"/>
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z"/>
     <rect x="28.5" y="9" width="7" height="16" rx="2"/>
     <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)"/>
     <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)"/>
@@ -18,8 +14,8 @@
     <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)"/>
     <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)"/>
   </g>
-  <circle cx="32" cy="37" r="9.5" fill="#102d3b"/>
 
-  <!-- A single, deliberately chunky tree silhouette stays recognizable at 16 px. -->
-  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 V 52 H 35 V 42 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#55d58a" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round"/>
+  <!-- A rounded brown trunk sits behind the chunky green foliage. -->
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2"/>
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round"/>
 </svg>

@@ -1,6 +1,6 @@
 ---
-name: fritzworks
-description: Alias for fw; manage FritzWorks workstreams through its MCP server.
+name: fw
+description: Manage FritzWorks workstreams. Also use for “fritzworks”.
 ---
 
 Use the `fw` MCP server's `fw_*` tools; schemas are authoritative.

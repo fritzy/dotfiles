@@ -1,5 +1,5 @@
 [Unit]
-Description=Persistent SSH tunnel to the cg workstation (url-open reverse forward + ws daemon LocalForward)
+Description=Persistent SSH tunnel to the cg workstation (url-open reverse forward + fw daemon LocalForward)
 After=network-online.target
 
 [Service]
