@@ -116,7 +116,7 @@ export function branchState(item) {
 
 export function canArchiveSession(item) {
   if (!item || item.closeable === false || item.status === 'closed') return false;
-  return item.type === 'scratchpad' || (item.type === 'repo' && item.prDone === true);
+  return item.type === 'scratchpad' || item.type === 'repo';
 }
 
 export function visiblePages(pageCount, page) {

@@ -329,6 +329,14 @@ sync_ai_file "$dotfiles_root/codex/config.toml" "$HOME/.codex/config.toml" 600
 sync_ai_skills "$dotfiles_root/claude/skills" "$HOME/.claude/skills"
 sync_ai_skills "$dotfiles_root/codex/skills" "$HOME/.codex/skills"
 
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  echo "Setting up Google Sheets MCP for Claude Code and Codex..."
+  bash "$dotfiles_root/packages/google-sheets-mcp/setup.sh" \
+    || echo "Warning: Sheets MCP setup failed; rerun packages/google-sheets-mcp/setup.sh." >&2
+else
+  echo "Skipping Sheets MCP: install Node.js and npm, then run packages/google-sheets-mcp/setup.sh."
+fi
+
 # Remove the retired aliases only when they belong to this package.
 for skill_root in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
   for old_skill in ws workstream; do

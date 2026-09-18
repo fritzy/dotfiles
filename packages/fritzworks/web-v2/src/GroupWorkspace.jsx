@@ -7,7 +7,7 @@ import {
   openPanelResource, resourcePreviewUrl, savePanelOrder, syncWorkstream,
 } from './api.js';
 import {
-  AssetIcon, ChevronIcon, EditorIcon, LinkIcon, RefreshIcon, RobotIcon, ShellIcon, Spinner, TargetIcon, XIcon,
+  ArchiveIcon, AssetIcon, ChevronIcon, EditorIcon, LinkIcon, RefreshIcon, RobotIcon, ShellIcon, Spinner, TargetIcon, XIcon,
 } from './icons.jsx';
 import TerminalPanel from './TerminalPanel.jsx';
 import TerminalSplitLayout, { defaultSplitBoundaries } from './TerminalSplitLayout.jsx';
@@ -721,7 +721,9 @@ export default function GroupWorkspace({
         )}
         {session && <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={() => onDetails?.(session.id)}>Details</Button>}
         {session && onReset && <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={resetTerminals}>Reset</Button>}
-        {canArchiveSession(session) && onArchive && <Button variant="secondary" className="min-h-8 px-2 py-1 text-xs" onClick={archive}>Archive</Button>}
+        {canArchiveSession(session) && onArchive && (
+          <IconButton compact label="Archive session" onClick={archive}><ArchiveIcon /></IconButton>
+        )}
       </header>
       {message && <div className="flex min-h-7 shrink-0 items-center gap-2 border-b border-primary/30 px-3 text-xs text-primary" role="status">{message}</div>}
       <div ref={hostRef} className="relative z-0 flex min-h-0 flex-1">

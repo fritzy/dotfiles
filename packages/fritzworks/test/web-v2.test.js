@@ -154,13 +154,18 @@ test('v2 sidebar groups active sessions by repository in last-used order', async
   assert.equal(groups.some((group) => group.label === 'acme/closed'), false);
 });
 
-test('v2 archives scratchpads in any open state and only completed repository sessions', async () => {
+test('v2 archives scratchpads and repository sessions regardless of PR state', async () => {
   const { canArchiveSession } = await import('../web-v2/src/utils.js');
   assert.equal(canArchiveSession({ type: 'scratchpad', status: 'active' }), true);
   assert.equal(canArchiveSession({ type: 'scratchpad', status: 'paused' }), true);
   assert.equal(canArchiveSession({ type: 'scratchpad', status: 'closed' }), false);
-  assert.equal(canArchiveSession({ type: 'repo', status: 'active', prDone: true }), true);
-  assert.equal(canArchiveSession({ type: 'repo', status: 'paused', prDone: false }), false);
+  for (const status of ['active', 'paused', 'closed']) {
+    for (const prDone of [true, false, null, undefined]) {
+      assert.equal(canArchiveSession({ type: 'repo', status, prDone }), status !== 'closed');
+    }
+  }
+  assert.equal(canArchiveSession({ type: 'repo', status: 'active', closeable: false }), false);
+  assert.equal(canArchiveSession(null), false);
   assert.equal(canArchiveSession({ type: 'misc', status: 'active', closeable: false }), false);
 });
 

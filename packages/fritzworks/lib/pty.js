@@ -8,13 +8,16 @@ export function spawnZshTerminal({
   cols = 80,
   rows = 24,
 } = {}) {
+  const shellEnv = { ...env };
+  delete shellEnv.NO_COLOR;
+  delete shellEnv.FORCE_COLOR;
   return nodePty.spawn(command, args, {
     name: 'xterm-256color',
     cols,
     rows,
     cwd,
     env: {
-      ...env,
+      ...shellEnv,
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
     },
@@ -37,6 +40,8 @@ export function spawnZellijAttachTerminal({
   delete attachEnv.ZELLIJ;
   delete attachEnv.ZELLIJ_PANE_ID;
   delete attachEnv.ZELLIJ_SESSION_NAME;
+  delete attachEnv.NO_COLOR;
+  delete attachEnv.FORCE_COLOR;
   return nodePty.spawn('zellij', ['--config', configFile, 'attach', session], {
     name: 'xterm-256color',
     cols,
