@@ -337,80 +337,11 @@ else
   echo "Skipping Sheets MCP: install Node.js and npm, then run packages/google-sheets-mcp/setup.sh."
 fi
 
-# Remove the retired aliases only when they belong to this package.
-for skill_root in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
-  for old_skill in ws workstream; do
-    if [[ -f "$skill_root/$old_skill/SKILL.md" ]] && grep -q 'FritzWorks workstreams' "$skill_root/$old_skill/SKILL.md"; then
-      rm -rf "$skill_root/$old_skill"
-    fi
-  done
-done
-
-# fritzworks: install dependencies and put its commands on PATH.
-fw_pkg="$dotfiles_root/packages/fritzworks"
-if [[ -f "$fw_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
-  echo
-  echo "Setting up fw (workstream manager)..."
-  (cd "$fw_pkg" && npm install --no-audit --no-fund >/dev/null 2>&1) \
-    && echo "  installed fw dependencies" || echo "  warning: fw npm install failed"
-  ln -sfn "$fw_pkg/cli.js" "$HOME/.local/bin/fw" && echo "  linked fw -> $fw_pkg/cli.js"
-  ln -sfn "$fw_pkg/mcp.js" "$HOME/.local/bin/fw-mcp" && echo "  linked fw-mcp -> $fw_pkg/mcp.js"
-  ln -sfn "$fw_pkg/app.js" "$HOME/.local/bin/fritzworks" && echo "  linked fritzworks -> $fw_pkg/app.js"
-  for old_command in ws ws-mcp; do
-    old_link="$HOME/.local/bin/$old_command"
-    if [[ -L "$old_link" && $(readlink "$old_link") == "$dotfiles_root/packages/ai-workstream/"* ]]; then
-      # Running agents and shells retain their previously loaded hook commands.
-      old_target=$(readlink "$old_link")
-      ln -sfn "$fw_pkg/${old_target##*/}" "$old_link"
-    fi
-  done
-  if "$HOME/.local/bin/fw" hooks install --shell >/dev/null 2>&1; then
-    echo "  installed fw activity hooks"
-  else
-    echo "  warning: fw activity hook installation failed"
-  fi
-  if [[ $(uname -s) == "Linux" && -f "$fw_pkg/desktop/fritzworks.desktop" ]]; then
-    applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    icon_theme_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
-    icons_dir="$icon_theme_dir/scalable/apps"
-    mkdir -p "$applications_dir" "$icons_dir"
-    ln -sfn "$fw_pkg/desktop/fritzworks.desktop" "$applications_dir/fritzworks.desktop"
-    ln -sfn "$fw_pkg/desktop/fritzworks.svg" "$icons_dir/fritzworks.svg"
-    desktop_dir=$(xdg-user-dir DESKTOP 2>/dev/null || true)
-    if [[ -n "$desktop_dir" && -d "$desktop_dir" ]]; then
-      ln -sfn "$fw_pkg/desktop/fritzworks.desktop" "$desktop_dir/FritzWorks.desktop"
-    fi
-    if command -v update-desktop-database >/dev/null 2>&1; then
-      update-desktop-database "$applications_dir" >/dev/null 2>&1
-    fi
-    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-      gtk-update-icon-cache --force --ignore-theme-index "$icon_theme_dir" >/dev/null 2>&1
-    fi
-    if command -v kbuildsycoca6 >/dev/null 2>&1; then
-      kbuildsycoca6 --noincremental >/dev/null 2>&1
-    fi
-    echo "  installed FritzWorks KDE launcher"
-  fi
-  if command -v claude >/dev/null 2>&1 && ! claude mcp get fw >/dev/null 2>&1; then
-    claude mcp add --scope user fw -- node --no-warnings "$fw_pkg/mcp.js" >/dev/null 2>&1 \
-      && echo "  registered fw MCP server with Claude Code (user scope)"
-  fi
-  if command -v codex >/dev/null 2>&1 && ! codex mcp get fw >/dev/null 2>&1; then
-    codex mcp add fw -- node --no-warnings "$fw_pkg/mcp.js" >/dev/null 2>&1 \
-      && echo "  registered fw MCP server with Codex"
-  fi
-  # Retire the previous MCP registration after its replacement is available.
-  if command -v claude >/dev/null 2>&1 && claude mcp get fw >/dev/null 2>&1; then
-    if claude mcp get ws 2>/dev/null | grep -Eq 'ai-workstream|ws-mcp'; then
-      claude mcp remove --scope user ws >/dev/null 2>&1 || true
-    fi
-  fi
-  if command -v codex >/dev/null 2>&1 && codex mcp get fw >/dev/null 2>&1; then
-    if codex mcp get ws 2>/dev/null | grep -Eq 'ai-workstream|ws-mcp'; then
-      codex mcp remove ws >/dev/null 2>&1 || true
-    fi
-  fi
-fi
+# FritzWorks owns its installation and integration lifecycle.
+echo
+echo "Installing or upgrading FritzWorks..."
+bash "$dotfiles_root/bin/install-fritzworks" --desktop \
+  || echo "  warning: FritzWorks installation failed; inspect the output above"
 
 # Install eget (used to install GitHub release binaries)
 if ! command -v eget &> /dev/null && [[ ! -f $eget_bin ]]; then

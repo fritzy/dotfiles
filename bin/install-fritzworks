@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fw_checkout=${FRITZWORKS_CHECKOUT:-$HOME/fritzworks}
+fw_repository=${FRITZWORKS_REPOSITORY:-git@github.com:chainguard-sandbox/fritzworks.git}
+fw_branch=${FRITZWORKS_BRANCH:-main}
+
+command -v git >/dev/null || { echo 'FritzWorks requires Git.' >&2; exit 1; }
+command -v npm >/dev/null || { echo 'FritzWorks requires Node.js and npm.' >&2; exit 1; }
+
+if [[ ! -e $fw_checkout && ! -L $fw_checkout ]]; then
+  mkdir -p "$(dirname "$fw_checkout")"
+  GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null clone --branch "$fw_branch" --single-branch "$fw_repository" "$fw_checkout"
+else
+  [[ -d $fw_checkout/.git ]] || { echo "Preserving non-checkout path: $fw_checkout" >&2; exit 1; }
+  [[ -z $(git -C "$fw_checkout" status --porcelain) ]] || { echo "Preserving local FritzWorks changes: $fw_checkout" >&2; exit 1; }
+  fw_origin=$(git -C "$fw_checkout" remote get-url origin)
+  fw_normalize() { printf '%s\n' "$1" | sed -E 's#^git@github.com:#https://github.com/#; s#\.git$##; s#/$##'; }
+  [[ $(fw_normalize "$fw_origin") == "$(fw_normalize "$fw_repository")" ]] || { echo "Preserving checkout with a different origin: $fw_checkout" >&2; exit 1; }
+  [[ $(git -C "$fw_checkout" symbolic-ref --short -q HEAD) == "$fw_branch" ]] || { echo "Preserving FritzWorks checkout on another branch: $fw_checkout" >&2; exit 1; }
+  GIT_TERMINAL_PROMPT=0 git -C "$fw_checkout" -c core.hooksPath=/dev/null fetch origin "$fw_branch"
+  git -C "$fw_checkout" -c core.hooksPath=/dev/null merge --ff-only FETCH_HEAD
+fi
+
+cd "$fw_checkout"
+npm ci --no-audit --no-fund
+npm run setup -- "$@"
+echo "FritzWorks installed at $fw_checkout. Restart its daemon when ready to load the update."

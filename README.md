@@ -16,6 +16,19 @@ This is a [stow](https://www.gnu.org/software/stow/) based dotfiles repo with bo
 - Links the shell startup files directly when `stow` is temporarily unavailable
 - Bootstraps NeoVim Lazy plugins
 
+## FritzWorks
+
+Bootstrap installs or upgrades [FritzWorks](https://github.com/chainguard-sandbox/fritzworks)
+in `~/fritzworks` using `bin/install-fritzworks`. The repository currently requires
+GitHub access; the default clone uses SSH. Node.js and npm must already be installed.
+The installer runs `npm ci` and package setup, preserving configuration and local
+checkout edits. It never restarts the daemon automatically.
+
+Override `FRITZWORKS_CHECKOUT`, `FRITZWORKS_REPOSITORY`, or `FRITZWORKS_BRANCH` to use
+another directory, clone URL, or branch. `packages/fritzworks` remains a compatibility
+link for existing installations. Run `fw doctor` for dependency, hook, and web-build
+status, or `fw doctor --fix` to repair the installation.
+
 ## Google Sheets MCP
 
 Bootstrap installs a pinned `mcp-remote` adapter and registers `sheets` with both
