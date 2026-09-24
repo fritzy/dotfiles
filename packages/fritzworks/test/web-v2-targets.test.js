@@ -40,6 +40,7 @@ function mockNetwork({ groupedLocal = false, panelModel = false, prefixedBranche
   globalThis.fetch = async (url) => {
     const path = String(url);
     requests.push(path);
+    if (path.endsWith('/capabilities')) return { ok: true, json: async () => ({ protocolVersion: 1, instanceId: path.startsWith('http') ? 'workstation-instance' : 'local-instance', contracts: ['instance-bound-v1'], features: { terminals: { available: true }, jobs: { available: true } } }) };
     if (path.startsWith('/daemons')) {
       return {
         ok: true,
@@ -105,11 +106,15 @@ async function harness(t, options = {}) {
     this.setAttribute('open', '');
   };
   mockNetwork(options);
-  t.after(() => teardownJsdom(dom));
+  if (options.decorateFetch) globalThis.fetch = options.decorateFetch(globalThis.fetch);
 
   const React = await import('react');
   const { default: App } = await import('../web-v2/src/App.jsx');
   const mounted = await mountReact(React.createElement(App));
+  const unmount = mounted.unmount;
+  let unmounted = false;
+  mounted.unmount = async () => { if (!unmounted) { unmounted = true; await unmount(); } };
+  t.after(async () => { await mounted.unmount(); teardownJsdom(dom); });
   // Longer than REFRESH_DEBOUNCE_MS (75ms) so both panes' debounced session-list
   // fetches settle before the test (and jsdom teardown) ends.
   await flush(100);
@@ -275,7 +280,7 @@ test('sidebar tree expansion survives a client remount in local storage', async 
   await actCall(() => terminals.click());
   await flush(20);
 
-  const stored = JSON.parse(localStorage.getItem('fritzworks-sidebar-tree'));
+  const stored = JSON.parse(localStorage.getItem('fritzworks-sidebar-tree:local-instance'));
   assert.deepEqual(stored.targets, ['local']);
   assert.deepEqual(stored.groups, ['group:local:standalone:Terminals']);
 
@@ -363,3 +368,120 @@ for (const panelModel of [true, false]) {
     assertLabels('fritzy/leaf');
   });
 }
+async function dirtyEditorHarness(t) {
+  const state = { instanceId: 'workstation-instance', offline: false, removed: false, writes: [], saved: new Map([['workstation-instance', 'saved text']]) };
+  const mounted = await harness(t, { panelModel: true, decorateFetch: (original) => async (url, options = {}) => {
+    if (url === '/daemons' && state.removed) return Response.json({ daemons: [] });
+    if (!String(url).startsWith('http://127.1.1.2')) return original(url, options);
+    if (state.offline) throw new Error('temporary disconnect');
+    const path = new URL(url).pathname;
+    if (path === '/capabilities') return Response.json({ protocolVersion: 1, instanceId: state.instanceId, contracts: ['instance-bound-v1'], features: { terminals: { available: true }, jobs: { available: true } } });
+    if (path === '/panel-layout') return Response.json({ version: 1, revision: 1, activeGroupId: 'notes-group', groups: [{
+      id: 'notes-group', type: 'repository', ownerId: '2', label: 'Notes', path: '/tmp/notes',
+      resources: [{ id: 'notes-resource', kind: 'markdown', value: '/tmp/notes/plan.md', label: 'Plan' }],
+      panels: [{ id: 'notes-editor', kind: 'markdown', resourceId: 'notes-resource', label: 'Plan', width: 1, fontSize: 14, markdownMode: 'edit' }],
+    }] });
+    if (path === '/markdown/file') {
+      if (options.method === 'PUT') {
+        const body = JSON.parse(options.body);
+        state.writes.push({ ...body, instanceId: options.headers['X-FritzWorks-Instance'] });
+        state.saved.set(state.instanceId, body.content);
+      }
+      return Response.json({ content: state.saved.get(state.instanceId) || 'replacement saved text', version: 1 });
+    }
+    return original(url, options);
+  } });
+  const { connections } = await import('../web-v2/src/connections.js');
+  await actCall(() => machineButton(mounted.container, 'workstation').click());
+  await flush(30);
+  const editor = () => mounted.container.querySelector('[data-daemon-pane="workstation"] textarea:not([readonly])');
+  const inspect = () => connections.inspect({ id: 'workstation', url: 'http://127.1.1.2:7337' });
+  const edit = async (content) => {
+    await actCall(() => {
+      const field = editor();
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(field, content);
+      field.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+  };
+  t.after(async () => {
+    state.offline = false; state.removed = false; state.instanceId = 'workstation-instance';
+    await connections.directory();
+    await connections.acknowledge({ id: 'workstation', url: 'http://127.1.1.2:7337' }, state.instanceId);
+  });
+  return { ...mounted, state, connections, editor, edit, inspect };
+}
+
+test('dirty Markdown survives a temporary outage and saves only after the same instance recovers', async (t) => {
+  const f = await dirtyEditorHarness(t);
+  const originalEditor = f.editor();
+  const originalPane = f.container.querySelector('[data-daemon-pane="workstation"]');
+  assert.equal(originalEditor.value, 'saved text');
+  await f.edit('unsaved outage draft');
+  f.state.offline = true;
+  await actCall(() => f.inspect().catch(() => {}));
+  assert.equal(f.container.querySelector('[data-daemon-pane="workstation"]'), originalPane, 'temporary outage retains the mounted pane');
+  assert.ok(originalPane.querySelector('[data-markdown-inactive]'), 'editor stays mounted in its inactive view');
+  assert.equal(f.container.querySelector('[data-retained-target="workstation"]').style.display, 'none');
+  const recovery = f.container.querySelector('[data-connection-recovery]');
+  assert.equal(recovery.style.zIndex, '60', 'recovery remains above absolute daemon panes');
+  assert.equal(recovery.querySelector('textarea').value, 'unsaved outage draft');
+  await flush(1300);
+  assert.equal(f.state.writes.length, 0);
+  f.state.offline = false;
+  await actCall(() => f.inspect());
+  await flush(30);
+  assert.equal(f.container.querySelector('[data-daemon-pane="workstation"]'), originalPane);
+  assert.equal(f.editor().value, 'unsaved outage draft');
+  await flush(1300);
+  assert.equal(f.state.writes.at(-1).content, 'unsaved outage draft');
+  assert.equal(f.state.writes.at(-1).instanceId, 'workstation-instance');
+});
+
+test('replacement quarantines a dirty draft visibly and never sends it to the acknowledged replacement', async (t) => {
+  const f = await dirtyEditorHarness(t);
+  await f.edit('original instance draft');
+  f.state.instanceId = 'replacement-instance';
+  await actCall(() => f.inspect());
+  assert.equal(f.editor(), null);
+  assert.equal(f.container.querySelector('[data-connection-recovery] textarea').value, 'original instance draft');
+  await actCall(() => f.connections.acknowledge({ id: 'workstation', url: 'http://127.1.1.2:7337' }, f.state.instanceId));
+  await flush(50);
+  assert.equal(f.editor().value, 'replacement saved text');
+  await flush(1300);
+  assert.equal(f.state.writes.length, 0);
+  assert.equal(f.container.querySelector('[data-connection-recovery] textarea').value, 'original instance draft');
+  assert.equal(f.container.querySelector('[data-connection-recovery]').style.zIndex, '60');
+  await actCall(() => f.container.querySelector('[aria-label="Recover unsaved Markdown"] button').click());
+  assert.equal(f.container.querySelector('[data-connection-recovery] textarea'), null);
+  assert.match(f.container.querySelector('[data-connection-recovery]').textContent, /Recover 1 drafts/);
+  await actCall(() => f.container.querySelector('[aria-label="Recover unsaved Markdown"] button').click());
+  assert.equal(f.container.querySelector('[data-connection-recovery] textarea').value, 'original instance draft');
+});
+
+test('removed targets retain recoverable drafts and restore them when the original target returns', async (t) => {
+  const f = await dirtyEditorHarness(t);
+  await f.edit('removed target draft');
+  f.state.removed = true;
+  await actCall(() => f.connections.directory());
+  assert.equal(f.editor(), null);
+  assert.equal(f.container.querySelector('[data-connection-recovery] textarea').value, 'removed target draft');
+  f.state.removed = false;
+  await actCall(async () => { await f.connections.directory(); await f.inspect(); });
+  await flush(50);
+  assert.equal(f.editor().value, 'removed target draft');
+});
+
+test('reverting to saved content clears only the editing buffer’s recoverable draft', async (t) => {
+  const f = await dirtyEditorHarness(t);
+  await f.edit('abandoned draft');
+  const { readDraft, retainDraft } = await import('../web-v2/src/markdown-drafts.js');
+  const target = { id: 'workstation', instanceId: 'workstation-instance' };
+  assert.equal(readDraft(target, '/tmp/notes/plan.md', 'file', 'notes-editor').content, 'abandoned draft');
+  retainDraft(target, '/tmp/notes/plan.md', 'file', 'saved text', 'saved text', 1, 'notes-editor', 'another-clean-editor');
+  assert.equal(readDraft(target, '/tmp/notes/plan.md', 'file', 'notes-editor').content, 'abandoned draft');
+  await f.edit('saved text');
+  assert.equal(readDraft(target, '/tmp/notes/plan.md', 'file', 'notes-editor'), undefined);
+  f.state.offline = true;
+  await actCall(() => f.inspect().catch(() => {}));
+  assert.equal(f.container.querySelector('[aria-label="Recover unsaved Markdown"]'), null);
+});

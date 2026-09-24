@@ -13,6 +13,7 @@ test('service client starts the daemon and sends JSON lifecycle requests', async
   };
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
+    if (url.endsWith('/capabilities')) return new Response(JSON.stringify({ protocolVersion: 1, instanceId: 'instance', contracts: ['instance-bound-v1'] }));
     return new Response(JSON.stringify({ ok: true, workstream: { id: 42 } }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -26,9 +27,9 @@ test('service client starts the daemon and sends JSON lifecycle requests', async
   assert.equal(response.daemon.url, 'http://127.0.0.1:7444');
   assert.equal(response.result.workstream.id, 42);
   assert.deepEqual(calls[0], { start: config });
-  assert.equal(calls[1].url, 'http://127.0.0.1:7444/fw/feature%2Fname/resume');
-  assert.equal(calls[1].options.method, 'POST');
-  assert.deepEqual(JSON.parse(calls[1].options.body), { panels: ['shell', 'agent'] });
+  assert.equal(calls[2].url, 'http://127.0.0.1:7444/fw/feature%2Fname/resume');
+  assert.equal(calls[2].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[2].options.body), { panels: ['shell', 'agent'] });
 });
 
 test('service client exposes structured HTTP failures', async () => {
@@ -55,9 +56,12 @@ test('service client resolves and relays requests to configured remote daemons',
   const response = await requestDaemonService('/fw/all?status=all', {
     daemon: 'workstation',
     config,
+    status: async () => ({ running: true, url: 'http://127.0.0.1:7444' }),
     start: async () => { throw new Error('remote requests must not start the local daemon'); },
     fetchImpl: async (url, options) => {
       calls.push({ url, options });
+      if (url.endsWith('/daemons')) return new Response(JSON.stringify({ daemons: Object.values(config.daemons) }));
+      if (url.endsWith('/capabilities')) return new Response(JSON.stringify({ protocolVersion: 1, instanceId: 'remote', contracts: ['instance-bound-v1'] }));
       return new Response(JSON.stringify({ items: [{ id: 9 }] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -68,8 +72,8 @@ test('service client resolves and relays requests to configured remote daemons',
   assert.equal(response.daemon.id, 'workstation');
   assert.equal(response.daemon.local, false);
   assert.deepEqual(response.result.items, [{ id: 9 }]);
-  assert.equal(calls[0].url, 'http://127.1.1.2:7337/fw/all?status=all');
+  assert.equal(calls[2].url, 'http://127.1.1.2:7337/fw/all?status=all');
   assert.deepEqual(daemonTargets(config).map((daemon) => daemon.id), ['local', 'workstation']);
   assert.equal(resolveDaemonTarget('workstation', config).name, 'Workstation');
-  assert.throws(() => resolveDaemonTarget('missing', config), /expected one of: local, workstation/);
+  assert.throws(() => resolveDaemonTarget('missing', config), /Unknown daemon/);
 });

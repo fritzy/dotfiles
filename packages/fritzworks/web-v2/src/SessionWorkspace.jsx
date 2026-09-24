@@ -1,3 +1,4 @@
+import { targetStateKey } from './connections.js';
 import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
@@ -39,9 +40,9 @@ function readFontSizes(sessionId) {
   return fallback;
 }
 
-function readBoundaries(count) {
+function readBoundaries(count, scope) {
   try {
-    const stored = JSON.parse(localStorage.getItem(`${SPLIT_STORAGE_PREFIX}-${count}`));
+    const stored = JSON.parse(localStorage.getItem(`${SPLIT_STORAGE_PREFIX}-${scope}-${count}`));
     return normalizeSplitBoundaries(stored, count);
   } catch {
     return defaultSplitBoundaries(count);
@@ -53,8 +54,9 @@ export default function SessionWorkspace({
   panelMode = 'two', onPanelModeChange, onOpenNotes, terminalMode, fontFamily, onSidebarFocus,
   onFullscreenChange, fullscreenExitRevision, onToggleSidebar, onNewTerminal,
 }) {
+  const preferenceScope = targetStateKey(target, session.uuid || session.id);
   const roles = useMemo(() => panelsForMode(panelMode), [panelMode]);
-  const boundariesRef = useRef(readBoundaries(roles.length));
+  const boundariesRef = useRef(readBoundaries(roles.length, preferenceScope));
   const [boundaries, setBoundaries] = useState(boundariesRef.current);
   const [agentChanging, setAgentChanging] = useState(false);
   const [agentError, setAgentError] = useState('');
@@ -64,7 +66,7 @@ export default function SessionWorkspace({
   const [archiveError, setArchiveError] = useState('');
   const [terminalsResetting, setTerminalsResetting] = useState(false);
   const [terminalResetError, setTerminalResetError] = useState('');
-  const [fontSizes, setFontSizes] = useState(() => readFontSizes(session.id));
+  const [fontSizes, setFontSizes] = useState(() => readFontSizes(preferenceScope));
   const [fullscreenRole, setFullscreenRole] = useState(null);
   const fullscreenReportedRef = useRef(false);
   const targetId = target?.id || 'local';
@@ -74,9 +76,9 @@ export default function SessionWorkspace({
   const displayName = session.name || session.branch || String(session.id);
 
   useEffect(() => {
-    try { localStorage.setItem(`${FONT_SIZE_STORAGE_PREFIX}-${session.id}`, JSON.stringify(fontSizes)); }
+    try { localStorage.setItem(`${FONT_SIZE_STORAGE_PREFIX}-${preferenceScope}`, JSON.stringify(fontSizes)); }
     catch { /* optional persistence */ }
-  }, [fontSizes, session.id]);
+  }, [fontSizes, preferenceScope]);
 
   useEffect(() => {
     const fullscreenVisible = visible && fullscreenRole !== null;
@@ -98,7 +100,7 @@ export default function SessionWorkspace({
 
   useLayoutEffect(() => {
     if (boundariesRef.current.length === roles.length - 1) return;
-    const next = readBoundaries(roles.length);
+    const next = readBoundaries(roles.length, preferenceScope);
     boundariesRef.current = next;
     setBoundaries(next);
   }, [roles.length]);
@@ -113,7 +115,7 @@ export default function SessionWorkspace({
 
   function saveBoundaries() {
     try {
-      localStorage.setItem(`${SPLIT_STORAGE_PREFIX}-${roles.length}`, JSON.stringify(boundariesRef.current));
+      localStorage.setItem(`${SPLIT_STORAGE_PREFIX}-${preferenceScope}-${roles.length}`, JSON.stringify(boundariesRef.current));
     } catch { /* optional persistence */ }
   }
 
@@ -122,7 +124,7 @@ export default function SessionWorkspace({
     boundariesRef.current = next;
     setBoundaries(next);
     try {
-      localStorage.setItem(`${SPLIT_STORAGE_PREFIX}-${roles.length}`, JSON.stringify(next));
+      localStorage.setItem(`${SPLIT_STORAGE_PREFIX}-${preferenceScope}-${roles.length}`, JSON.stringify(next));
     } catch { /* optional persistence */ }
   }
 

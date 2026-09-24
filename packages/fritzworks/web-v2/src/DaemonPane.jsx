@@ -1,10 +1,11 @@
+import { prepareSocket } from './api.js';
 import {
   forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 } from 'react';
 
 import {
   activatePanelGroup as activatePanelGroupApi, createGroupPanel, createTerminalGroup,
-  getWorkstream, listActivePausedWorkstreams, postCommand, readBrowserState, readPanelLayout,
+  getWorkstream, listActivePausedWorkstreams, postCommand, previewIntent, awaitJob, readBrowserState, readPanelLayout,
   mergeTerminalGroups, openPanelResource, resetAllTerminalSessions, writeBrowserState, wsUrl,
 } from './api.js';
 import {
@@ -377,6 +378,7 @@ const DaemonPane = forwardRef(function DaemonPane({
   useEffect(() => {
     let socket;
     let reconnectTimer;
+    let connectionTimer;
     let reconnectAttempt = 0;
     let closed = false;
     function reconnect() {
@@ -385,16 +387,20 @@ const DaemonPane = forwardRef(function DaemonPane({
       reconnectTimer = setTimeout(connect, websocketReconnectDelay(reconnectAttempt));
       reconnectAttempt += 1;
     }
-    function connect() {
+    async function connect() {
       if (closed) return;
       setConnection('connecting');
       try {
-        socket = new WebSocket(wsUrl('/fw/events', target));
+        const verified = await prepareSocket('/fw/events', target);
+        if (closed) return;
+        socket = new WebSocket(wsUrl('/fw/events', verified));
+        connectionTimer = setTimeout(() => socket.close(), 10000);
       } catch {
         reconnect();
         return;
       }
       socket.addEventListener('open', () => {
+        clearTimeout(connectionTimer);
         eventSocketRef.current = socket;
         reconnectAttempt = 0;
         setConnection('open');
@@ -445,6 +451,7 @@ const DaemonPane = forwardRef(function DaemonPane({
         if (message && SOCKET_MESSAGE_TYPES.has(message.type)) setRevision((value) => value + 1);
       });
       socket.addEventListener('close', () => {
+        clearTimeout(connectionTimer);
         if (eventSocketRef.current === socket) eventSocketRef.current = null;
         if (closed) return;
         reconnect();
@@ -455,16 +462,17 @@ const DaemonPane = forwardRef(function DaemonPane({
     return () => {
       closed = true;
       clearTimeout(reconnectTimer);
+      clearTimeout(connectionTimer);
       if (eventSocketRef.current === socket) eventSocketRef.current = null;
       socket?.close();
     };
   }, [sendMarkdownSubscription, target]);
 
   const mutate = useCallback(async (item, command, body = {}) => {
-    const payload = command === 'resume'
-      ? { ...body, panels: [...DEFAULT_WORKSPACE_ROLES] }
-      : body;
-    const result = await postCommand(item.id, command, payload, target);
+    const preview = await previewIntent({ kind: 'action', target: String(item.id), command, body }, undefined, target);
+    if (preview.confirmationRequired && !window.confirm(preview.consequences.join('\n'))) return {};
+    const payload = { ...preview.intent.body, previewRevision: preview.revision, confirm: preview.confirmationRequired, async: command === 'resume' || preview.intent.body.remove === true };
+    const result = await awaitJob(await postCommand(item.id, command, payload, target), target);
     setRevision((value) => value + 1);
     if (command === 'resume' && result.workstream) activateSession(result.workstream);
     if (command === 'pause' || command === 'archive' || command === 'close') {

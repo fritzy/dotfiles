@@ -15,6 +15,8 @@ import {
 } from './markdown.js';
 import { useMarkdownWatch } from './markdown-watch.js';
 import { firstChangedLine, markdownSourceLines, scrollToMarkdownLine } from './markdown-follow.js';
+import { useTargetAvailable } from './connection-status.js';
+import { readDraft, retainDraft } from './markdown-drafts.js';
 import { useTarget } from './target-context.js';
 import { Button } from './ui.jsx';
 
@@ -48,13 +50,16 @@ export default function MarkdownEditor({
   path, name, source = 'notes', focused, visible = true, fontFamily, fontSize = 14, fullscreen = false,
   initialMode = 'preview', modeRevision, onModeChange, onDirtyChange, onFocusRequest, onFontSizeChange,
   onPanelNavigate, onNavigateUp, onToggleFullscreen, onToggleSidebar, onNewTerminal, onClose,
-  headerActions = null, headerProps = null, titleContent = null, dirtyKey = path,
+  headerActions = null, headerProps = null, titleContent = null, dirtyKey = path, draftKey = dirtyKey,
 }) {
   const target = useTarget();
+  const available = useTargetAvailable(target);
+  const initialDraft = useRef(readDraft(target, path, source, draftKey)).current;
+  const [draftOwner] = useState(() => crypto.randomUUID());
   const watchMarkdown = useMarkdownWatch();
-  const [content, setContent] = useState('');
-  const [saved, setSaved] = useState('');
-  const [version, setVersion] = useState(null);
+  const [content, setContent] = useState(initialDraft?.content || '');
+  const [saved, setSaved] = useState(initialDraft?.saved || '');
+  const [version, setVersion] = useState(initialDraft?.version ?? null);
   const [todayHeading, setTodayHeading] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -81,7 +86,10 @@ export default function MarkdownEditor({
 
   useEffect(() => { onDirtyChange?.(dirtyKey, dirty); }, [dirty, dirtyKey, onDirtyChange]);
 
+  useEffect(() => { retainDraft(target, path, source, content, saved, version, draftKey, draftOwner); }, [content, saved, version, target, path, source, draftKey, draftOwner]);
+
   const load = useCallback(async (signal, { preserveDirty = false } = {}) => {
+    if (!available) return;
     if (!preserveDirty) setLoading(true);
     try {
       const file = source === 'file'
@@ -118,7 +126,7 @@ export default function MarkdownEditor({
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [path, source, target]);
+  }, [available, path, source, target]);
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -160,7 +168,7 @@ export default function MarkdownEditor({
 
   const save = useCallback(async ({ force = false } = {}) => {
     const { content: current, version: known } = stateRef.current;
-    if (saving) return false;
+    if (saving || !available) return false;
     setSaving(true);
     try {
       const payload = { path, content: current, version: force ? null : known };
@@ -179,14 +187,14 @@ export default function MarkdownEditor({
     } finally {
       setSaving(false);
     }
-  }, [path, saving, source, target]);
+  }, [available, path, saving, source, target]);
 
   // Autosave once typing settles; explicit Ctrl/Cmd+S and blur still save eagerly.
   useEffect(() => {
-    if (!dirty || loading || conflict) return undefined;
+    if (!available || !dirty || loading || conflict) return undefined;
     const timer = setTimeout(() => { void save(); }, AUTOSAVE_MS);
     return () => clearTimeout(timer);
-  }, [conflict, content, dirty, loading, save]);
+  }, [available, conflict, content, dirty, loading, save]);
 
   // Neither element exists while the file is loading, so this has to run again
   // once the content lands — otherwise focus stays wherever it was (usually a
@@ -341,7 +349,7 @@ export default function MarkdownEditor({
               onClick={() => setFollowChanges((current) => !current)}
             >Follow changes</Button>
           )}
-          <Button variant="secondary" className="min-h-7 px-2 py-1 text-xs" disabled={saving || loading || !dirty} onClick={() => save()}>Save</Button>
+          <Button variant="secondary" className="min-h-7 px-2 py-1 text-xs" disabled={!available || saving || loading || !dirty} onClick={() => save()}>Save</Button>
           <div className="inline-flex items-center rounded-md border border-primary bg-page" aria-label={`${name} font size`}>
             <button
               type="button"

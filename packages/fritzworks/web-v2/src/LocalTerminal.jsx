@@ -1,3 +1,4 @@
+import { prepareSocket } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 
 import { FitAddon } from '@xterm/addon-fit';
@@ -304,12 +305,14 @@ export default function LocalTerminal({
       candidate.send(JSON.stringify({ type: 'suspend' }));
     };
 
-    connect = () => {
+    connect = async () => {
       if (disposed || exited) return;
       if (socket && socket.readyState <= WebSocket.OPEN) return;
       setStatus('connecting');
       let candidate;
       try {
+        await prepareSocket('/fw/terminal', target);
+        if (disposed || exited || (socket && socket.readyState <= WebSocket.OPEN)) return;
         candidate = new WebSocket(terminalUrl());
       } catch {
         reconnect();

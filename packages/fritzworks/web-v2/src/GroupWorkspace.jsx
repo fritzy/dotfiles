@@ -15,6 +15,7 @@ import { AgentToggle, Button, ErrorMessage, Field, IconButton, inputClass, Modal
 import { panelCapacity, panelsToMinimize } from './panel-layout.js';
 import { canArchiveSession, issueLink } from './utils.js';
 import { githubPullRequestUrl } from '../../lib/github-pr-url.js';
+import { discardDraft } from './markdown-drafts.js';
 
 const MarkdownEditor = lazy(() => import('./MarkdownEditor.jsx'));
 const PullRequestPanel = lazy(() => import('./PullRequestPanel.jsx'));
@@ -529,9 +530,13 @@ export default function GroupWorkspace({
   const disassociate = (resource) => {
     const dirty = dirtyResources.has(resource.id);
     if (dirty && !window.confirm(`${resource.label} has unsaved changes. Disassociate it anyway?`)) return;
-    void refreshAfter(() => disassociateResource(
-      resource.id, { dirty, force: dirty }, revision, target,
-    ));
+    void refreshAfter(async () => {
+      const result = await disassociateResource(resource.id, { dirty, force: dirty }, revision, target);
+      for (const panel of group.panels.filter((item) => item.resourceId === resource.id)) {
+        discardDraft(target, resource.value, 'file', panel.id);
+      }
+      return result;
+    });
   };
 
   const markDirty = useCallback((resourceId, dirty) => {
@@ -843,6 +848,7 @@ export default function GroupWorkspace({
                       onModeChange={(markdownMode) => refreshAfter(() => changePanel(panel.id, { markdownMode }, revision, target))}
                       onFontSizeChange={(amount) => refreshAfter(() => changePanel(panel.id, { fontSize: panel.fontSize + amount }, revision, target))}
                       dirtyKey={resource.id}
+                      draftKey={panel.id}
                       onDirtyChange={markDirty}
                       onFocusRequest={() => onPanelFocus?.(panelName)}
                       onPanelNavigate={(direction) => navigate(index, direction)}

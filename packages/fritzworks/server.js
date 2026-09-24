@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createApiService } from './lib/api.js';
 import { CONFIG } from './lib/config.js';
-import { daemonFiles } from './lib/daemon.js';
+import { acquireDaemonLock, daemonFiles } from './lib/daemon.js';
 
 function flagValue(args, name) {
   const index = args.indexOf(name);
@@ -33,39 +33,54 @@ function listen(server, host, port) {
 }
 
 export async function runServer({
-  host = CONFIG.server.host,
-  port = CONFIG.server.port,
   config = CONFIG,
+  host = config.server.host,
+  port = config.server.port,
 } = {}) {
-  const service = createApiService({ config });
-  const address = await listen(service.server, host, port);
+  const release = acquireDaemonLock(config);
+  let service;
+  let address;
+  try {
+    service = createApiService({ config });
+    address = await listen(service.server, host, port);
+  } catch (error) {
+    try { await service?.close(); } finally { release(); }
+    throw error;
+  }
   const actualHost = typeof address === 'object' && address ? address.address : host;
   const actualPort = typeof address === 'object' && address ? address.port : port;
+  const connectHost = actualHost === '0.0.0.0' ? '127.0.0.1' : actualHost === '::' ? '::1' : actualHost;
+  service.context.runtimeEndpoint = `http://${connectHost.includes(':') && !connectHost.startsWith('[') ? `[${connectHost}]` : connectHost}:${actualPort}`;
   const files = daemonFiles(config);
-  const daemonized = process.env.FRITZWORKS_DAEMON === '1';
   const info = {
     pid: process.pid,
+    instanceId: service.context.instanceId,
+    configPath: config.configPath,
+    configRevision: service.context.configRevision,
     host: actualHost,
     port: actualPort,
     startedAt: new Date().toISOString(),
   };
-  if (daemonized) writeFileSync(files.pid, `${JSON.stringify(info, null, 2)}\n`);
+  writeFileSync(files.pid, `${JSON.stringify(info, null, 2)}\n`);
   process.stdout.write(`fritzworks API listening on http://${actualHost}:${actualPort}\n`);
 
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
     stopping = true;
-    await service.close();
-    if (daemonized && existsSync(files.pid)) {
+    try { await service.close(); } finally { release(); }
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+    if (existsSync(files.pid)) {
       try {
         const current = JSON.parse(readFileSync(files.pid, 'utf8'));
         if (current.pid === process.pid) unlinkSync(files.pid);
       } catch { /* leave an unfamiliar pid file alone */ }
     }
   };
-  process.once('SIGINT', () => stop().then(() => process.exit(0)));
-  process.once('SIGTERM', () => stop().then(() => process.exit(0)));
+  const onSignal = () => stop().then(() => process.exit(0));
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
   return { service, address, info, stop };
 }
 

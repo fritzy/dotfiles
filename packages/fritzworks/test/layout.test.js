@@ -76,6 +76,8 @@ test('browser terminals recreate a missing session and reuse a live one', () => 
   const session = browserTerminalSessionName(identity);
   const calls = [];
   let live = false;
+  let generations = 0;
+  const prepareCommand = (command) => { generations++; return command; };
   const run = (args, options) => {
     calls.push({ args, options });
     if (args[0] === 'list-sessions') {
@@ -89,7 +91,7 @@ test('browser terminals recreate a missing session and reuse a live one', () => 
   };
 
   assert.deepEqual(
-    ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
+    ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run, prepareCommand }),
     { session, created: true },
   );
   assert.deepEqual(calls[1], { args: ['delete-session', session], options: undefined });
@@ -98,10 +100,13 @@ test('browser terminals recreate a missing session and reuse a live one', () => 
     options: { cwd: '/tmp' },
   });
   assert.deepEqual(
-    ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run }),
+    ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run, prepareCommand }),
     { session, created: false },
   );
+  assert.equal(generations, 1);
   assert.equal(killBrowserTerminalSession(identity, { run }), true);
+  ensureBrowserTerminalSession(identity, { command: ['zsh', '-l'], cwd: '/tmp', run, prepareCommand });
+  assert.equal(generations, 2);
 });
 
 test('failed browser layout creation deletes the stock session snapshot', () => {

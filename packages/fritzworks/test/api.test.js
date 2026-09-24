@@ -812,6 +812,8 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   const newDefaults = await (await fetch(`${base}/fw/new`)).json();
   assert.deepEqual(newDefaults, {
     repositoryRoot: config.paths.repositories,
+    worktreeRoot: config.paths.repositories,
+    repositoryCreation: { available: true },
     scratchpadRoot: config.paths.scratchpads,
     recentRepositories: ['example/project'],
     agent: 'claude',
@@ -1158,7 +1160,7 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   assert.equal(createdFromWeb.workstream.gitClean, false);
   assert.equal(createdFromWeb.workstream.prDone, null);
   assert.equal(createdFromWeb.branchedOffParent, true);
-  assert.deepEqual(materializedWorktrees.at(-1).options, { base: repo.branch });
+  assert.deepEqual(materializedWorktrees.at(-1).options, { base: repo.branch, config });
   assert.equal(createdRepoGitChecks > 0, true);
   assert.equal(createdFromWeb.workstream.issues[0].ref, 'https://github.com/example/project/issues/321');
   assert.equal(createdFromWeb.workstream.issues.some(
@@ -1891,7 +1893,8 @@ test('HTML previews serve relative assets and reject writes and escaping paths',
   });
   assert.equal(addedResponse.status, 200);
   const added = await addedResponse.json();
-  const resourcePath = `/resource-files/${added.resource.id}/`;
+  const { instanceId } = await (await fetch(`${base}/capabilities`)).json();
+  const resourcePath = `/resource-files/${instanceId}/${added.resource.id}/`;
   const pageUrl = `${base}${resourcePath}index%20test.html`;
   const page = await fetch(pageUrl);
   assert.equal(page.status, 200);

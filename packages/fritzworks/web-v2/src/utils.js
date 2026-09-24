@@ -99,6 +99,9 @@ export function opticalPillPadding(label) {
 }
 
 export function branchState(item) {
+  if (item.type === 'misc' && !item.repo && !item.gitPresent) {
+    return { icon: 'folder', color: 'text-primary', label: 'Configured directory' };
+  }
   if (item.type === 'scratchpad') {
     return { icon: 'folder', color: 'text-primary', label: 'Scratchpad directory' };
   }
@@ -115,8 +118,7 @@ export function branchState(item) {
 }
 
 export function canArchiveSession(item) {
-  if (!item || item.closeable === false || item.status === 'closed') return false;
-  return item.type === 'scratchpad' || item.type === 'repo';
+  return item?.availableActions?.archive?.available === true;
 }
 
 export function visiblePages(pageCount, page) {
@@ -133,20 +135,6 @@ export function visiblePages(pageCount, page) {
     }
   }
   return [...visible].sort((left, right) => left - right);
-}
-
-export function repoSelectorPreview(selector) {
-  const pr = selector.match(/^#?(\d+)$/);
-  if (pr) return { source: `pr:${pr[1]}`, branch: null };
-  if (selector.includes(':')) {
-    const [owner, branch] = selector.split(':');
-    if (owner && branch) return { source: `fork:${owner}`, branch };
-  }
-  return selector ? { source: 'origin', branch: selector } : { source: null, branch: null };
-}
-
-export function scratchpadSlug(value) {
-  return value.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 export function stackDescription(item) {

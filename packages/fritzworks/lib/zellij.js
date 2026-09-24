@@ -4,7 +4,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -21,7 +21,7 @@ function zellij(args, opts = {}) {
 }
 
 function detachedZellij(args, opts = {}) {
-  const env = { ...process.env };
+  const env = { ...process.env, ...opts.env };
   delete env.ZELLIJ;
   delete env.ZELLIJ_PANE_ID;
   delete env.ZELLIJ_SESSION_NAME;
@@ -115,7 +115,7 @@ const BROWSER_TERMINAL_SESSION_MAX_BYTES = 48;
 function compactBrowserTerminalSessionName(session, prefix) {
   if (Buffer.byteLength(session) <= BROWSER_TERMINAL_SESSION_MAX_BYTES) return session;
   const digest = createHash('sha256').update(session).digest('hex').slice(0, 24);
-  return `${prefix}h-${digest}`;
+  return `${prefix}h-${digest.slice(0, BROWSER_TERMINAL_SESSION_MAX_BYTES - Buffer.byteLength(prefix) - 2)}`;
 }
 
 function terminalSessionName({
@@ -134,11 +134,13 @@ function terminalSessionName({
 }
 
 export function browserTerminalSessionName(identity) {
-  return terminalSessionName(identity);
+  return identity?.adoptedSession || terminalSessionName(identity, identity?.namespace || 'fw');
 }
 
 function terminalSessionNames(identity) {
+  if (identity?.adoptedSession) return [identity.adoptedSession];
   // Hash the original name too: replacing the prefix cannot recover old panel hashes.
+  if (identity?.namespace && identity.namespace !== 'fw') return [browserTerminalSessionName(identity)];
   return [terminalSessionName(identity), terminalSessionName(identity, 'ws')];
 }
 
@@ -146,31 +148,44 @@ export function browserAgentSessionName(id) {
   return browserTerminalSessionName({ sessionId: id, role: 'agent' });
 }
 
-export function browserTerminalConfigFile() {
-  writeFileSync(BROWSER_TERMINAL_CONFIG_FILE, 'pane_frames false\nshow_startup_tips false\nshow_release_notes false\n');
-  return BROWSER_TERMINAL_CONFIG_FILE;
+export function browserTerminalConfigFile({ runtimeDir } = {}) {
+  if (runtimeDir) mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+  const file = runtimeDir ? join(runtimeDir, 'terminal-config.kdl') : BROWSER_TERMINAL_CONFIG_FILE;
+  writeFileSync(file, 'pane_frames false\nshow_startup_tips false\nshow_release_notes false\n');
+  return file;
 }
 
 export const browserAgentConfigFile = browserTerminalConfigFile;
 
-function writeBrowserTerminalLayout(session, command, cwd) {
+function writeBrowserTerminalLayout(session, command, cwd, runtimeDir) {
+  if (runtimeDir) mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
   const [program, ...args] = command;
   const argsBlock = args.length ? ` {\n            args ${args.map(kdlString).join(' ')}\n        }` : '';
-  const file = join(tmpdir(), `fw-browser-terminal-layout-${process.pid}-${session}.kdl`);
+  const file = join(runtimeDir || tmpdir(), `fw-browser-terminal-layout-${process.pid}-${session}.kdl`);
   writeFileSync(file, `layout {\n    tab cwd=${kdlString(cwd)} {\n        pane borderless=true command=${kdlString(program)}${argsBlock}\n    }\n}\n`);
   return file;
 }
 
-export function ensureBrowserTerminalSession(identity, { command, cwd, run = detachedZellij } = {}) {
+export function ensureBrowserTerminalSession(identity, { command, cwd, runtimeDir, env, prepareCommand, run = detachedZellij } = {}) {
   const session = browserTerminalSessionName(identity);
   const live = activeSessions(run);
   const existing = terminalSessionNames(identity).find((name) => live.includes(name));
   if (existing) return { session: existing, created: false };
+  if (identity?.adoptedSession) throw new Error('adopted terminal is unavailable; explicit recovery is required');
+  if (prepareCommand) command = prepareCommand(command);
   run(['delete-session', session]);
-  const layout = writeBrowserTerminalLayout(session, command, cwd);
-  const configFile = browserTerminalConfigFile();
+  const hookIdentityKeys = ['FRITZWORKS_ID', 'FRITZWORKS_DAEMON', 'AI_WORKSTREAM_ID', 'FRITZWORKS_GENERATION', 'FRITZWORKS_TERMINAL_ID', 'FRITZWORKS_PROVIDER', 'FRITZWORKS_DAEMON_URL'];
+  const launch = env ? [
+    'env', ...hookIdentityKeys.flatMap((key) => ['-u', key]),
+    ...Object.entries(env).filter(([key]) => /^(FRITZWORKS_|FW_|XDG_)/.test(key)
+      && !hookIdentityKeys.includes(key))
+      .map(([key, value]) => `${key}=${value}`),
+    ...command,
+  ] : command;
+  const layout = writeBrowserTerminalLayout(session, launch, cwd, runtimeDir);
+  const configFile = browserTerminalConfigFile({ runtimeDir });
   requireZellij(
-    run(['--config', configFile, 'attach', '--create-background', session], { cwd }),
+    run(['--config', configFile, 'attach', '--create-background', session], { cwd, ...(env ? { env } : {}) }),
     `failed to start browser terminal session "${session}"`,
   );
   try {
@@ -208,7 +223,7 @@ export function resetBrowserTerminalSession(identity, { run = detachedZellij } =
   return { session, reset: reset.some(Boolean) };
 }
 
-export function resetAllBrowserTerminalSessions({ run = detachedZellij } = {}) {
+export function resetAllBrowserTerminalSessions({ run = detachedZellij, namespace = 'fw' } = {}) {
   const result = run(['list-sessions', '--no-formatting']);
   if (result.error) throw new Error(`cannot query Zellij sessions: ${result.error.message}`);
   if (result.status !== 0) {
@@ -218,7 +233,9 @@ export function resetAllBrowserTerminalSessions({ run = detachedZellij } = {}) {
   }
   const sessions = lines(result.stdout)
     .map((line) => line.replace(/\s+\[Created\b.*$/, '').trim())
-    .filter((session) => /^(fw|ws)-browser-/.test(session));
+    .filter((session) => namespace === 'fw'
+      ? /^(fw|ws)-browser-/.test(session)
+      : session.startsWith(`${namespace}-browser-`));
   const reset = sessions.filter((session) => deleteSessionSnapshot(session, run));
   return { count: reset.length, sessions: reset };
 }

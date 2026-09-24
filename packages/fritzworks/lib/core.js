@@ -1,24 +1,16 @@
-// fritzworks core — shared logic for the CLI and the MCP server.
-//
-// A "workstream" is a branch checked out under the configured repository root
-// recorded in a SQLite db so it can be listed, rejoined (reconstituted if the
-// worktree was removed), paused/resumed, closed, and annotated with issues.
-//
-// Everything here is side-effect-light: data functions touch only the db and
-// return values; functions throw Error on failure rather than calling exit, and
-// progress/diagnostics go to stderr (never stdout) so this is safe to use from
-// an stdio MCP server whose stdout carries the JSON-RPC stream.
+// Daemon persistence and legacy domain adapters.
 
 import { DatabaseSync } from 'node:sqlite';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, renameSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync, renameSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
-import { CONFIG } from './config.js';
+import { CONFIG, persistConfigVersion } from './config.js';
 import {
   isWorkstreamUuid, migrateWorkstreamUuids, newWorkstreamUuid,
 } from './migrations/001-workstream-uuid.js';
+import { initializeStorageSchema } from './storage-schema.js';
 import { initializePanelSchema } from './panels.js';
 
 export const HOME = CONFIG.home;
@@ -52,12 +44,25 @@ export function gitTry(args, opts = {}) {
 
 // ---------------------------------------------------------------- database
 
-export function openDb(path = DB_PATH) {
+export function openDb(path = DB_PATH, { config } = {}) {
+  if (existsSync(join(dirname(path), 'rebind-pending.json'))) throw new Error('data rebind is incomplete; recover it before opening the database');
+  if (path === DB_PATH) persistConfigVersion(CONFIG);
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
-  // Agent and shell hooks update this database from short-lived processes while
-  // the daemon is reading it. Wait out those brief writer locks instead of
-  // failing an API request (or a terminal output callback) immediately.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='application_metadata'").get()) {
+    const retired = db.prepare("SELECT value FROM application_metadata WHERE key='storageRetiredTo'").get();
+    if (retired) { db.close(); throw new Error(`data directory retired after explicit rebind to ${retired.value}`); }
+    const version = Number(db.prepare("SELECT value FROM application_metadata WHERE key='storageVersion'").get()?.value || 0);
+    if (version > 3) { db.close(); throw new Error('database requires a newer FritzWorks storage implementation'); }
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workstreams'").get()
+    && !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='storage_owners'").get()) {
+    const backup = join(dirname(path), 'backups', `before-storage-schema-${newWorkstreamUuid()}`);
+    mkdirSync(backup, { recursive: true, mode: 0o700 });
+    db.prepare('VACUUM INTO ?').run(join(backup, 'workstreams.db'));
+    if (config?.configPath && existsSync(config.configPath)) copyFileSync(config.configPath, join(backup, 'config.original'));
+  }
+  // Worker jobs share the daemon database; wait out short writer transactions.
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(`
@@ -342,6 +347,7 @@ export function openDb(path = DB_PATH) {
     END;
   `);
   initializePanelSchema(db);
+  initializeStorageSchema(db);
   return db;
 }
 
@@ -612,6 +618,10 @@ export function setPath(db, id, path) {
 // Returns null when nothing matches; throws when a branch is ambiguous.
 export function resolveRow(db, selector) {
   if (!selector) return null;
+  if (isWorkstreamUuid(selector)) {
+    const row = db.prepare('SELECT * FROM workstreams WHERE uuid=?').get(selector);
+    if (row) return row;
+  }
   if (/^\d+$/.test(selector)) {
     return db.prepare('SELECT * FROM workstreams WHERE id=?').get(Number(selector));
   }
@@ -724,7 +734,7 @@ export function stackLine(db, row) {
 // no branch, a `fork:` branch belongs to someone else, and in a fork-routed clone
 // our branches aren't on the repo the PRs target — `gh stack link` chains PR bases
 // within one repo, so none of those can participate.
-export function stackCheck(chain) {
+export function stackCheck(chain, config = CONFIG) {
   if (chain.length < 2) return { ok: false, reason: 'a stack needs at least two workstreams' };
   const scratch = chain.find(isScratch);
   if (scratch) return { ok: false, reason: `#${scratch.id} is a scratchpad — it has no branch to open a PR from` };
@@ -736,7 +746,7 @@ export function stackCheck(chain) {
     return { ok: false, reason: `mixes repos (${org}/${repo} and ${other.org}/${other.repo}); `
       + 'a GitHub stack is one repo' };
   }
-  if (isForkRouted(repoPaths(org, repo).bare)) {
+  if (isForkRouted(repoPaths(org, repo, config).bare)) {
     return { ok: false, reason: `${org}/${repo} is routed through your fork, so these branches aren't on `
       + 'the repo the PRs target; stack them by hand in the PR descriptions' };
   }
@@ -754,8 +764,8 @@ export function hasGhStack() {
 // Runs from the bottom branch's worktree — any worktree of the clone would do
 // (link addresses branches by name), but a stable choice keeps gh's own bookkeeping
 // in one place. Returns { ok, output }.
-export function ghStackLink(chain, { open = false } = {}) {
-  const check = stackCheck(chain);
+export function ghStackLink(chain, { open = false, config = CONFIG } = {}) {
+  const check = stackCheck(chain, config);
   if (!check.ok) throw new Error(check.reason);
   if (!hasGhStack()) {
     throw new Error('the `gh stack` extension is not installed (gh extension install github/gh-stack)');
@@ -763,7 +773,7 @@ export function ghStackLink(chain, { open = false } = {}) {
   const bottom = chain[0];
   const cwd = existsSync(bottom.path)
     ? bottom.path
-    : materializeWorktree(bottom.org, bottom.repo, bottom.branch, bottom.source);
+    : materializeWorktree(bottom.org, bottom.repo, bottom.branch, bottom.source, { config });
   const args = ['stack', 'link'];
   if (open) args.push('--open');
   args.push(...chain.map((r) => r.branch));
@@ -778,9 +788,9 @@ export function ghStackLink(chain, { open = false } = {}) {
 // `trunk: true` the bottom branch is first rebased onto the fetched default branch.
 // Stops at the first conflict and reports where, leaving the rebase in progress
 // for the user to resolve — the branches below it are already rebased.
-export function rebaseStack(chain, { trunk = false } = {}) {
+export function rebaseStack(chain, { trunk = false, config = CONFIG } = {}) {
   const steps = [];
-  const pathFor = (r) => (existsSync(r.path) ? r.path : materializeWorktree(r.org, r.repo, r.branch, r.source));
+  const pathFor = (r) => (existsSync(r.path) ? r.path : materializeWorktree(r.org, r.repo, r.branch, r.source, { config }));
   const run = (r, onto) => {
     const path = pathFor(r);
     const dirty = worktreeDirty(path);
@@ -794,7 +804,7 @@ export function rebaseStack(chain, { trunk = false } = {}) {
   };
 
   if (trunk) {
-    const { bare } = repoPaths(chain[0].org, chain[0].repo);
+    const { bare } = repoPaths(chain[0].org, chain[0].repo, config);
     gitTry(['--git-dir', bare, 'fetch', 'origin'], { stdio: ['ignore', 'ignore', 'ignore'] });
     const step = run(chain[0], `origin/${defaultBranch(bare)}`);
     steps.push(step);
@@ -919,7 +929,7 @@ export function listLogs(db, workstreamId, { since, until } = {}) {
 
 export const isScratch = (row) => row.source === 'scratch' || row.org === SCRATCH_ORG;
 
-export const scratchPath = (name) => join(SCRATCH_ROOT, name);
+export const scratchPath = (name, config = CONFIG) => join(config.paths.scratchpads, name);
 
 // Slug a user-supplied scratchpad name into something safe for a directory and display name:
 // whitespace and other odd characters collapse to single hyphens.
@@ -937,7 +947,7 @@ export function randomScratchName() {
 // Create and register a scratchpad under the configured scratchpad root. An
 // unnamed scratchpad gets a random name.
 // Names collide-avoid by appending a numeric suffix.
-export function createScratchpad(db, rawName) {
+export function createScratchpad(db, rawName, config = CONFIG) {
   let name = (rawName ? scratchSlug(rawName) : '') || randomScratchName();
   // Don't clobber an existing scratchpad of the same name: suffix until unique.
   if (rawName) {
@@ -946,7 +956,7 @@ export function createScratchpad(db, rawName) {
       .get(SCRATCH_ORG, SCRATCH_ORG, n)) { n = `${name}-${i++}`; }
     name = n;
   }
-  const path = scratchPath(name);
+  const path = scratchPath(name, config);
   mkdirSync(path, { recursive: true });
   return upsertWorkstream(db, {
     org: SCRATCH_ORG, repo: SCRATCH_ORG, branch: name, source: 'scratch',
@@ -956,22 +966,23 @@ export function createScratchpad(db, rawName) {
 
 // ---------------------------------------------------------------- git / worktrees
 
-export function repoPaths(org, repo) {
-  const container = join(GITHUB_ROOT, org, repo);
+export function repoPaths(org, repo, config = CONFIG) {
+  if (config.configVersion === 2) throw new Error('managed Git storage requires a daemon operation with persisted allocation metadata');
+  const container = join(config.paths.repositories, org, repo);
   return { container, bare: join(container, '.bare') };
 }
 
-export const githubUrl = (org, repo) => CONFIG.gitProtocol === 'https'
+export const githubUrl = (org, repo, config = CONFIG) => config.gitProtocol === 'https'
   ? `https://github.com/${org}/${repo}.git`
   : `git@github.com:${org}/${repo}.git`;
 
-export const hasClone = (org, repo) => existsSync(repoPaths(org, repo).bare);
+export const hasClone = (org, repo, config = CONFIG) => existsSync(repoPaths(org, repo, config).bare);
 
-export function ensureBareClone(org, repo) {
-  const { container, bare } = repoPaths(org, repo);
+export function ensureBareClone(org, repo, config = CONFIG) {
+  const { container, bare } = repoPaths(org, repo, config);
   if (!existsSync(bare)) {
     mkdirSync(container, { recursive: true });
-    const url = githubUrl(org, repo);
+    const url = githubUrl(org, repo, config);
     progress(`Cloning ${url} -> ${bare}`);
     // Use init + fetch rather than `git clone --bare`: clone --bare copies every
     // remote branch into refs/heads/*, which would make worktrees base on frozen,
@@ -1175,9 +1186,9 @@ function fetchWithRetry(bare, remote, tries = 5) {
 //   origin   -> the fork (push target, branches you create live here)
 //   upstream -> the canonical repo (fetch only; pushurl disabled)
 // Idempotent.
-function setupForkTopology(bare, org, repo, fork) {
-  const canonicalUrl = githubUrl(org, repo);
-  const forkUrl = githubUrl(fork.owner, fork.repo);
+function setupForkTopology(bare, org, repo, fork, config) {
+  const canonicalUrl = githubUrl(org, repo, config);
+  const forkUrl = githubUrl(fork.owner, fork.repo, config);
   progress(`Routing ${org}/${repo} through your fork ${fork.owner}/${fork.repo} (origin=fork, upstream=canonical)`);
   ensureRemote(bare, 'upstream', canonicalUrl);
   git(['--git-dir', bare, 'config', 'remote.upstream.fetch', '+refs/heads/*:refs/remotes/upstream/*']);
@@ -1196,7 +1207,7 @@ const isForkRouted = (bare) => gitTry(['--git-dir', bare, 'config', '--get', 'fw
 // The positive decision is sticky (recorded as fw.useFork): once a repo is
 // fork-routed it stays that way; unprotected repos are simply left on origin and
 // re-checked on the next new branch (cheap, and avoids caching a wrong "no").
-function ensureForkRouting(bare, org, repo, branch) {
+function ensureForkRouting(bare, org, repo, branch, config) {
   if (isForkRouted(bare)) return;
   if (!branchCreationBlocked(org, repo, branch)) return;
   const fork = ensureFork(org, repo);
@@ -1204,7 +1215,7 @@ function ensureForkRouting(bare, org, repo, branch) {
     progress(`Creating branches on ${org}/${repo} is restricted but no fork is available; pushes may be rejected.`);
     return;
   }
-  setupForkTopology(bare, org, repo, fork);
+  setupForkTopology(bare, org, repo, fork, config);
   git(['--git-dir', bare, 'config', 'fw.useFork', '1']);
 }
 
@@ -1236,7 +1247,7 @@ export function parseSelector(org, repo, selector) {
 
 // Fetch whatever ref the worktree should be based on (per `source`) and return it.
 // Only called when the local branch doesn't already exist.
-function fetchBaseRef(bare, org, repo, branch, source) {
+function fetchBaseRef(bare, org, repo, branch, source, config) {
   git(['--git-dir', bare, 'fetch', 'origin'], { stdio: ['inherit', 'ignore', 'inherit'] });
 
   if (source && source.startsWith('pr:')) {
@@ -1247,7 +1258,7 @@ function fetchBaseRef(bare, org, repo, branch, source) {
       const forkRepo = (pr.headRepository && pr.headRepository.name) || repo;
       let remote = remoteFor(bare, owner, forkRepo);
       if (!remote) {
-        ensureRemote(bare, owner, githubUrl(owner, forkRepo));
+        ensureRemote(bare, owner, githubUrl(owner, forkRepo, config));
         remote = owner;
       }
       git(['--git-dir', bare, 'fetch', remote, pr.headRefName], { stdio: ['inherit', 'ignore', 'inherit'] });
@@ -1262,7 +1273,7 @@ function fetchBaseRef(bare, org, repo, branch, source) {
     const owner = source.slice(5);
     let remote = remoteFor(bare, owner, repo);
     if (!remote) {
-      ensureRemote(bare, owner, githubUrl(owner, repo));
+      ensureRemote(bare, owner, githubUrl(owner, repo, config));
       remote = owner;
     }
     git(['--git-dir', bare, 'fetch', remote, branch], { stdio: ['inherit', 'ignore', 'inherit'] });
@@ -1297,26 +1308,26 @@ function fetchBaseRef(bare, org, repo, branch, source) {
 // `base` overrides what a *new* branch is created from (used when stacking a
 // branch on its parent instead of the default branch); it's ignored once the
 // branch exists, since then its history is already settled.
-export function materializeWorktree(org, repo, branch, source, { base } = {}) {
+export function materializeWorktree(org, repo, branch, source, { base, config = CONFIG } = {}) {
   // Scratchpads aren't git worktrees — reconstituting one just means recreating
   // its directory under the configured scratchpad root.
   if (source === 'scratch') {
-    const path = scratchPath(branch);
+    const path = scratchPath(branch, config);
     mkdirSync(path, { recursive: true });
     return path;
   }
-  const { container, bare } = repoPaths(org, repo);
-  ensureBareClone(org, repo);
+  const { container, bare } = repoPaths(org, repo, config);
+  ensureBareClone(org, repo, config);
   // For plain branches, route the repo through a fork if a ruleset blocks creating
   // refs on the canonical repo. PR/explicit-fork sources manage their own remotes.
-  if (!source || source === 'origin') ensureForkRouting(bare, org, repo, branch);
+  if (!source || source === 'origin') ensureForkRouting(bare, org, repo, branch, config);
   const path = join(container, sanitize(branch));
   if (existsSync(path)) return path;
 
   if (localBranchExists(bare, branch)) {
     git(['--git-dir', bare, 'worktree', 'add', path, branch], { stdio: ['inherit', 'ignore', 'inherit'] });
   } else {
-    const from = base || fetchBaseRef(bare, org, repo, branch, source);
+    const from = base || fetchBaseRef(bare, org, repo, branch, source, config);
     if (base) progress(`Creating branch "${branch}" stacked on ${base}`);
     git(['--git-dir', bare, 'worktree', 'add', '-b', branch, path, from], { stdio: ['inherit', 'ignore', 'inherit'] });
     // In a fork-routed clone, push/pull go to the fork even when based on upstream.
@@ -1352,29 +1363,30 @@ export function worktreeCleanAsync(path, { exists = existsSync, run = execFile }
   });
 }
 
-export function removeWorktree(org, repo, path) {
+export function removeWorktree(org, repo, path, config = CONFIG) {
   // Scratchpads are plain temp directories, not git worktrees.
   if (org === SCRATCH_ORG) {
     rmSync(path, { recursive: true, force: true });
     return;
   }
-  const { bare } = repoPaths(org, repo);
+  const { bare } = repoPaths(org, repo, config);
   // Run from the bare repo, not the inherited cwd: if `fw close` is invoked from
   // inside the worktree being removed, git can't operate on its own cwd and the
   // remove fails (falling through to prune, which leaves the directory behind).
-  try {
-    git(['--git-dir', bare, 'worktree', 'remove', '--force', path], { cwd: bare, stdio: ['inherit', 'ignore', 'inherit'] });
-  } catch {
-    gitTry(['--git-dir', bare, 'worktree', 'prune'], { cwd: bare });
-    rmSync(path, { recursive: true, force: true });
-  }
+  git(['--git-dir', bare, 'worktree', 'remove', '--force', path], { cwd: bare, stdio: ['inherit', 'ignore', 'inherit'] });
 }
 
 // ---------------------------------------------------------------- notes files
 
 // Notes live under the configured notes root, split work/ and journal/, one file per
 // Monday-based week: <root>/work/<YYYY>/<YYYY-MM-DD>-week.md. See the notes skill.
-export const NOTES_ROOT = CONFIG.paths.notes;
+export const NOTES_ROOT = CONFIG.paths.notes ?? null;
+export const WEEKLY_NOTES_ROOT = CONFIG.notes?.weekly?.enabled === false ? null : CONFIG.notes?.weekly?.root || NOTES_ROOT;
+
+function requireNotesRoot(root) {
+  if (!root) throw new Error('session-note storage requires a daemon operation with persisted allocation metadata');
+}
+
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1403,7 +1415,8 @@ export const dayHeading = (d) =>
 // <YYYY-MM-DD>-week.md keyed to the week's Monday, scaffolded with a heading per
 // weekday. Honors an existing file (dashed or older compact name) rather than
 // creating a duplicate.
-export function ensureWeeklyNote(root = NOTES_ROOT, d = new Date()) {
+export function ensureWeeklyNote(root = WEEKLY_NOTES_ROOT, d = new Date()) {
+  if (!root) throw new Error('weekly notes are disabled; configure notes.weekly.enabled and notes.weekly.root');
   const monday = weekMonday(d);
   const iso = `${monday.getFullYear()}-${pad2(monday.getMonth() + 1)}-${pad2(monday.getDate())}`;
   const dir = join(root, 'work', String(monday.getFullYear()));
@@ -1427,7 +1440,8 @@ export function ensureWeeklyNote(root = NOTES_ROOT, d = new Date()) {
 // Append a markdown block under `d`'s weekday heading in the correct weekly file,
 // after any existing entries for that day (creating the heading if absent).
 // Returns { file, heading }.
-export function appendDayEntry(block, d = new Date(), root = NOTES_ROOT) {
+export function appendDayEntry(block, d = new Date(), root = WEEKLY_NOTES_ROOT) {
+  if (!root) throw new Error('weekly notes are disabled; configure notes.weekly.enabled and notes.weekly.root');
   const file = ensureWeeklyNote(root, d);
   const heading = dayHeading(d);
   const lines = readFileSync(file, 'utf8').split('\n');
@@ -1475,13 +1489,16 @@ function noteDirectoryNames(row, sessionRoot) {
   return [canonical, ...legacy];
 }
 
-export const noteDir = (row, d = new Date(), root = NOTES_ROOT) =>
-  join(root, 'work', String(d.getFullYear()), 'workstream', workstreamSlug(row));
+export const noteDir = (row, d = new Date(), root = NOTES_ROOT) => {
+  requireNotesRoot(root);
+  return join(root, 'work', String(d.getFullYear()), 'workstream', workstreamSlug(row));
+};
 
 // Return the newest year-specific notes directory that already exists for a
 // workstream. A workstream can span a year boundary, so callers should not
 // assume its notes are under the current year.
 export function existingNoteDir(row, root = NOTES_ROOT) {
+  if (!root) return null;
   const workDir = join(root, 'work');
   if (!existsSync(workDir)) return null;
   const years = readdirSync(workDir).sort().reverse();
@@ -1531,15 +1548,17 @@ export function linkedSessionSeed(kind, links) {
 // DATA_DIR (not the worktree — git status stays clean) keyed by workstream id,
 // so re-seeding overwrites rather than accumulating. Returns the file path,
 // which the daemon hands to the next newly-created agent terminal.
-export function writeSeed(row, content) {
-  mkdirSync(SEEDS_DIR, { recursive: true });
-  const file = join(SEEDS_DIR, `${row.id}.md`);
+export function writeSeed(row, content, config = CONFIG) {
+  const seedsDir = join(config.paths.data, 'seeds');
+  mkdirSync(seedsDir, { recursive: true });
+  const file = join(seedsDir, `${row.id}.md`);
   writeFileSync(file, content.endsWith('\n') ? content : `${content}\n`);
   return file;
 }
 
 // Note filenames for a workstream, oldest first, across every year it has any.
 export function listNotes(row, root = NOTES_ROOT) {
+  requireNotesRoot(root);
   const workDir = join(root, 'work');
   if (!existsSync(workDir)) return [];
   const out = [];
@@ -1644,7 +1663,7 @@ export function renderDigest(activity) {
 }
 
 // A plain serialisable view of a workstream row (+ derived fields), for MCP output.
-export function workstreamView(db, r, cwd) {
+export function workstreamView(db, r, cwd, config = CONFIG) {
   const cur = cwd !== undefined ? currentWorkstream(db, cwd) : null;
   const scratch = isScratch(r);
   const parent = parentOf(db, r);
@@ -1661,7 +1680,7 @@ export function workstreamView(db, r, cwd) {
     status: r.status,
     agentStatus: r.agent_status || null,
     shellStatus: r.shell_status || null,
-    agent: r.agent || CONFIG.agent,
+    agent: r.agent || config.agent,
     gitClean: cachedBoolean(r.git_clean),
     prDone: cachedBoolean(r.pr_done),
     source: r.source,

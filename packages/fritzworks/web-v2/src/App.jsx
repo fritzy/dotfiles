@@ -1,8 +1,9 @@
+import { useMarkdownDrafts } from './markdown-drafts.js';
 import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 
-import { listDaemons } from './api.js';
+import { listDaemons, connections as connectionDirectory, subscribeConnections } from './api.js';
 import {
   DEFAULT_OMITTED_BRANCH_PREFIXES, DEFAULT_TERMINAL_FONT, OMITTED_BRANCH_PREFIXES_STORAGE_KEY, SIDEBAR_WIDTH_STORAGE_KEY,
   SYNC_WINDOW_FULLSCREEN_STORAGE_KEY, TERMINAL_FONTS,
@@ -16,10 +17,6 @@ import { TargetProvider } from './target-context.js';
 const DEFAULT_SIDEBAR_WIDTH = 264;
 const MIN_SIDEBAR_WIDTH = 208;
 const MAX_SIDEBAR_WIDTH = 640;
-// Hoisted so its identity is stable across renders — otherwise every DaemonPane
-// and LocalTerminal effect keyed on `target` would reconnect the moment the
-// /daemons fetch resolves and rebuilds this array.
-const LOCAL_TARGET = { id: 'local', name: 'Local', url: null };
 
 function storedValue(key, fallback) {
   try { return localStorage.getItem(key) || fallback; }
@@ -34,8 +31,10 @@ function clampSidebarWidth(value) {
 }
 
 export default function App() {
-  const [daemons, setDaemons] = useState([]);
-  const targets = useMemo(() => [LOCAL_TARGET, ...daemons], [daemons]);
+  const drafts = useMarkdownDrafts();
+  const [recoveryOpen, setRecoveryOpen] = useState(true);
+  const retainedTargets = useRef(new Map());
+  const [targets, setTargets] = useState(() => connectionDirectory.snapshot());
   // Local is always where a fresh load lands; switching targets afterwards
   // never triggers a reload, so both stay connected in the background.
   const [currentTargetId, setCurrentTargetId] = useState('local');
@@ -80,7 +79,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    listDaemons().then((body) => setDaemons(body.daemons || [])).catch(() => {});
+    let cancelled = false;
+    const unsubscribe = subscribeConnections((next) => {
+      if (cancelled) return;
+      setTargets(next);
+      setSidebarStates((current) => Object.fromEntries(Object.entries(current).filter(([id]) => next.some((target) => target.id === id && !target.removed && !target.identityChanged && target.enabled !== false))));
+    });
+    const inspect = () => {
+      for (const target of connectionDirectory.snapshot()) {
+        if (!target.removed && target.enabled !== false) connectionDirectory.inspect({ id: target.id, url: target.url }, { refresh: false }).catch(() => {});
+      }
+    };
+    const refresh = () => { inspect(); listDaemons().then(inspect).catch(() => {}); };
+    refresh();
+    const timer = setInterval(refresh, 10000);
+    window.addEventListener('focus', refresh);
+    return () => { cancelled = true; unsubscribe(); clearInterval(timer); window.removeEventListener('focus', refresh); };
   }, []);
 
   useEffect(() => {
@@ -288,19 +302,27 @@ export default function App() {
 
   const sidebarWidth = sidebarOpen ? `${sidebarWidthPixels}px` : '0px';
   const leftOffset = sidebarWidth;
-  const currentTarget = targets.find((target) => target.id === currentTargetId) || LOCAL_TARGET;
+  const currentTarget = targets.find((target) => target.id === currentTargetId) || { id: currentTargetId, name: currentTargetId, removed: true };
   const targetSections = useMemo(() => targets.map((target) => ({
     target,
-    connection: connections[target.id] || 'connecting',
+    connection: target.ready ? connections[target.id] || 'connecting' : 'closed',
     items: sidebarStates[target.id]?.items || [],
     loading: sidebarStates[target.id]?.loading ?? true,
-    error: sidebarStates[target.id]?.error || '',
+    error: target.error || (target.enabled === false ? 'Disabled in the local connection directory' : '') || sidebarStates[target.id]?.error || '',
     selectedId: sidebarStates[target.id]?.selectedId ?? null,
     standaloneSessions: sidebarStates[target.id]?.standaloneSessions || [],
     activeStandaloneId: sidebarStates[target.id]?.activeStandaloneId ?? null,
     panelGroups: sidebarStates[target.id]?.panelGroups || null,
     activePanelGroupId: sidebarStates[target.id]?.activePanelGroupId ?? null,
   })), [connections, sidebarStates, targets]);
+
+  for (const target of targets) {
+    const retained = retainedTargets.current.get(target.id);
+    if (target.ready && (!retained || retained.instanceId !== target.instanceId || retained.url !== target.url)) retainedTargets.current.set(target.id, { id: target.id, name: target.name, url: target.url, instanceId: target.instanceId });
+    else if (target.removed || target.enabled === false || target.identityChanged || (retained && (retained.instanceId !== target.instanceId || retained.url !== target.url))) retainedTargets.current.delete(target.id);
+  }
+  const mountedTargets = targets.filter((target) => retainedTargets.current.has(target.id));
+  const recoveryDrafts = drafts.filter((draft) => !targets.some((target) => target.ready && target.id === draft.targetId && target.instanceId === draft.instanceId));
 
   return (
     <div className="min-h-screen w-full">
@@ -311,6 +333,7 @@ export default function App() {
         >
           <TargetProvider value={currentTarget}>
             <ActiveSessionsSidebar
+              key={targets.map((target) => `${target.id}:${target.instanceId || "unverified"}`).join("|")}
               sections={targetSections}
               open={sidebarOpen}
               currentTargetId={currentTargetId}
@@ -351,13 +374,35 @@ export default function App() {
             />
           </TargetProvider>
           <div className="relative min-h-screen min-w-0 overflow-hidden">
-            {targets.map((target) => (
+            {(!currentTarget.ready || recoveryDrafts.length > 0) && <div data-connection-recovery className="absolute right-2 top-2 max-h-screen max-w-full overflow-auto bg-page shadow" style={{ zIndex: 60 }}>
+            {!currentTarget.ready && (
+              <div className="p-6" role="status">
+                <p>{currentTarget.error || (currentTarget.enabled === false ? 'This daemon is disabled.' : 'Connecting to daemon…')}</p>
+                {currentTarget.identityChanged && <>
+                  <p>New instance: <code>{currentTarget.instanceId}</code></p>
+                  <button type="button" onClick={() => connectionDirectory.acknowledge(currentTarget, currentTarget.instanceId).catch((error) => window.alert(error.message))}>Acknowledge this instance</button>
+                </>}
+              </div>
+            )}
+            {recoveryDrafts.length > 0 && <section className="p-3" aria-label="Recover unsaved Markdown">
+              <button type="button" aria-expanded={recoveryOpen} onClick={() => setRecoveryOpen((current) => !current)}>{recoveryOpen ? 'Hide recovered drafts' : `Recover ${recoveryDrafts.length} drafts`}</button>
+              {recoveryOpen && <div>
+              <p>Unsaved Markdown is retained for its original daemon. Copy it here; it will not be sent to another instance.</p>
+              {recoveryDrafts.map((draft) => <details key={draft.key} open>
+                <summary>{draft.targetName}: {draft.path} · {draft.instanceId}</summary>
+                <textarea readOnly aria-label={`Recover ${draft.path} from ${draft.instanceId}`} value={draft.content} rows={8} className="w-full" />
+              </details>)}
+              </div>}
+            </section>}
+            </div>}
+            {mountedTargets.map((target) => (
+              <div key={`${target.id}:${target.instanceId}`} data-retained-target={target.id} style={{ display: target.ready ? 'contents' : 'none' }} inert={!target.ready} aria-hidden={!target.ready}>
               <DaemonPane
                 ref={controllerRefFor(target.id)}
-                key={target.id}
-                target={target}
+                key={`${target.id}:${target.instanceId}`}
+                target={retainedTargets.current.get(target.id)}
                 visible={target.id === currentTargetId}
-                active={documentVisible && target.id === currentTargetId}
+                active={target.ready && documentVisible && target.id === currentTargetId}
                 terminalMode={terminalMode}
                 fontFamily={TERMINAL_FONTS[terminalFont].family}
                 sidebarOpen={sidebarOpen}
@@ -372,6 +417,7 @@ export default function App() {
                 onConnectionChange={handleConnectionChange}
                 onSidebarStateChange={reportSidebarState}
               />
+              </div>
             ))}
           </div>
         </div>

@@ -100,15 +100,15 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
           </div>
 
           <DefinitionList>
-            <Definition term="Repository / Branch">
+            <Definition term={item.type === 'misc' && !item.repo ? 'Directory' : 'Repository / Branch'}>
               <span className="inline-flex min-w-0 items-center gap-2 font-mono">
                 {item.repoUrl
                   ? <a className="truncate text-primary underline decoration-accent hover:text-danger" href={item.repoUrl} target="_blank" rel="noreferrer">{item.repo}</a>
                   : null}
                 <MaskIcon name={branch.icon} className={`size-4 ${branch.color}`} title={branch.label} />
                 {branchHref
-                  ? <a className="truncate text-primary underline decoration-accent hover:text-danger" href={branchHref} target="_blank" rel="noreferrer">{item.type === 'scratchpad' ? item.name : item.branch}</a>
-                  : <span className="truncate">{item.type === 'scratchpad' ? item.name : item.branch}</span>}
+                  ? <a className="truncate text-primary underline decoration-accent hover:text-danger" href={branchHref} target="_blank" rel="noreferrer">{item.type === 'scratchpad' || (item.type === 'misc' && !item.repo) ? item.name : item.branch}</a>
+                  : <span className="truncate">{item.type === 'scratchpad' || (item.type === 'misc' && !item.repo) ? item.name : item.branch}</span>}
               </span>
             </Definition>
             {item.type === 'scratchpad' && (
@@ -148,7 +148,7 @@ export default function SessionDetailModal({ sessionId, item, loading, loadError
             <Definition term="Path">
               <span className="inline-flex items-start gap-2 font-mono">
                 <span className={`text-lg font-black ${item.worktreePresent ? 'text-success' : 'text-danger'}`} title={item.worktreePresent ? 'Directory exists' : 'Directory missing'}>{item.worktreePresent ? '✓' : '✕'}</span>
-                <button className="break-all rounded bg-soft/30 px-1.5 py-0.5 text-left hover:bg-soft hover:text-on-soft disabled:opacity-50" type="button" disabled={busy} onClick={() => run('open-path')}>{item.path}</button>
+                <button className="break-all rounded bg-soft/30 px-1.5 py-0.5 text-left hover:bg-soft hover:text-on-soft disabled:opacity-50" type="button" disabled={busy || item.availableActions?.['open-path']?.available !== true} title={item.availableActions?.['open-path']?.reason || 'Open on the owning machine'} onClick={() => run('open-path')}>{item.path}</button>
               </span>
             </Definition>
             <Definition term="Created">{timestamp(item.createdAt)}</Definition>

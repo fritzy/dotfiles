@@ -56,7 +56,7 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   // The single global "current daemon" is gone: every request/socket takes an
   // explicit target, and DaemonPane (one live instance per target) owns the
   // events socket that used to live directly in App.jsx.
-  assert.match(daemonPane, /new WebSocket\(wsUrl\('\/fw\/events', target\)\)/);
+  assert.match(daemonPane, /new WebSocket\(wsUrl\('\/fw\/events', verified\)\)/);
   assert.match(daemonPane, /setTimeout\(connect, websocketReconnectDelay\(reconnectAttempt\)\)/);
   assert.match(daemonPane, /setWorkspaceStateRevision\(\(value\) => value \+ 1\)/);
   assert.match(daemonPane, /setBottomTerminalStateRevision\(\(value\) => value \+ 1\)/);
@@ -86,7 +86,7 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.doesNotMatch(api, /export function selectDaemon/);
   assert.doesNotMatch(api, /getCurrentDaemon/);
   assert.match(api, /export async function listDaemons\(signal\)/);
-  assert.match(api, /fetch\('\/daemons', \{ signal \}\)/);
+  assert.match(api, /connections\.directory\(signal\)/);
   // Target selection is passed into the existing sidebar rather than replacing
   // the target on each API call or reload.
   assert.doesNotMatch(sidebar, /daemons/);
@@ -104,11 +104,8 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   // and BottomTabs instances remain mounted, so switching machines drops no
   // sockets and does not mix their terminal actions or persisted tab state.
   const targetContext = read('web-v2/src/target-context.js');
-  // LOCAL_TARGET is hoisted so its identity is stable across renders — otherwise
-  // every target-keyed effect (LocalTerminal's socket, DaemonPane's events socket)
-  // would reconnect the moment the /daemons fetch resolves and rebuilds this array.
-  assert.match(app, /const LOCAL_TARGET = \{ id: 'local', name: 'Local', url: null \};/);
-  assert.match(app, /const targets = useMemo\(\(\) => \[LOCAL_TARGET, \.\.\.daemons\]/);
+  assert.match(app, /connectionDirectory\.snapshot\(\)/);
+  assert.match(app, /subscribeConnections/);
   assert.match(app, /const \[currentTargetId, setCurrentTargetId\] = useState\('local'\)/);
   assert.doesNotMatch(app, /localStorage.*currentTargetId|CURRENT_TARGET/);
   assert.doesNotMatch(app, /<DaemonRail/);
@@ -117,7 +114,7 @@ test('v2 is an isolated React and Tailwind client using the existing protocol', 
   assert.match(app, /visible=\{target\.id === currentTargetId\}/);
   assert.match(app, /const \[documentVisible, setDocumentVisible\] = useState\(\(\) => !document\.hidden\)/);
   assert.match(app, /document\.addEventListener\('visibilitychange', updateVisibility\)/);
-  assert.match(app, /active=\{documentVisible && target\.id === currentTargetId\}/);
+  assert.match(app, /active=\{target\.ready && documentVisible && target\.id === currentTargetId\}/);
   assert.match(app, /setFocusedPanel\(`sidebar-\$\{id\}-sessions`\)/);
   assert.match(app, /<ActiveSessionsSidebar/);
   assert.match(app, /sections=\{targetSections\}/);
@@ -154,19 +151,16 @@ test('v2 sidebar groups active sessions by repository in last-used order', async
   assert.equal(groups.some((group) => group.label === 'acme/closed'), false);
 });
 
-test('v2 archives scratchpads and repository sessions regardless of PR state', async () => {
+test('v2 archive controls obey daemon capabilities', async () => {
   const { canArchiveSession } = await import('../web-v2/src/utils.js');
-  assert.equal(canArchiveSession({ type: 'scratchpad', status: 'active' }), true);
-  assert.equal(canArchiveSession({ type: 'scratchpad', status: 'paused' }), true);
-  assert.equal(canArchiveSession({ type: 'scratchpad', status: 'closed' }), false);
-  for (const status of ['active', 'paused', 'closed']) {
-    for (const prDone of [true, false, null, undefined]) {
-      assert.equal(canArchiveSession({ type: 'repo', status, prDone }), status !== 'closed');
+  for (const type of ['scratchpad', 'repo', 'misc']) {
+    for (const status of ['active', 'paused', 'closed']) {
+      assert.equal(canArchiveSession({ type, status, availableActions: { archive: { available: true } } }), true);
+      assert.equal(canArchiveSession({ type, status, availableActions: { archive: { available: false } } }), false);
+      assert.equal(canArchiveSession({ type, status }), false);
     }
   }
-  assert.equal(canArchiveSession({ type: 'repo', status: 'active', closeable: false }), false);
   assert.equal(canArchiveSession(null), false);
-  assert.equal(canArchiveSession({ type: 'misc', status: 'active', closeable: false }), false);
 });
 
 test('v2 retains the session controls and creation widgets as React components', () => {
@@ -196,7 +190,9 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.doesNotMatch(app, /roles=\{panelsForMode\(panelMode\)\}/);
   assert.doesNotMatch(app, /PANEL_MODE_STORAGE_KEY/);
   assert.doesNotMatch(app, /const \[panelMode, setPanelMode\]/);
-  assert.match(daemonPane, /\{ \.\.\.body, panels: \[\.\.\.DEFAULT_WORKSPACE_ROLES\] \}/);
+  assert.match(daemonPane, /previewIntent/);
+  assert.match(daemonPane, /preview\.intent\.body/);
+  assert.doesNotMatch(daemonPane, /panels: \[\.\.\.DEFAULT_WORKSPACE_ROLES\]/);
   assert.match(daemonPane, /workspaceSessions\.map\(\(workspaceSession\) =>/);
   assert.match(daemonPane, /readBrowserState\(WORKSPACE_STATE_SCOPE/);
   assert.match(daemonPane, /writeBrowserState\(WORKSPACE_STATE_SCOPE/);
@@ -288,9 +284,9 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(activeSidebar, /<ShellIcon className="size-3\.5"/);
   assert.match(activeSidebar, /<Spinner className="size-3" \/>/);
   assert.match(activeSidebar, /organizePanelGroups\(panelGroups\)/);
-  assert.match(activeSidebar, /useState\(\(\) => storedExpandedKeys\('targets'\)\)/);
-  assert.match(activeSidebar, /useState\(\(\) => storedExpandedKeys\('groups'\)\)/);
-  assert.match(activeSidebar, /localStorage\.setItem\(SIDEBAR_TREE_STORAGE_KEY/);
+  assert.match(activeSidebar, /useState\(\(\) => storedExpandedKeys\('targets', sections\)\)/);
+  assert.match(activeSidebar, /useState\(\(\) => storedExpandedKeys\('groups', sections\)\)/);
+  assert.match(activeSidebar, /localStorage\.setItem\(`\$\{SIDEBAR_TREE_STORAGE_KEY\}:\$\{target\.instanceId\}/);
   assert.match(activeSidebar, /const hasChildren = group\.resources\.length > 0/);
   assert.match(activeSidebar, /hasChildren \? \(/);
   assert.match(activeSidebar, /group\.session\?\.repo \|\| 'Repositories'/);
@@ -627,7 +623,10 @@ test('v2 retains the session controls and creation widgets as React components',
   assert.match(creation, /<RepoCombobox/);
   assert.match(creation, /createRepoSession/);
   assert.match(creation, /createScratchpadSession/);
-  assert.match(creation, /panels: \[\.\.\.DEFAULT_WORKSPACE_ROLES\]/);
+  assert.match(creation, /previewIntent/);
+  assert.match(creation, /Shell only/);
+  assert.match(creation, /idempotencyKey: crypto\.randomUUID\(\)/);
+  assert.doesNotMatch(creation, /repoSelectorPreview|scratchpadSlug|DEFAULT_WORKSPACE_ROLES/);
   assert.doesNotMatch(creation, /PanelToggles/);
   assert.match(creation, /onCreated\(body\.workstream\)/);
   assert.match(links, /provider="linear"/);

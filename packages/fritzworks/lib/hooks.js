@@ -1,19 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CONFIG } from './config.js';
-import {
-  currentWorkstream,
-  openDb,
-  resolveRow,
-  setAgentStatus,
-  setConfiguredLocationAgentStatus,
-  setConfiguredLocationShellStatus,
-  setShellStatus,
-} from './core.js';
-
+import { randomUUID } from 'node:crypto';
 const shellQuote = (value) => `'${value.replaceAll("'", "'\"'\"'")}'`;
 const CLI = fileURLToPath(new URL('../cli.js', import.meta.url));
 const HOOK_COMMAND = `${shellQuote(process.execPath)} --no-warnings ${shellQuote(CLI)} hook`;
@@ -249,83 +239,48 @@ export function shellHookStatus({
   return { provider: 'zsh', path, rcPath, installed: existsSync(path) && sourced };
 }
 
-export function recordAgentHook(payload, {
-  db: suppliedDb,
-  env = process.env,
-  config = CONFIG,
+async function sendHook(provider, status, payload, {
+  env = process.env, cwd = env.PWD || process.cwd(), fetchImpl = fetch, timeoutMs = 500,
 } = {}) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { updated: false, reason: 'invalid payload' };
-  }
+  const instanceId = env.FRITZWORKS_INSTANCE_ID;
+  const generation = env.FRITZWORKS_GENERATION;
+  const url = env.FRITZWORKS_DAEMON_URL;
+  const sessionId = env.FRITZWORKS_ID || env.AI_WORKSTREAM_ID;
+  const terminalId = env.FRITZWORKS_TERMINAL_ID;
+  if (!instanceId || !generation || !url || !sessionId || !terminalId) return { updated: false, reason: 'missing daemon identity' };
+  const occurredAt = Date.now();
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error('hook deadline exceeded')); }, Math.min(1000, Math.max(1, timeoutMs)));
+  });
+  try {
+    return await Promise.race([deadline, (async () => {
+      const response = await fetchImpl(new URL('/hooks/events', url), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ instanceId, sessionId, terminalId, generation, provider, status,
+          cwd: payload.cwd || cwd, eventId: payload.eventId || randomUUID(),
+          emitterId: provider === 'shell' ? env.FRITZWORKS_HOOK_EMITTER || `shell:${process.ppid}` : `${provider}:${terminalId}`,
+          sequence: Number((provider === 'shell' ? env.FRITZWORKS_HOOK_SEQUENCE : payload.sequence) || occurredAt), occurredAt }),
+      });
+      if (!response.ok) return { updated: false, reason: `daemon rejected hook (${response.status})` };
+      return await response.json();
+    })()]);
+  } catch {
+    return { updated: false, reason: 'daemon unavailable' };
+  } finally { clearTimeout(timer); }
+}
+
+export async function recordAgentHook(payload, options = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { updated: false, reason: 'invalid payload' };
   const event = payload.hook_event_name;
   const status = WORKING_EVENTS.has(event) ? 'working' : READY_EVENTS.has(event) ? 'ready' : null;
   if (!status) return { updated: false, reason: 'unsupported event' };
-
-  const db = suppliedDb || openDb();
-  try {
-    const explicitId = env.FRITZWORKS_ID || env.AI_WORKSTREAM_ID;
-    if (explicitId && config.locations?.[explicitId]) {
-      setConfiguredLocationAgentStatus(db, explicitId, status);
-      return { updated: true, id: explicitId, status };
-    }
-    const row = explicitId ? resolveRow(db, String(explicitId)) : null;
-    const selected = row || (typeof payload.cwd === 'string' ? currentWorkstream(db, payload.cwd) : null);
-    if (selected) {
-      setAgentStatus(db, selected.id, status);
-      return { updated: true, id: selected.id, status };
-    }
-    if (typeof payload.cwd === 'string') {
-      const cwd = resolve(payload.cwd);
-      const configured = Object.values(config.locations || {}).find((location) => {
-        const path = resolve(location.path);
-        return cwd === path || cwd.startsWith(`${path}/`);
-      });
-      if (configured) {
-        setConfiguredLocationAgentStatus(db, configured.id, status);
-        return { updated: true, id: configured.id, status };
-      }
-    }
-    return { updated: false, reason: 'workstream not found' };
-  } finally {
-    if (!suppliedDb) db.close();
-  }
+  const env = options.env || process.env;
+  return sendHook(env.FRITZWORKS_PROVIDER || payload.provider || 'claude', status, payload, options);
 }
 
-export function recordShellHook(status, {
-  db: suppliedDb,
-  env = process.env,
-  config = CONFIG,
-  cwd = env.PWD || process.cwd(),
-} = {}) {
-  if (status !== 'working' && status !== 'ready') {
-    return { updated: false, reason: 'unsupported status' };
-  }
-  const db = suppliedDb || openDb();
-  try {
-    const explicitId = env.FRITZWORKS_ID || env.AI_WORKSTREAM_ID;
-    if (explicitId && config.locations?.[explicitId]) {
-      setConfiguredLocationShellStatus(db, explicitId, status);
-      return { updated: true, id: explicitId, status };
-    }
-    const row = explicitId ? resolveRow(db, String(explicitId)) : null;
-    const selected = row || (typeof cwd === 'string' ? currentWorkstream(db, cwd) : null);
-    if (selected) {
-      setShellStatus(db, selected.id, status);
-      return { updated: true, id: selected.id, status };
-    }
-    if (typeof cwd === 'string') {
-      const resolvedCwd = resolve(cwd);
-      const configured = Object.values(config.locations || {}).find((location) => {
-        const path = resolve(location.path);
-        return resolvedCwd === path || resolvedCwd.startsWith(`${path}/`);
-      });
-      if (configured) {
-        setConfiguredLocationShellStatus(db, configured.id, status);
-        return { updated: true, id: configured.id, status };
-      }
-    }
-    return { updated: false, reason: 'workstream not found' };
-  } finally {
-    if (!suppliedDb) db.close();
-  }
+export async function recordShellHook(status, options = {}) {
+  if (!['ready', 'working'].includes(status)) return { updated: false, reason: 'unsupported status' };
+  return sendHook('shell', status, {}, options);
 }

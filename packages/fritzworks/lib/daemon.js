@@ -8,11 +8,13 @@ import {
   readdirSync,
   readFileSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CONFIG } from './config.js';
+import { configRevision, daemonEnvironment } from './runtime-config.js';
 
 export const SERVER_ENTRY = fileURLToPath(new URL('../server.js', import.meta.url));
 
@@ -22,6 +24,7 @@ export function daemonRevision() {
     'server.js',
     'package.json',
     'config.ini',
+    ...readdirSync(join(root, 'shared')).filter((name) => name.endsWith('.js')).sort().map((name) => join('shared', name)),
     ...readdirSync(join(root, 'lib'))
       .filter((name) => name.endsWith('.js'))
       .sort()
@@ -43,6 +46,44 @@ export function daemonFiles(config = CONFIG) {
   return {
     pid: join(config.paths.data, 'api-server.json'),
     log: join(config.paths.data, 'api-server.log'),
+    lock: join(config.paths.data, 'api-server.lock'),
+  };
+}
+
+export function acquireDaemonLock(config = CONFIG) {
+  mkdirSync(config.paths.data, { recursive: true });
+  const file = daemonFiles(config).lock;
+  const token = `${process.pid}:${Date.now()}:${Math.random()}`;
+  const claim = () => {
+    const fd = openSync(file, 'wx', 0o600);
+    try { writeFileSync(fd, JSON.stringify({ pid: process.pid, token })); }
+    finally { closeSync(fd); }
+  };
+  try { claim(); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const recovery = `${file}.recovery`;
+    let recoveryFd;
+    try { recoveryFd = openSync(recovery, 'wx', 0o600); }
+    catch { throw new Error(`daemon lock recovery is already in progress: ${recovery}`); }
+    try {
+      let owner;
+      try { owner = JSON.parse(readFileSync(file, 'utf8')); }
+      catch { throw new Error(`daemon lock is unreadable: ${file}`); }
+      if (!Number.isInteger(owner.pid) || owner.pid <= 0 || processExists(owner.pid)) {
+        throw new Error(`data directory is already owned by daemon ${owner.pid}: ${config.paths.data}`);
+      }
+      unlinkSync(file);
+      claim();
+    } finally {
+      closeSync(recoveryFd);
+      unlinkSync(recovery);
+    }
+  }
+  return () => {
+    try {
+      if (JSON.parse(readFileSync(file, 'utf8')).token === token) unlinkSync(file);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
   };
 }
 
@@ -76,7 +117,7 @@ export function readDaemonInfo(config = CONFIG) {
 
 const processExists = (pid) => {
   try { process.kill(pid, 0); return true; }
-  catch { return false; }
+  catch (error) { return error.code === 'EPERM'; }
 };
 
 export async function daemonHealth(info, timeout = 750) {
@@ -87,7 +128,8 @@ export async function daemonHealth(info, timeout = 750) {
     const response = await fetch(`${endpoint(info.host, info.port)}/health`, { signal: controller.signal });
     if (!response.ok) return null;
     const health = await response.json();
-    return ['fritzworks', 'ai-workstream'].includes(health.service) && health.pid === info.pid ? health : null;
+    return ['fritzworks', 'ai-workstream'].includes(health.service) && health.pid === info.pid
+      && (!info.instanceId || health.instanceId === info.instanceId) ? health : null;
   } catch {
     return null;
   } finally {
@@ -104,6 +146,9 @@ export async function daemonStatus(config = CONFIG) {
       running: true,
       stale: false,
       outdated: health.service !== 'fritzworks' || health.revision !== DAEMON_REVISION,
+      configChanged: health.configRevision !== configRevision(config) || health.configuration?.restartRequired === true,
+      restartRequired: health.revision !== DAEMON_REVISION || health.configRevision !== configRevision(config)
+        || health.configuration?.restartRequired === true,
       info,
       health,
       url: endpoint(info.host, info.port),
@@ -117,6 +162,9 @@ const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 
 export async function startDaemon({ config = CONFIG, host = config.server.host, port = config.server.port } = {}) {
   const existing = await daemonStatus(config);
+  if (existing.running && existing.configChanged) {
+    throw new Error('daemon configuration changed; run fw daemon restart to apply it');
+  }
   if (existing.running && !existing.outdated) return { ...existing, alreadyRunning: true };
   let restarted = false;
   if (existing.running && existing.outdated) {
@@ -136,7 +184,7 @@ export async function startDaemon({ config = CONFIG, host = config.server.host, 
     child = spawn(process.execPath, ['--no-warnings', SERVER_ENTRY, '--host', host, '--port', String(port)], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, FRITZWORKS_DAEMON: '1' },
+      env: { ...daemonEnvironment(config), FRITZWORKS_DAEMON: '1' },
     });
   } finally {
     closeSync(logFd);
@@ -189,7 +237,7 @@ export async function stopDaemon(config = CONFIG) {
 export async function runForeground({ config = CONFIG, host = config.server.host, port = config.server.port } = {}) {
   const child = spawn(process.execPath, ['--no-warnings', SERVER_ENTRY, '--host', host, '--port', String(port)], {
     stdio: 'inherit',
-    env: process.env,
+    env: daemonEnvironment(config),
   });
   return new Promise((resolve, reject) => {
     child.once('error', reject);

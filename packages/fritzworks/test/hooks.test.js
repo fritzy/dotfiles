@@ -5,13 +5,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  configuredLocationAgentStatus,
-  configuredLocationShellStatus,
-  openDb,
-  resolveRow,
-  upsertWorkstream,
-} from '../lib/core.js';
-import {
   AGENT_HOOK_COMMAND,
   agentHookStatus,
   installAgentHooks,
@@ -67,81 +60,32 @@ test('hook installation preserves existing hooks and is idempotent', (t) => {
   assert.equal(lstatSync(join(home, '.zshrc')).isSymbolicLink(), true);
 });
 
-test('agent lifecycle hooks update the correct workstream', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'fritzworks-hook-events-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const db = openDb(join(dir, 'workstreams.db'));
-  t.after(() => db.close());
-  const row = upsertWorkstream(db, {
-    org: 'example', repo: 'project', branch: 'hook-events', source: 'origin',
-    path: join(dir, 'project'), created_at: '2026-08-26T12:00:00.000Z',
-    last_joined_at: '2026-08-26T12:00:00.000Z',
-  });
-
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'UserPromptSubmit', cwd: '/elsewhere' }, {
-    db, env: { FRITZWORKS_ID: String(row.id) },
-  }), { updated: true, id: row.id, status: 'working' });
-  assert.equal(resolveRow(db, String(row.id)).agent_status, 'working');
-
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'PermissionRequest', cwd: row.path }, {
-    db, env: {},
-  }), { updated: true, id: row.id, status: 'ready' });
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'PostToolUse', cwd: row.path }, {
-    db, env: {},
-  }), { updated: true, id: row.id, status: 'working' });
-
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'Stop', cwd: row.path }, {
-    db, env: {},
-  }), { updated: true, id: row.id, status: 'ready' });
-  assert.equal(resolveRow(db, String(row.id)).agent_status, 'ready');
-
-  assert.deepEqual(recordShellHook('working', {
-    db, env: { FRITZWORKS_ID: String(row.id) }, cwd: '/elsewhere',
-  }), { updated: true, id: row.id, status: 'working' });
-  assert.equal(resolveRow(db, String(row.id)).shell_status, 'working');
-  assert.deepEqual(recordShellHook('ready', { db, env: {}, cwd: row.path }), {
-    updated: true, id: row.id, status: 'ready',
-  });
-  assert.equal(resolveRow(db, String(row.id)).shell_status, 'ready');
-
-  const config = {
-    locations: {
-      savefiles: { id: 'savefiles', path: '/configured/savefiles/' },
-      notes: { id: 'notes', path: '/configured/notes/' },
-    },
+test('activity hooks send only inherited identity with a bounded daemon request', async () => {
+  const sent = [];
+  const env = { FRITZWORKS_ID: 'location-custom', FRITZWORKS_INSTANCE_ID: 'instance-a',
+    FRITZWORKS_TERMINAL_ID: 'terminal-a', FRITZWORKS_GENERATION: 'generation-a', FRITZWORKS_DAEMON_URL: 'http://127.0.0.1:9999',
+    FRITZWORKS_PROVIDER: 'codex', FRITZWORKS_HOOK_EMITTER: 'shell-1', FRITZWORKS_HOOK_SEQUENCE: '42' };
+  const fetchImpl = async (url, options) => {
+    sent.push({ url: String(url), ...options, body: JSON.parse(options.body) });
+    return { ok: true, json: async () => ({ updated: true }) };
   };
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'UserPromptSubmit', cwd: '/elsewhere' }, {
-    db, env: { FRITZWORKS_ID: 'savefiles' }, config,
-  }), { updated: true, id: 'savefiles', status: 'working' });
-  assert.equal(configuredLocationAgentStatus(db, 'savefiles'), 'working');
-
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'Stop', cwd: '/elsewhere' }, {
-    db, env: { FRITZWORKS_ID: 'savefiles' }, config,
-  }), { updated: true, id: 'savefiles', status: 'ready' });
-  assert.equal(configuredLocationAgentStatus(db, 'savefiles'), 'ready');
-
-  assert.deepEqual(recordShellHook('working', {
-    db, env: { FRITZWORKS_ID: 'savefiles' }, config, cwd: '/elsewhere',
-  }), { updated: true, id: 'savefiles', status: 'working' });
-  assert.equal(configuredLocationShellStatus(db, 'savefiles'), 'working');
-  assert.deepEqual(recordShellHook('ready', {
-    db, env: {}, config, cwd: '/configured/notes/work',
-  }), { updated: true, id: 'notes', status: 'ready' });
-  assert.equal(configuredLocationShellStatus(db, 'notes'), 'ready');
-  assert.deepEqual(recordShellHook('idle', { db, env: {}, config, cwd: row.path }), {
-    updated: false, reason: 'unsupported status',
-  });
-
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'UserPromptSubmit', cwd: '/configured/notes/work' }, {
-    db,
-    env: {},
-    config,
-  }), { updated: true, id: 'notes', status: 'working' });
-  assert.equal(configuredLocationAgentStatus(db, 'notes'), 'working');
-
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'PostToolUseFailure', cwd: row.path }, {
-    db, env: {},
-  }), { updated: false, reason: 'unsupported event' });
+  assert.deepEqual(await recordAgentHook({ hook_event_name: 'UserPromptSubmit', cwd: '/work/custom' }, { env, fetchImpl }), { updated: true });
+  assert.equal(sent[0].url, 'http://127.0.0.1:9999/hooks/events');
+  assert.equal(sent[0].body.provider, 'codex');
+  assert.equal(sent[0].body.sessionId, 'location-custom');
+  assert.equal(sent[0].body.generation, 'generation-a');
+  assert.equal(sent[0].body.status, 'working');
+  assert.equal(sent[0].body.terminalId, 'terminal-a');
+  assert.notEqual(sent[0].body.sequence, 42);
+  assert.equal(sent[0].body.emitterId, 'codex:terminal-a');
+  await recordShellHook('ready', { env, fetchImpl });
+  assert.equal(sent[1].body.provider, 'shell');
+  assert.equal(sent[1].body.sequence, 42);
+  assert.equal(sent[1].body.emitterId, 'shell-1');
+  assert.notEqual(sent[0].body.eventId, sent[1].body.eventId);
+  const stalled = await recordShellHook('ready', { env, timeoutMs: 5, fetchImpl: () => new Promise(() => {}) });
+  assert.equal(stalled.reason, 'daemon unavailable');
+  assert.deepEqual(await recordShellHook('idle', { env, fetchImpl }), { updated: false, reason: 'unsupported status' });
 });
 
 test('hook upgrades replace legacy commands and shell sources without duplicating handlers', (t) => {
@@ -166,20 +110,10 @@ test('hook upgrades replace legacy commands and shell sources without duplicatin
   assert.equal(shellHookStatus({ home, configHome }).installed, true);
 });
 
-test('activity hooks retain the workstream identity inherited by running legacy terminals', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'fritzworks-legacy-hook-'));
-  const db = openDb(join(dir, 'workstreams.db'));
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
-  const config = { locations: { dotfiles: { id: 'dotfiles', path: '/dotfiles' } } };
-  const options = { db, config, env: { AI_WORKSTREAM_ID: 'dotfiles' }, cwd: '/elsewhere' };
-  assert.deepEqual(recordAgentHook({ hook_event_name: 'PostToolUse', cwd: '/elsewhere' }, options), {
-    updated: true, id: 'dotfiles', status: 'working',
-  });
-  assert.equal(configuredLocationAgentStatus(db, 'dotfiles'), 'working');
-  assert.deepEqual(recordShellHook('ready', options), {
-    updated: true, id: 'dotfiles', status: 'ready',
-  });
-  assert.equal(configuredLocationShellStatus(db, 'dotfiles'), 'ready');
+test('hooks without generation evidence never fall back to local persistence or launch a daemon', async () => {
+  const options = { env: { AI_WORKSTREAM_ID: 'old-location' }, fetchImpl: () => { throw new Error('must not send'); } };
+  assert.deepEqual(await recordAgentHook({ hook_event_name: 'PostToolUse', cwd: '/elsewhere' }, options), { updated: false, reason: 'missing daemon identity' });
+  assert.deepEqual(await recordShellHook('ready', options), { updated: false, reason: 'missing daemon identity' });
 });
 
 test('shell installation recognizes the conditional source already in dotfiles', (t) => {

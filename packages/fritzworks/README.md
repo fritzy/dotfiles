@@ -75,17 +75,27 @@ customized/unmanaged files remain.
 
 ## Configuration
 
-The package ships a complete [`config.ini`](./config.ini). A user file at `$XDG_CONFIG_HOME/fritzworks/config.ini`, normally `~/.config/fritzworks/config.ini`, is layered over those defaults. The user file can contain only the settings you want to change. Run `fw config` to print both file paths and the fully resolved configuration.
+The package ships [`config.ini`](./config.ini). A user file at
+`$XDG_CONFIG_HOME/fritzworks/config.ini`, normally `~/.config/fritzworks/config.ini`,
+overrides those defaults. New configurations use `configVersion = 2`:
 
 ```ini
+configVersion = 2
 agent = claude
 gitProtocol = ssh
 
 [paths]
-repositories = ~/github
-scratchpads = ~/scratchpad
 data = ${XDG_DATA_HOME}/fritzworks
-notes = ~/notes
+# These are optional; each defaults to its own subdirectory of paths.data.
+repositories = ~/projects/repository-cache
+worktrees = ~/projects/worktrees
+scratchpads = ~/projects/scratchpads
+sessionNotes = ~/writing/sessions
+
+[notes.weekly]
+enabled = false
+# When enabled, an explicit root is required:
+# root = ~/writing/weekly
 
 [commands]
 shell = /bin/sh
@@ -93,34 +103,84 @@ editor = vi
 claude = claude
 codex = codex
 
-[models.claude]
-default = opus
-scratch = sonnet
-
-[models.codex]
-default =
-scratch =
-
 [server]
 host = 127.0.0.1
 port = 7337
 pollInterval = 1000
 ```
 
-Paths beginning with `~/` are expanded against the user's home directory. `${HOME}` and `${XDG_DATA_HOME}` are also supported at the start of a path. Relative user paths are resolved from the user configuration file's directory. Every `[locations.<name>]` section becomes a configured location in API list/detail responses, assumes the `main` branch unless a `branch` setting is present, and is always non-closeable (pause only). Commands may be a single executable string or a JSON-style array containing the executable and fixed arguments, such as `editor = ["nvim", "--clean"]`. Empty model values disable an explicit model selection.
+With no overrides, managed roots are `<data>/repositories`, `<data>/worktrees`,
+`<data>/scratchpads`, and `<data>/session-notes`. There is no general `notes` root.
+Paths support `~/`, `${HOME}`, and `${XDG_DATA_HOME}` prefixes; relative paths use
+the selected config file's directory. Managed roots must not overlap each other
+(including through existing symlinks) or contain the data directory. They may be
+separate children of that directory. Enabled weekly storage follows the same rule.
+Existing ancestors and symlink targets must be directories; missing directory
+trees are accepted, while file ancestors and dangling symlinks are rejected.
 
-New installations store data in `~/.local/share/fritzworks`. For upgrades, configuration falls back to `~/.config/ai-workstream/config.ini` when the new file does not exist, and an existing `~/.local/share/ws/workstreams.db` is reused when neither a new data directory nor an explicit data path is present. These paths respect the XDG overrides. Existing workstream databases and Markdown directories keep their names. Move the legacy config/data directories to the new names while the daemon is stopped to finish migrating storage, updating any explicit paths in your config.
+`fw config validate` validates without creating state or starting a daemon.
+`fw config` queries the selected daemon (starting local on demand) and prints
+effective values, `sources` keyed by setting, compatibility
+`diagnostics`, and storage availability. `fw config active` queries the already
+running daemon and reports its active values plus active/disk revisions. This CLI
+view still needs valid local connection configuration; use the running daemon's
+`GET /config/status` to inspect a broken on-disk file. Unknown
+keys, invalid sections/IDs/URLs, duplicate keys, and conflicting roots fail before
+daemon startup. A missing explicitly selected non-default config file is an error.
 
-After updating, rerun `npm run setup` and restart AI clients to reload skills and tools. Update remote daemons together: API paths now start with `/fw`, tool names with `fw_`, and environment overrides with `FRITZWORKS_` or `FW_`. Starting the new daemon replaces an identified legacy daemon. Existing terminal processes retain their old environment; restart those terminals to adopt the new hooks.
+Session notes now allocate a persisted UUID directory under `paths.sessionNotes`,
+created on the first write. Configured locations get independent persisted UUIDs.
+Group responses include `markdownDirectory` and `noteStorage`; sessions include
+`notesPath` and `noteStorage`. Renames, year changes, root edits, and archive keep
+existing note paths. Unavailable volumes preserve resource associations and return
+storage errors. Weekly notes remain separately opt-in.
+
+Repository creation accepts an existing local repository path, an explicit clone
+URL, or GitHub `owner/repo`. Local branch creation needs neither a remote nor `gh`.
+Repository identity/common Git directory and each worktree allocation are persisted;
+new checkouts use `<worktrees>/<branch-slug>-<session-uuid>`. Root edits affect new
+allocations. Resume verifies the recorded Git ownership, and archive removal has
+no recursive-delete fallback after a Git failure. Interrupted clones retain their
+partial directories and retry through their instance-owned cache reservation.
+
+Existing unversioned files use version 1 compatibility, preserving the old
+`~/github`, `~/scratchpad`, and `~/notes` defaults and any effective legacy aliases.
+The old `ai-workstream/config.ini` and `ws/workstreams.db` fallbacks remain. No
+files move. `locations.notes` can determine the old note root only in this
+compatibility adapter; diagnostics and sources identify that coupling. Other
+location IDs are no longer inserted into the storage map. New setup writes the
+selected schema version explicitly. A small `config-format.json` marker in the
+data directory preserves v2 selection for configless and CLI-first starts.
+
+The migration implementation is available for isolated validation. The existing-install
+upgrade gate remains open: real Git moves and real legacy shell PID/environment
+continuity have not been tested under the current restrictions. Do not deploy this
+working tree or migrate a live installation on the strength of mocked tests.
+
+Commands accept an executable string or an argument array, for example
+`editor = ["nvim", "--clean"]`. Empty model values disable explicit model selection.
 
 ### Optional locations and work suggestions
 
-Notes use `paths.notes` independently of Git. Add `[locations.<id>]` only for
-repositories you want permanently listed. An existing `[locations.notes]` still
-supplies the notes path unless explicitly overridden by `paths.notes` or the
-environment. Set `enabled = false` to disable a location or named daemon.
+Locations are ordinary external directories: only `path` is required. `name`
+controls the display label, `enabled = false` hides an entry, and optional `repo`
+(`owner/repository`) and `branch` describe GitHub metadata. A supplied repository
+without a branch defaults to `main`; plain directories have neither. The daemon
+recognizes a local `.git` marker for Git status without requiring repository
+metadata. Existing locations are never removed by archive/close, and missing
+paths are reported instead of created. IDs `notes` and `dotfiles` have no special
+meaning in version 2. Removing or disabling entries does not delete their files.
+Locations and remotes are both empty by default; zero or multiple entries work.
 
 ```ini
+[locations.notes]
+name = Reference material
+path = ~/reference
+
+[locations.dotfiles]
+name = Settings
+path = ~/configuration
+
 [locations.project]
 repo = example/project
 path = ~/projects/project
@@ -141,6 +201,111 @@ Restart with `fw daemon restart` after editing configuration. Browser theme,
 font size, sidebar width, and omitted branch prefixes are browser-local preferences.
 Branch prefixes are displayed in full by default.
 
+Daemon settings remain fixed until restart. `GET /config` returns the active
+configuration; `GET /config/status` reports `activeRevision`, `diskRevision`,
+`restartRequired`, and validation errors from the selected config file. `/health`
+also reports that status and a persistent `instanceId`. Foreground and detached
+startup share the selected configuration, process metadata, and one owner lock
+per data directory. Terminal namespaces belong to the instance, including when
+CLI commands initialize its database before daemon startup. Persisted legacy
+terminal records without verified instance ownership remain intact and report
+`terminalOwnership.status = migration_required` in `/health`. Their terminal
+attachments and terminal-changing actions return 409 until explicit ownership
+migration succeeds; existing processes are left running. Global `fw`/`ws` sessions
+are never automatically claimed by a new instance.
+
+### Storage adoption and recovery
+
+These commands contact an already-running selected local daemon and do not start
+or restart it:
+
+```sh
+fw storage inventory --legacy-config /absolute/path/to/legacy-config.ini
+fw storage apply --revision <inventory-revision> --write-config
+fw storage ledger
+fw storage recover --migration <migration-id>
+fw storage terminals preview
+fw storage terminals apply --revision <terminal-inventory-revision>
+fw storage terminals apply --revision <terminal-inventory-revision> --legacy-approvals /absolute/path/to/reviewed-terminals.json
+fw storage terminals recover --migration <migration-id>
+```
+
+Older terminals may lack installation identity variables. On Linux, the preview
+can mark these as `reviewRequired` when their user-owned listening socket, process,
+FritzWorks launch marker, and recorded working directory agree. This requires
+`ss` from iproute2; a missing tool leaves the session blocked. Inspect those exact
+processes before approving them. The JSON file is an array of
+`{ "panelId": "...", "name": "...", "fingerprint": "..." }` records copied from
+the reviewed preview. A revision alone does not approve these candidates. The
+daemon rechecks the process/socket fingerprint, records the acknowledgement, and
+reuses that existing session; it never kills or recreates it during adoption.
+When two server processes share a name, only the server bound to the socket inode
+currently on disk is eligible. Other server processes are left untouched.
+
+Omit `--legacy-config` when the daemon already uses the legacy effective config.
+Inventory resolves that configuration, inventories recorded worktrees, legacy bare
+caches, UUID/numeric-slug notes across years, configured owners, resources and tabs.
+Apply keeps all note directories, pins one write directory, and retains the others
+for reads. It moves no storage. The preview includes exact configuration before/after
+text; `--write-config` writes the translation atomically, preserving effective settings
+and disabled entries. Environment overrides are listed and still take precedence;
+remove obsolete legacy overrides before restarting with version 2. An explicit restart
+loads the translated configuration.
+
+Migration records and consistent SQLite/config/tab backups live under the existing
+data root. Recovery replays the original ledger plan and accepts already-written tab
+or config contents; unrelated edits cause a conflict. An interrupted relocation blocks
+writes/scans for its owner. Keep both paths and the backup while recovering.
+
+| Operation | HTTP contract |
+| --- | --- |
+| Inventory/adopt notes and Git storage | `GET /migrations/storage`, `POST /migrations/storage/apply` with `revision`, optional `legacyConfigPath` and `applyConfiguration` |
+| Recover adoption / inspect ledger | `POST /migrations/storage/recover` with `migrationId`; `GET /migrations` |
+| Verify/adopt legacy terminals | `GET /migrations/terminals`; `POST /migrations/terminals/apply` with `revision`; `/recover` with `migrationId` |
+| Relocate notes or a worktree | `POST /storage/relocate/preview` with `target`, `kind` (`notes` or `worktree`), absolute `destination`, optional `copy:true`; `/apply` also requires `revision`; `/recover` takes `migrationId` |
+| Rename a configured location identity | `POST /storage/location/preview` with `from`, `to`; `/apply` also requires `revision`; `/recover` takes `migrationId` |
+
+Terminal adoption verifies a live server's process generation, descendant installation
+identity and owner ID, then persists a per-terminal name/evidence mapping and exclusive
+claim. Contradictory config/data/instance evidence is rejected. Verified adoption does
+not rename, kill, reset or recreate shells. Proven-inactive panels can migrate without
+claiming a process. Ambiguous ownership stays blocked. The default process inspector
+currently supports Linux only; macOS legacy adoption needs an additional inspector and
+real continuity validation. An adopted process that exits requires explicit recovery
+before a fresh namespaced terminal can replace it.
+
+Relocation requires affected terminals to be stopped and rechecks their absence.
+Same-filesystem worktree movement uses Git; `copy:true` supports a retained-source
+cross-filesystem copy followed by Git repair and verification. A partial owned copy can
+resume. Symlinks are preserved without following them; other non-regular entries require manual handling. Resources, saved tabs,
+browser paths, and allocations change only after destination verification. Markdown
+watchers are invalidated so clients reopen the updated resource path. Retained source
+copies are never deleted automatically. Location-ID migration retains notes/resources,
+requires stopped terminals, and blocks terminal/note actions until explicit restart.
+
+Changing only `paths.data` is rejected using the configuration's adjacent
+`.instance.json` binding. Use the offline command after stopping the owning daemon:
+
+```sh
+fw storage rebind preview --destination /absolute/new-data
+fw storage rebind apply --destination /absolute/new-data --revision <preview-revision>
+fw storage rebind recover --source /absolute/old-data --migration <migration-id>
+```
+
+Rebind locks both data roots, snapshots SQLite, copies tabs/config marker/seeds, preserves
+instance and terminal identity, updates config/binding, and retires the old database.
+Existing repository, worktree, scratchpad and note paths stay pinned, including paths
+inside the old data directory. Keep that directory; rebind does not relocate those files.
+A pending destination cannot start a daemon. Recovery uses the source ledger and works
+even if config replacement already occurred. Environment data overrides must be updated
+or removed before the next daemon start.
+
+Current binaries reject a newer storage schema and a retired source database. Binaries
+predating this guard cannot honor it: in-place downgrade is unsupported. To roll back,
+stop the daemon, retain the failed directories and ledger, and restore the recorded
+pre-migration SQLite/config/tab backup together with the previous config binding into
+an isolated recovery location. Do not run old and new binaries against the same state.
+
 ### Environment overrides
 
 These settings can also be overridden without editing the INI file:
@@ -150,8 +315,8 @@ These settings can also be overridden without editing the INI file:
 | Config file | `FRITZWORKS_CONFIG` |
 | Repository root | `FRITZWORKS_REPOSITORIES` |
 | Scratchpad root | `FRITZWORKS_SCRATCHPADS` |
-| Notes root | `FRITZWORKS_NOTES` |
-| Dotfiles path | `FRITZWORKS_DOTFILES` |
+| Worktree root | `FRITZWORKS_WORKTREES` |
+| Session-note root | `FRITZWORKS_SESSION_NOTES` |
 | Data directory | `FRITZWORKS_DATA` |
 | Default agent | `FRITZWORKS_AGENT` |
 | Shell/editor commands | `FRITZWORKS_SHELL`, `FRITZWORKS_EDITOR` |
@@ -161,6 +326,8 @@ These settings can also be overridden without editing the INI file:
 | GitHub URL protocol | `FRITZWORKS_GIT_PROTOCOL` |
 | API bind address/port | `FRITZWORKS_HOST`, `FRITZWORKS_PORT` |
 | API state polling interval | `FRITZWORKS_POLL_INTERVAL` |
+
+Legacy `FRITZWORKS_NOTES`/`FW_NOTES` and `FRITZWORKS_DOTFILES`/`FW_DOTFILES` are accepted only in version 1; version 2 rejects them with migration guidance. Configure ordinary location paths in INI.
 
 Command arrays in environment variables can be JSON, for example `FRITZWORKS_EDITOR='["nvim","--clean"]'`. Short `FW_*` forms are also accepted (`FW_DATA_DIR` selects the data directory).
 
@@ -194,7 +361,7 @@ fw hooks install --shell
 fw hooks status
 ```
 
-The installer preserves existing hooks and is idempotent. It respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and saves existing JSON settings to a `.fritzworks-backup` file before the first change. Presence in the file does not verify execution: enable/trust hooks in your client and restart it. Agent and shell hooks write status to local SQLite, with a bounded busy timeout; they do not require an HTTP round trip. It adds `UserPromptSubmit`, `Stop`, `PermissionRequest`, `PostToolUse`, and `SessionStart` handlers to both clients, plus Claude's idle/permission notification handler. With `--shell`, it installs a Zsh integration under `~/.config/fritzworks/shell.zsh` and sources it from `.zshrc`; `preexec` reports a running command and `precmd` reports a ready prompt. Browser agent and shell terminals carry their workstream ID, with working-directory matching as a fallback.
+The installer preserves existing hooks and is idempotent. It respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and saves existing JSON settings to a `.fritzworks-backup` file before the first change. Presence in the file does not verify execution: enable/trust hooks in your client and restart it. Agent and shell hooks send status to the owning daemon with a 500 ms deadline. They never start a daemon or open SQLite; unavailable daemons and rejected events leave the command or prompt running normally. It adds `UserPromptSubmit`, `Stop`, `PermissionRequest`, `PostToolUse`, and `SessionStart` handlers to both clients, plus Claude's idle/permission notification handler. With `--shell`, it installs a Zsh integration under `~/.config/fritzworks/shell.zsh` and sources it from `.zshrc`; `preexec` reports a running command and `precmd` reports a ready prompt. Browser agent and shell terminals carry their instance, session, terminal and generation identities. The daemon rejects stale generations, duplicate events and out-of-order status. Existing terminals without generation evidence stop reporting status until a verified migration or explicit terminal restart supplies it; hooks do not infer ownership from the working directory. To inspect a hook result, use its internal command with `--json` or `--verbose`, or set `FRITZWORKS_HOOK_DEBUG=1` for stderr diagnostics. `GET /hooks/status` reports daemon acceptance/drop counters and reasons.
 
 Run the installer on every machine that hosts an fritzworks daemon, including remote targets. Activity is recorded by the machine running the shell or agent; the browser's cross-origin event connection only relays those recorded changes. The dotfiles bootstrap runs this installation automatically.
 
@@ -217,11 +384,55 @@ fw stack --fw feature-branch
 
 `fw refresh` starts the local daemon if needed and asks it to reconcile stored status against its connected browser terminals. The first browser terminal for a workstream makes it `active`; closing its final browser terminal makes it `paused`; and an archived workstream remains archived.
 
-`fw list`, `refresh`, `new`, `scratch`, `join`/`resume`, `pause`, `archive`, and `rename`, plus issue and log mutations, are clients of the same REST service used by FritzWorks. They start the local daemon when necessary; lifecycle calls also update its shared panel layout. If a browser is connected, the group selection changes immediately; otherwise it is restored the next time FritzWorks opens. These commands never attach to or create an interactive Zellij tab.
+`fw list`, context selection, lifecycle commands, stacks, issues, logs, session notes and digests use the same daemon service as MCP and the browser. Clients do not open SQLite, inspect Git worktrees, or read and write daemon-owned notes. They start the local daemon when necessary; lifecycle calls also update its shared panel layout. If a browser is connected, the group selection changes immediately; otherwise it is restored the next time FritzWorks opens. These commands never attach to or create an interactive Zellij tab.
 
-Worktrees are stored under `<repositories>/<org>/<repo>/<branch>` with a bare clone at `<repositories>/<org>/<repo>/.bare`. Scratchpads are plain directories without Git backing. The SQLite database and agent seed documents live under the configured data directory.
+Adopted legacy worktrees retain their original `<repositories>/<org>/<repo>/<branch>` paths and `.bare` common directory. New allocations use the independent worktree root and persisted repository identity. Scratchpads are plain directories without Git backing. The SQLite database and agent seed documents live under the configured data directory.
 
 `fw archive` refuses to remove a dirty Git worktree unless explicitly forced. Scratchpad directories are retained unless deletion is explicitly requested. (`fw close` remains an alias for compatibility.) `fw stack rebase` rewrites history, and `fw stack link` pushes branches and may create pull requests; review their output and confirmations carefully.
+
+### Previews and background jobs
+
+The daemon resolves selectors, configured locations, available actions and panel defaults.
+Version 2 installations without an available configured AI client default to a shell-only
+workspace; `--panels shell` requests one explicitly. CLI and MCP listing follows every
+page, including installations with more than 100 sessions.
+
+Archive removal, terminal reset, stack linking and stack rebasing use revision-bound
+previews. Interactive CLI commands display consequences and ask before destructive
+execution. Noninteractive commands require an explicit selector and reviewed revision:
+
+```sh
+fw archive feature-branch --preview
+fw archive feature-branch --preview-revision <revision> --confirm
+fw stack rebase --fw feature-branch --preview
+fw stack rebase --fw feature-branch --preview-revision <revision> --confirm
+```
+
+Use the same options in preview and execution, including `--delete`, `--keep`, `--force`
+or `--trunk`. A changed session, filesystem or configuration invalidates the preview;
+clients do not silently refresh approval. Dirty removal requires `--force` during both
+preview and execution. `--keep` retains repository worktrees; scratchpads are retained
+unless explicitly discarded.
+
+Repository creation, resume and removal can return a background job. Stack linking and
+rebasing also run as daemon jobs. Inspect progress and results or request cancellation:
+
+```sh
+fw job list
+fw job show <job-id>
+fw job cancel <job-id>
+```
+
+MCP exposes `fw_capabilities`, `fw_preview`, `fw_jobs`, `fw_job`, and `fw_job_cancel`.
+Destructive tools return their preview without executing; pass the reviewed
+`previewRevision` and `confirm:true` with the same requested operation after approval.
+Job responses retain their ID for later inspection. CLI creation, resume, archive and stack commands accept `--idempotency-key <key>`; MCP accepts `idempotencyKey`. Reuse the key with the exact same payload and reviewed revision to retrieve the original queued, running or completed job. Changing options requires a new key and a new preview where applicable. A cancellation request does not
+undo completed Git steps; inspect the job's partial result before resuming work.
+
+Bootstrap commands such as setup, config validation and daemon management still run
+locally. The explicit offline `fw storage rebind` command is the storage-maintenance
+exception. Local seed-file input remains supported. CLI remote selection and dynamic
+remote catalogue refresh remain phase-5 work.
 
 ## REST API and web client
 
@@ -299,7 +510,7 @@ On first startup, the daemon migrates the old `workspaces` and `bottom-terminals
 | Open or restore a resource panel | `POST /panel-layout/resources/{resource}/open` |
 | Disassociate an explicit resource | `POST /panel-layout/resources/{resource}/disassociate` |
 
-Each workstream has an immutable UUID, assigned by an automatic idempotent database migration. Its session group reports `markdownDirectory` as `<notes>/work/<year>/workstream/<uuid>`, so synced notes from different daemons cannot collide and branch renames cannot change the path. Creating Markdown with `content` and no `value` writes there; an explicit `value` writes relative to the owning session unless absolute or `~/`. Resource panels are created from associations, not arbitrary client URLs or paths. Markdown paths are resolved and validated on the owning daemon. A disassociation request may pass `{"dirty":true}` to receive an HTTP 409; after user confirmation it can retry with `{"dirty":true,"force":true}`. Automatically discovered resources always reject disassociation.
+Each workstream has an immutable UUID. Its session group reports the persisted `markdownDirectory` and storage availability. New directories use `<sessionNotes>/<uuid>`; adopted legacy directories remain pinned across years. Creating Markdown with `content` and no `value` uses that allocation; an explicit `value` writes relative to the owning session unless absolute or `~/`. Resource panels are created from associations, not arbitrary client URLs or paths. Markdown paths are resolved and validated on the owning daemon. A disassociation request may pass `{"dirty":true}` to receive an HTTP 409; after user confirmation it can retry with `{"dirty":true,"force":true}`. Automatically discovered resources always reject disassociation.
 
 The CLI exposes the same model through `fw panels`, `fw panel …`, and `fw resource …`. MCP clients use `fw_resource_list`, `fw_resource_add`, `fw_resource_read`, `fw_resource_write`, `fw_resource_open`, and `fw_resource_remove`; each accepts the standard optional `daemon` selector. Resource association does not open a panel by default. `fw_resource_add` accepts `content` to create Markdown and `open:true` (CLI: `fw resource add … --open`) to immediately create or restore its panel when the owning session is active, without changing the currently focused group.
 
@@ -310,7 +521,7 @@ POST /fw
 {"repository":"org/repo","selector":"feature-branch","agent":"claude","panels":["shell","editor","agent"],"links":["#123"]}
 ```
 
-`GET /fw/new` returns the configured repository and scratchpad roots, repositories used in the last three months, default agent, and default panels used to initialize the creation modals. `GET /fw/link-suggestions/linear` queries `linear api`; `GET /fw/link-suggestions/github` queries `gh` and groups the configured work sources. Both accept an optional `q` filter and cache their CLI results briefly.
+`GET /fw/new` returns repository-creation availability and its reason, the configured worktree and scratchpad roots (plus the legacy repository root when applicable), repositories used in the last three months, default agent, and default panels used to initialize the creation modals. `GET /fw/link-suggestions/linear` queries `linear api`; `GET /fw/link-suggestions/github` queries `gh` and groups the configured work sources. Both accept an optional `q` filter and cache their CLI results briefly.
 
 The New Scratchpad button opens a parallel modal with an optional name, scratch path preview, agent, links, and initial panels. Leaving the name empty generates a readable random name. GitHub shorthand must include its repository because scratchpads have no associated repository of their own.
 
@@ -372,7 +583,7 @@ PUT  /markdown/file                    # save it with the same content-version c
 
 The preview renders headings, task and nested lists, quotes, fenced code, links, and `![alt](url)` images. `img-src` on the served pages is widened to `'self' data: blob: https:` so a note can show an image it links to; every other directive stays same-origin. Relative image paths are not resolved against the notes tree, so images need an absolute URL.
 
-Work-note paths remain confined to the notes root — `..`, absolute paths, symlinks pointing outside it, and non-`.md` files are rejected by the `/notes/file` routes. The explicit `/markdown/file` routes accept Markdown paths elsewhere on the selected daemon but only open existing regular files. Both kinds are capped at 1 MiB. Associations and panels are stored in SQLite; `editor-tabs.json` is read only by the idempotent legacy migration and is left untouched after a successful commit.
+Optional weekly work-note paths remain confined to `notes.weekly.root` (the legacy notes root in version 1) — `..`, absolute paths, symlinks pointing outside it, and non-`.md` files are rejected by the `/notes/file` routes. The explicit `/markdown/file` routes accept Markdown paths elsewhere on the selected daemon but only open existing regular files. Both kinds are capped at 1 MiB. Associations and panels are stored in SQLite; `editor-tabs.json` is retained and its paths are rewritten explicitly during storage adoption or relocation.
 
 Associated `https://github.com/<owner>/<repo>/pull/<number>` links open a rendered PR panel with the title, state, author, Markdown description, and conversation comments. The selected daemon runs `gh pr view --json` using its existing GitHub authentication through `GET /panel-layout/resources/{id}/pull-request`. Opening or restoring the view fetches current content; **Reload** fetches it again. **Open on GitHub** opens the original link. Inline code-review threads and diffs remain on GitHub. Other links continue to use iframe panels.
 
@@ -390,13 +601,85 @@ on a local loopback address, and explicitly configure that endpoint:
 
 ```ini
 [daemons.remote]
-url = http://127.0.0.2:7337
+url = http://127.0.0.1:7441
 ```
 
 HTTP and WebSocket requests require loopback Host/Origin headers; request bodies
 require `Content-Type: application/json`. Endpoints must be HTTP(S) origin URLs
 without credentials, path prefixes, query strings, or fragments. Direct public
-network exposure and reverse-proxy subpaths are unsupported.
+network exposure and reverse-proxy subpaths are unsupported. Enabled remote URLs
+must use `localhost`, `127.x.x.x`, or `[::1]`; tunnel and credential setup remain
+external. A second remote can use another local port, for example `7442`.
+
+Select a daemon globally in the CLI, before or after the command:
+
+```sh
+fw daemons
+fw --daemon remote list
+fw rename "New label" --fw 17 --daemon remote
+fw --daemon remote config
+```
+
+CLI and MCP both fetch the running local daemon's `/daemons` directory before
+remote requests. `fw_daemons` refreshes that same directory even when a remote is
+selected; remote directories are never recursively imported. Remote requests do
+not start or restart the local daemon, substitute another endpoint, or open remote
+paths with a local application. The local directory must already be reachable.
+Local setup, doctor, config validation, daemon/web control, hooks/skills installation,
+and offline storage rebind reject remote selection. Domain operations support the
+same selector in CLI, MCP, and browser. Remote session operations require an
+explicit selector; relative repository paths remain relative to the remote daemon.
+
+Every domain request negotiates protocol version 1 plus `instance-bound-v1` and the
+capabilities needed by its operation. Each HTTP exchange, including response body
+reading, has a ten-second deadline and supports cancellation. Redirects are
+rejected. Unknown, disabled, unreachable, incompatible, and replaced targets return
+structured codes; MCP includes these in error results. HTTP requests carry the
+observed instance UUID, and WebSockets bind it in their URL. HTML previews use
+`/resource-files/<instance>/<resource>/<path>` so relative assets and nested pages
+inherit the same binding. The server rejects old unbound resource URLs and an
+instance mismatch before reading a file. Files remain confined to the associated
+HTML directory, including symlink checks.
+
+CLI/MCP remember accepted target identities separately from daemon data under
+`$XDG_STATE_HOME/fritzworks/clients/` (default `~/.local/state/fritzworks/clients/`),
+scoped to the selected configuration. First contact records the identity. A later
+replacement remains readable but mutations require explicit acknowledgement:
+
+```sh
+fw --daemon remote capabilities
+fw --daemon remote --acknowledge-instance <observed-uuid> config
+fw --daemon remote --expect-instance <observed-uuid> rename "New label" --fw 17
+```
+
+MCP provides `fw_daemon_acknowledge` with `daemon` and the observed `instanceId`.
+Acknowledgement never retries an action automatically. A multi-request CLI command
+or MCP tool retains its first endpoint/instance binding even if another command
+acknowledges a replacement concurrently. The browser has a separate
+acknowledgement button and stores its accepted identities in browser storage.
+It refreshes the local directory on focus and every ten seconds, negotiates targets
+independently, and drops panes/caches when an identity changes or a target is
+removed/disabled. Pending actions retain their original endpoint/instance and never
+fall back to local. One offline remote does not delay other panes. Sidebar tree
+preferences are scoped by instance; session font/split preferences include instance
+and session UUID. Global visual settings remain browser-wide.
+
+A temporary outage hides and disables the affected pane while preserving its
+mounted state. Autosave resumes only after that same instance reconnects. Unsaved
+Markdown is also retained by instance, file, and editor in tab-local session
+storage (in memory when storage is unavailable). Removal or replacement quarantines
+these drafts: an overlay above the workspace shows read-only text to copy, and
+acknowledging a new daemon never writes old drafts to it. The overlay can collapse
+to a compact recovery button without deleting drafts. Returning to the original
+instance restores its draft; saving or reverting to the saved content clears that
+editor's recovery entry. Confirming an editor's close discards its unsaved draft.
+Disassociating a resource clears its panel drafts only after daemon success;
+cancellation or failure preserves them. Recovery storage lasts for the browser tab session.
+
+Native path opening is a distinct capability of the owning daemon. Linux daemons without a desktop display and daemons missing an opener
+report it unavailable; remote Markdown opens through the browser's daemon-backed
+resource editor. Real SSH tunnels, browser private-network restrictions, and
+multi-machine terminal continuity still require separately authorized validation.
 
 ## MCP server
 
@@ -407,7 +690,7 @@ claude mcp add --scope user fw -- "$(command -v node)" --no-warnings "$PWD/mcp.j
 codex mcp add fw -- "$(command -v node)" --no-warnings "$PWD/mcp.js"
 ```
 
-The MCP tools share the same configuration and service as the CLI. `fw_daemons` exposes the local daemon and every configured `[daemons.<id>]` endpoint. Every tool accepts an optional `daemon` id (default: `local`) and relays its operation to that daemon, so filesystem, Git, GitHub, notes, and lifecycle work happens on the selected machine. Pass `workstream` explicitly for remote workstream operations because the MCP process's current directory can only identify a local workstream.
+The MCP tools share the same configuration and service as the CLI. `fw_daemons` reads the running local daemon’s live directory, including disabled targets. Every tool accepts an optional `daemon` id (default: `local`) and relays its operation to that daemon, so filesystem, Git, GitHub, notes, and lifecycle work happens on the selected machine. Pass `workstream` explicitly for remote workstream operations because the MCP process's current directory can only identify a local workstream.
 
 Lifecycle, stack, issue, log, resource, digest, and browser-refresh tools all execute through the selected daemon's REST API. Consequently, `fw_new`, `fw_scratch`, `fw_resume`, `fw_pause`, and `fw_close` update that daemon's FritzWorks browser state rather than manipulating the MCP host terminal. `fw_new` and `fw_scratch` accept an optional `links` array; as in the web client and CLI, those links are included in the initial agent briefing. `fw_config` reports the selected daemon's resolved settings, and `fw_browser_refresh` asks its connected browser clients to reload the whole page.
 

@@ -273,7 +273,8 @@ export function ensureSessionPanelGroup(db, item, { roles = ['shell', 'agent'], 
 export function syncSessionPanelGroups(db, items, { bump = true } = {}) {
   let changed = false;
   for (const item of items || []) {
-    const result = ensureSessionPanelGroup(db, item, { bump: false });
+    const existing = db.prepare('SELECT id FROM panel_groups WHERE owner_id=?').get(String(item.id));
+    const result = ensureSessionPanelGroup(db, item, { roles: existing ? [] : item.defaultPanels || ['shell', 'agent'], bump: false });
     changed ||= result.changed;
   }
   if (changed && bump) bumpRevision(db);
@@ -710,9 +711,13 @@ export function terminalPanelDescriptor(db, panelId) {
 function upsertMigratedResource(db, group, kind, value, label, source, options) {
   try { return insertResource(db, group, { kind, value, label, source }, options); }
   catch (error) {
-    // Missing legacy files are skipped; a bad legacy record must not prevent the
-    // rest of the migration from committing.
-    if (kind === 'markdown' && error instanceof PanelModelError) return null;
+    if (kind === 'markdown' && error instanceof PanelModelError && error.status === 404) {
+      const path = resolve(group.path || options.cwd, String(value));
+      const id = stableId('resource', `${group.id}:${kind}:${path}`);
+      db.prepare(`INSERT OR IGNORE INTO resource_associations (id,group_id,kind,value,label,source,created_at)
+        VALUES (?,?,?,?,?,?,?)`).run(id, group.id, kind, path, label || basename(path), source, timestamp());
+      return db.prepare('SELECT * FROM resource_associations WHERE id=?').get(id);
+    }
     throw error;
   }
 }
@@ -764,6 +769,9 @@ export function migrateLegacyPanelState(db, { dataDir, config, cwd = process.cwd
     return { migrated: false, revision: panelLayoutRevision(db) };
   }
 
+  if (!config.paths.notes && legacyEditorTabs(dataDir).some((tab) => (tab.source || 'notes') === 'notes')) {
+    return { migrated: false, deferred: 'storage_migration_required', revision: panelLayoutRevision(db) };
+  }
   db.exec('BEGIN IMMEDIATE');
   try {
     const workspaceState = legacyBrowserState(db, 'workspaces');
@@ -851,6 +859,7 @@ export function migrateLegacyPanelState(db, { dataDir, config, cwd = process.cwd
       for (const tab of tabs) {
         const source = tab?.source || 'notes';
         const requested = tab?.path;
+        if (source === 'notes' && !config.paths.notes) throw new PanelModelError(409, 'legacy notes resources require phase 3 migration before using version 2');
         const value = source === 'notes' ? join(config.paths.notes, String(requested || '')) : requested;
         const resource = upsertMigratedResource(
           db, group, 'markdown', value, tab?.name || basename(String(requested || 'Markdown')),
@@ -909,7 +918,33 @@ export function syncIssueResources(db) {
   return { changed, revision: panelLayoutRevision(db) };
 }
 
-export function syncDiscoveredSessionNotes(db, notesRoot, { ownerId = null } = {}) {
+export function syncDiscoveredSessionNotes(db, notesRoot, { ownerId = null, sessionNotes } = {}) {
+  if (sessionNotes) {
+    const groups = db.prepare("SELECT * FROM panel_groups WHERE owner_id IS NOT NULL AND type!='terminal'").all()
+      .filter((group) => ownerId == null || String(ownerId) === group.owner_id);
+    let changed = false;
+    const unavailable = [];
+    for (const group of groups) {
+      let files;
+      try { files = sessionNotes.scan(group.owner_id); }
+      catch (error) { unavailable.push({ ownerId: group.owner_id, message: error.message }); continue; }
+      const desired = new Set(files.map((file) => file.path));
+      for (const resource of db.prepare("SELECT * FROM resource_associations WHERE group_id=? AND source='discovered'").all(group.id)) {
+        if (desired.has(resource.value)) continue;
+        db.prepare('DELETE FROM resource_associations WHERE id=?').run(resource.id);
+        compactPositions(db, group.id);
+        changed = true;
+      }
+      for (const file of files) {
+        if (db.prepare("SELECT 1 FROM resource_associations WHERE group_id=? AND kind='markdown' AND value=?").get(group.id, file.path)) continue;
+        insertResource(db, group, { kind: 'markdown', value: file.path, label: file.file, source: 'discovered' });
+        changed = true;
+      }
+    }
+    if (changed) bumpRevision(db);
+    return { changed, revision: panelLayoutRevision(db), ...(unavailable.length ? { unavailable } : {}) };
+  }
+  if (!notesRoot) return { changed: false, count: 0, unavailable: 'storage_phase_3_required' };
   const workDir = join(notesRoot, 'work');
   const desired = new Map();
   if (existsSync(workDir)) {

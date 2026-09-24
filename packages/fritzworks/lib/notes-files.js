@@ -340,7 +340,7 @@ export function createMarkdownFile(requested, content, options = {}) {
   if (existsSync(path)) throw new NotesFileError(409, `markdown file already exists: ${path}`);
   mkdirSync(dirname(path), { recursive: true });
   const written = content.endsWith('\n') ? content : `${content}\n`;
-  writeFileSync(path, written);
+  writeFileSync(path, written, { flag: 'wx' });
   return {
     path,
     name: basename(path),

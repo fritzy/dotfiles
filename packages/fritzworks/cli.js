@@ -1,26 +1,30 @@
 #!/usr/bin/env -S node --no-warnings
 // fw CLI — command-line client for the FritzWorks workstream service.
-// Shared data/git logic lives in ./lib/core.js (also used by the MCP server).
+// Domain decisions and persistence belong to the daemon.
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { AGENT_PROVIDERS, CONFIG, PANEL_ROLES } from './lib/config.js';
-import {
-  isScratch,
-  openDb, resolveRow, currentWorkstream,
-  listIssues,
-  hasClone, worktreeDirty,
-  listNotes, readNote,
-  parentOf, setParent, stackTree, stackLine, stackCheck, ghStackLink, rebaseStack,
-  NOTES_ROOT, appendDayEntry, collectDayActivity, renderDigest,
-} from './lib/core.js';
+import { CONFIG } from './lib/config.js';
 import {
   daemonFiles, daemonStatus, openWebPage, runForeground, startDaemon, stopDaemon,
 } from './lib/daemon.js';
-import { requestLocalService, workstreamCommand } from './lib/client.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { requestDaemonService as localRequest, listWorkstreams, resolveContext, repositorySelector } from './lib/client.js';
+const clientScope = new AsyncLocalStorage();
+const requestLocalService = async (path, options = {}) => {
+  const scope = clientScope.getStore() || {};
+  const selected = scope.daemon ? { daemon: scope.daemon } : {};
+  if (scope.daemon && scope.daemon !== 'local' && path === '/context/resolve') options = { ...options, body: { ...options.body, cwd: undefined, sessionId: undefined, remote: true } };
+  const binding = scope.bindings?.get(scope.daemon || 'local');
+  const service = await (scope.request || localRequest)(path, { ...options, ...binding, ...selected, ...(scope.acknowledgeInstance ? { acknowledgeInstance: scope.acknowledgeInstance } : {}), ...(scope.expectedInstance ? { expectedInstance: scope.expectedInstance } : {}), ...(scope.config ? { config: scope.config } : {}) });
+  if (!binding && service.daemon.instanceId) scope.bindings?.set(scope.daemon || 'local', { expectedInstance: service.daemon.instanceId, expectedEndpoint: service.daemon.url });
+  return service;
+};
+const workstreamCommand = (id, command, body = {}) => requestLocalService(`/fw/${encodeURIComponent(id)}/${command}`, { method: 'POST', body });
+const isScratch = (row) => row.type === 'scratchpad' || row.scratch === true;
 import {
   agentHookStatus,
   installAgentHooks,
@@ -43,6 +47,12 @@ export const VERSION = PACKAGE.version;
 const die = (msg) => { console.error(`fw: ${msg}`); process.exit(1); };
 
 async function prompt(question, fallback) {
+  if (clientScope.getStore()?.prompt) return clientScope.getStore().prompt(question, fallback);
+  if (!stdin.isTTY) {
+    const error = new Error(`interactive input required: ${question.trim()}; pass an explicit selector or reviewed --preview-revision with --confirm`);
+    error.code = 'input_required';
+    throw error;
+  }
   const rl = readline.createInterface({ input: stdin, output: stdout });
   try {
     const answer = (await rl.question(question)).trim();
@@ -67,7 +77,7 @@ function flagValue(args, name) {
 
 // Positional args, with flags removed — including the value that follows a
 // value-taking flag like `--fw X` (so it isn't mistaken for a positional).
-function positionals(args, valueFlags = ['--fw', '--seed', '--parent', '--agent', '--panels', '--link']) {
+function positionals(args, valueFlags = ['--fw', '--seed', '--parent', '--agent', '--panels', '--link', '--preview-revision', '--idempotency-key']) {
   const out = [];
   for (let i = 0; i < args.length; i++) {
     if (valueFlags.includes(args[i])) { i++; continue; }
@@ -103,7 +113,6 @@ function agentFlag(args) {
     die('choose one agent: --agent claude|codex, --claude, or --codex');
   }
   const agent = explicit || shorthands[0];
-  if (agent && !AGENT_PROVIDERS.includes(agent)) die(`unknown agent "${agent}" (expected claude or codex)`);
   return agent;
 }
 
@@ -113,22 +122,13 @@ function browserPanels(args) {
     ? panels.split(',').map((part) => part.trim()).filter(Boolean)
     : undefined;
   if (args.includes('--no-editor') || args.includes('--no-vim')) selected = ['shell', 'agent'];
-  if (selected) {
-    selected = [...new Set(selected)];
-    const invalid = selected.find((panel) => !PANEL_ROLES.includes(panel));
-    if (invalid) die(`unknown panel "${invalid}" (expected shell, editor, or agent)`);
-    const set = new Set(selected);
-    if (!set.has('shell') || !set.has('agent')
-        || (selected.length !== 2 && selected.length !== 3)
-        || (selected.length === 3 && !set.has('editor'))) {
-      die('browser panels must be shell,agent or shell,editor,agent');
-    }
-  }
   return selected;
 }
 
 function browserRequestBody(args, extra = {}) {
   const body = { ...extra };
+  const idempotencyKey = flagValue(args, '--idempotency-key');
+  if (idempotencyKey) body.idempotencyKey = idempotencyKey;
   const agent = agentFlag(args);
   if (agent) body.agent = agent;
   const panels = browserPanels(args);
@@ -153,8 +153,9 @@ function openedInBrowser(row, daemon) {
   console.log(`Opened FritzWorks workspace #${row.id} (${daemon.url})`);
 }
 
-function printIssues(db, workstreamId) {
-  const issues = listIssues(db, workstreamId);
+async function printIssues(workstreamId) {
+  const { result } = await requestLocalService(`/fw/${encodeURIComponent(workstreamId)}?status=all`);
+  const issues = result.items[0]?.issues || [];
   if (issues.length === 0) { console.log('  (no issues linked)'); return; }
   for (const it of issues) console.log(`  ${String(it.id).padStart(3)}  [${it.kind}] ${it.ref}`);
 }
@@ -163,36 +164,31 @@ function printIssues(db, workstreamId) {
 //   1. an explicit selector (positional arg or --fw),
 //   2. the workstream whose worktree contains the current directory,
 //   3. interactive pick from the list.
-async function resolveTarget(db, selector, verb) {
-  if (selector) {
-    const row = resolveRow(db, selector);
-    if (!row) die(`no workstream matching "${selector}"`);
-    return row;
-  }
-  const cur = currentWorkstream(db);
-  if (cur) {
-    console.log(`(current workstream: #${cur.id} ${cur.org}/${cur.repo} @ ${cur.branch})`);
-    return cur;
-  }
+async function resolveTarget(selector, verb) {
+  const resolved = await resolveContext({ selector, cwd: process.cwd(), sessionId: process.env.FRITZWORKS_ID }, { request: requestLocalService });
+  if (resolved.result.workstream) return resolved.result.workstream;
   await cmdList([]);
   const picked = await prompt(`\nWorkstream to ${verb} (id or branch): `);
-  const row = resolveRow(db, picked);
-  if (!row) die(`no workstream matching "${picked}"`);
-  return row;
+  const selected = await resolveContext({ selector: picked }, { request: requestLocalService });
+  if (!selected.result.workstream) throw new Error(`no workstream matching "${picked}"`);
+  return selected.result.workstream;
+}
+
+async function previewIntent(intent) {
+  return (await requestLocalService('/intents/preview', { method: 'POST', body: intent })).result;
 }
 
 // ---------------------------------------------------------------- commands
 
 async function cmdList(args) {
-  const db = openDb();
   const status = args.includes('--all') ? 'all' : 'active_paused';
-  const { result } = await requestLocalService(`/fw/all?status=${status}&perpage=100`);
+  const { result } = await listWorkstreams(status, { request: requestLocalService });
   const rows = result.items;
   if (rows.length === 0) {
     console.log('No workstreams yet. Create one with: fw new <org/repo> <branch>');
     return;
   }
-  const current = currentWorkstream(db);
+  const current = clientScope.getStore()?.daemon && clientScope.getStore().daemon !== 'local' ? null : (await resolveContext({ cwd: process.cwd(), sessionId: process.env.FRITZWORKS_ID }, { request: requestLocalService })).result.workstream;
   const fmt = (s, w) => String(s ?? '').padEnd(w);
   const useColor = process.stdout.isTTY;
   const dim = (s) => (useColor ? `\x1b[2m${s}\x1b[0m` : s);
@@ -318,42 +314,27 @@ async function cmdResource(args) {
 
 async function cmdNew(args) {
   const positional = positionals(args);
-  const orgRepo = positional[0] || await prompt('Repo (org/repo): ');
-  if (!orgRepo || !orgRepo.includes('/')) die('expected org/repo');
-  const [org, repo] = orgRepo.split('/');
+  const orgRepo = positional[0] || await prompt('Repository path, clone URL, or owner/repo: ');
+  if (!orgRepo) die('a repository is required');
   const selector = positional[1] || await prompt('Branch, #PR, or owner:branch: ');
   if (!selector) die('a branch, PR number, or owner:branch is required');
 
-  if (!hasClone(org, repo)) {
-    if (!await confirm(`No local clone of ${org}/${repo}. Clone it now?`)) die('aborted');
-  }
 
-  const db = openDb();
-  // --parent stacks the new branch on another workstream: it's created off that
-  // branch instead of the default branch, and the relationship is recorded.
-  const parentSel = flagValue(args, '--parent');
-  let parent = null;
-  if (parentSel) {
-    parent = resolveRow(db, parentSel);
-    if (!parent) die(`no workstream matching --parent "${parentSel}"`);
-    if (isScratch(parent)) die(`--parent #${parent.id} is a scratchpad, so it has no branch to build on`);
-  }
-
+  const parent = flagValue(args, '--parent');
   const { daemon, result } = await requestLocalService('/fw', {
     method: 'POST',
     body: creationRequestBody(args, {
-      repository: orgRepo,
+      repository: repositorySelector(orgRepo, { local: !clientScope.getStore()?.daemon || clientScope.getStore().daemon === 'local' }),
+      async: true,
       selector,
-      ...(parent ? { parent: String(parent.id) } : {}),
+      ...(parent ? { parent } : {}),
     }),
   });
+  if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status} (fw job show ${result.job.id})`);
   const row = result.workstream;
-  console.log(`Workstream #${row.id}: ${org}/${repo} @ ${row.branch}`);
+  console.log(`Workstream #${row.id}: ${row.org}/${row.repo} @ ${row.branch}`);
   console.log(`  worktree: ${row.path}`);
-  if (parent) {
-    console.log(`  stacked on #${parent.id} (${parent.branch})`
-      + (result.branchedOffParent ? '' : ' — different repo, so recorded only (not branched off it)'));
-  }
+  if (parent) console.log(`  stacked on ${parent}`);
   openedInBrowser(row, daemon);
 }
 
@@ -365,6 +346,7 @@ async function cmdScratch(args) {
     method: 'POST',
     body: creationRequestBody(args, { ...(name ? { name } : {}) }),
   });
+  if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status} (fw job show ${result.job.id})`);
   const row = result.workstream;
   console.log(`Scratchpad #${row.id}: ${row.branch}`);
   console.log(`  dir: ${row.path}`);
@@ -372,25 +354,26 @@ async function cmdScratch(args) {
 }
 
 async function cmdConfiguredLocation(id, args) {
-  const location = CONFIG.locations[id];
-  if (!location) die(`unknown configured location "${id}"`);
   if (args.includes('--close')) {
-    await workstreamCommand(id, 'pause');
+    const idempotencyKey = flagValue(args, '--idempotency-key');
+    const { result } = await workstreamCommand(id, 'pause', idempotencyKey ? { idempotencyKey, async: true } : {});
+    if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status}`);
     console.log(`Closed configured location "${id}" in FritzWorks.`);
     return;
   }
-  const { daemon, result } = await workstreamCommand(id, 'resume', browserRequestBody(args));
+  const { daemon, result } = await workstreamCommand(id, 'resume', browserRequestBody(args, { async: true }));
+  if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status} (fw job show ${result.job.id})`);
   openedInBrowser(result.workstream, daemon);
 }
 
 // Reconstitute a worktree if needed and make it the active FritzWorks workspace.
 async function cmdJoin(args, verb = 'join') {
   const positional = positionals(args);
-  const db = openDb();
-  const row = await resolveTarget(db, positional[0] || flagValue(args, '--fw'), verb);
+  const row = await resolveTarget(positional[0] || flagValue(args, '--fw'), verb);
 
-  if (!existsSync(row.path)) console.log(`Worktree missing; reconstituting ${row.org}/${row.repo} @ ${row.branch}`);
-  const { daemon, result } = await workstreamCommand(row.id, 'resume', browserRequestBody(args));
+
+  const { daemon, result } = await workstreamCommand(row.id, 'resume', browserRequestBody(args, { async: true }));
+  if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status} (fw job show ${result.job.id})`);
   console.log(`  worktree: ${result.workstream.path}`);
   openedInBrowser(result.workstream, daemon);
 }
@@ -398,14 +381,31 @@ async function cmdJoin(args, verb = 'join') {
 // Stop working on a workstream for now: close its web workspace, keep the worktree.
 async function cmdPause(args) {
   const positional = positionals(args);
-  const db = openDb();
-  const row = await resolveTarget(db, positional[0] || flagValue(args, '--fw'), 'pause');
-  await workstreamCommand(row.id, 'pause');
+  const row = await resolveTarget(positional[0] || flagValue(args, '--fw'), 'pause');
+  const idempotencyKey = flagValue(args, '--idempotency-key');
+  const { result } = await workstreamCommand(row.id, 'pause', idempotencyKey ? { idempotencyKey, async: true } : {});
+  if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status}`);
   console.log(`Paused workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch}); worktree kept at ${row.path}`);
 }
 
-function cmdConfig() {
-  console.log(JSON.stringify(CONFIG, null, 2));
+async function cmdConfig(args = []) {
+  if (args.length && !['validate', 'active'].includes(args[0])) die('usage: fw config [validate|active]');
+  if (args[0] === 'active') {
+    const running = async () => {
+      const status = await daemonStatus(CONFIG);
+      if (!status.running) throw new Error('daemon is not running');
+      return status;
+    };
+    const [{ result: config }, { result: status }] = await Promise.all([
+      requestLocalService('/config', { start: running }), requestLocalService('/config/status', { start: running }),
+    ]);
+    console.log(JSON.stringify({ config, status }, null, 2));
+    return;
+  }
+  if (args[0] !== 'validate') { console.log(JSON.stringify((await requestLocalService('/config')).result, null, 2)); return; }
+  console.log(JSON.stringify(args[0] === 'validate'
+    ? { valid: true, configVersion: CONFIG.configVersion, configPath: CONFIG.configPath, diagnostics: CONFIG.diagnostics }
+    : CONFIG, null, 2));
 }
 
 async function cmdRefresh() {
@@ -430,8 +430,7 @@ async function cmdRefresh() {
 
 async function cmdSync(args) {
   const positional = positionals(args);
-  const db = openDb();
-  const row = await resolveTarget(db, positional[0] || flagValue(args, '--fw'), 'sync');
+  const row = await resolveTarget(positional[0] || flagValue(args, '--fw'), 'sync');
   const { result } = await requestLocalService(`/fw/${encodeURIComponent(row.id)}/sync`, {
     method: 'POST', body: {},
   });
@@ -488,6 +487,7 @@ async function cmdDaemon(args) {
         console.log(`API daemon running (pid ${status.info.pid}) at ${status.url}`);
         console.log(`  uptime: ${Math.floor(status.health.uptime)}s`);
         console.log(`  source: ${status.outdated ? 'outdated; fw web start will restart it' : 'current'}`);
+        console.log(`  config: ${status.health.configRevision || 'unknown'}${status.configChanged ? '; fw daemon restart required' : ''}`);
         console.log(`  log: ${status.log}`);
       } else if (status.stale) {
         console.log(`API daemon not responding (stale pid ${status.info.pid})`);
@@ -536,10 +536,14 @@ function cmdHooks(args) {
   die(`unknown hooks action "${action}" (try: install | status | uninstall)`);
 }
 
-function cmdAgentHook(args) {
+async function cmdAgentHook(args) {
+  const report = (result) => {
+    if (args.includes('--json')) console.log(JSON.stringify(result));
+    else if (args.includes('--verbose') || process.env.FRITZWORKS_HOOK_DEBUG === '1') console.error(JSON.stringify(result));
+  };
   if (args[0] === 'shell-status') {
     try {
-      recordShellHook(args[1]);
+      report(await recordShellHook(args[1]));
     } catch (error) {
       console.error(`fw hook shell-status: ${error.message}`);
     }
@@ -548,7 +552,7 @@ function cmdAgentHook(args) {
   if (args[0] !== 'agent-status') die('unknown internal hook');
   try {
     const payload = JSON.parse(readFileSync(0, 'utf8'));
-    recordAgentHook(payload);
+    report(await recordAgentHook(payload));
   } catch (error) {
     // Hooks are observational and must never prevent a prompt, permission, or
     // completed turn from proceeding if their local state update fails.
@@ -574,10 +578,9 @@ async function cmdWeb(args) {
 // directory and internal branch key; git branch names are never changed.
 async function cmdRename(args) {
   const positional = positionals(args);
-  const db = openDb();
   // Two positionals -> [selector, newName]; one -> newName against context/--fw.
   const [selector, explicitName] = positional.length >= 2 ? positional : [flagValue(args, '--fw'), positional[0]];
-  const row = await resolveTarget(db, selector, 'rename');
+  const row = await resolveTarget(selector, 'rename');
   const newName = explicitName || await prompt('New name: ');
   if (!newName) die('a new name is required');
   const { result } = await workstreamCommand(row.id, 'rename', { name: newName });
@@ -585,43 +588,27 @@ async function cmdRename(args) {
 }
 
 async function cmdArchive(args) {
-  const keep = args.includes('--keep');
-  const discard = args.includes('--delete') || args.includes('--discard');
-  const positional = positionals(args);
-  const db = openDb();
-  const row = await resolveTarget(db, positional[0] || flagValue(args, '--fw'), 'archive');
-  const scratch = isScratch(row);
-  const noun = scratch ? 'directory' : 'worktree';
-
-  // Git worktrees are removed by default (commits/branch survive in the bare clone);
-  // a scratchpad has no such backing, so its directory is kept by default and only
-  // removed when explicitly discarded — either way, still confirmed interactively.
-  const shouldRemove = scratch ? discard : !keep;
-  let remove = false;
-  let force = false;
-  if (shouldRemove && existsSync(row.path)) {
-    const dirty = scratch ? null : worktreeDirty(row.path);
-    if (dirty) {
-      const lines = dirty.split('\n');
-      console.log(`\n⚠  Worktree at ${row.path} has uncommitted changes:`);
-      for (const l of lines.slice(0, 10)) console.log(`    ${l}`);
-      if (lines.length > 10) console.log(`    … and ${lines.length - 10} more`);
-      console.log();
-    }
-    const question = dirty
-      ? `Discard these changes and remove the worktree at ${row.path}?`
-      : `Remove the ${noun} at ${row.path}?`;
-    if (await confirm(question)) {
-      remove = true;
-      force = Boolean(dirty);
-    } else {
-      console.log(`Kept ${noun} at ${row.path}.`);
-    }
-  } else if (scratch && !discard && existsSync(row.path)) {
-    console.log(`Kept scratchpad directory at ${row.path} (resume with: fw resume ${row.id}; --delete to remove).`);
+  const row = await resolveTarget(positionals(args)[0] || flagValue(args, '--fw'), 'archive');
+  const intent = { kind: 'action', target: String(row.id), command: 'archive', body: {
+    ...(flagValue(args, '--idempotency-key') ? { idempotencyKey: flagValue(args, '--idempotency-key') } : {}),
+    retention: 'automatic', keep: args.includes('--keep'), discard: args.includes('--delete') || args.includes('--discard'), force: args.includes('--force'),
+  } };
+  const revision = flagValue(args, '--preview-revision');
+  if (revision && args.includes('--confirm')) {
+    const { result } = await workstreamCommand(row.id, 'archive', { ...intent.body, async: true, force: args.includes('--force'), previewRevision: revision, confirm: true });
+    if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status}`);
+    console.log(`Archived workstream #${row.id}`);
+    return;
   }
-  await workstreamCommand(row.id, 'archive', { remove, force });
-  console.log(`Archived workstream #${row.id} (${row.org}/${row.repo} @ ${row.branch})`);
+  const preview = await previewIntent(intent);
+  if (args.includes('--preview')) { console.log(JSON.stringify(preview, null, 2)); return; }
+  if (preview.confirmationRequired) {
+    console.log(JSON.stringify(preview.consequences, null, 2));
+    if (!await confirm('Apply these changes?')) return;
+  }
+  const { result } = await workstreamCommand(row.id, 'archive', { ...preview.intent.body, ...(intent.body.idempotencyKey ? { idempotencyKey: intent.body.idempotencyKey } : {}), async: true, previewRevision: preview.revision, confirm: true });
+  if (result.job) return console.log(`Job ${result.job.id}: ${result.job.status}`);
+  console.log(`Archived workstream #${row.id}`);
 }
 
 // fw stack [show|on|off|link|rebase] — the parent/child chain and its GitHub stack.
@@ -644,96 +631,59 @@ async function cmdStack(args) {
 
 // Render the chain as a tree, marking the workstream in question.
 function printStackTree(node, focusId, depth = 0) {
-  const r = node.row;
-  const indent = '  '.repeat(depth);
-  const mark = r.id === focusId ? '▸' : ' ';
-  const where = isScratch(r) ? 'scratchpad' : `${r.repo}:${r.branch}`;
-  console.log(`  ${mark} ${indent}#${r.id} ${where}  [${r.status === 'closed' ? 'archived' : r.status}]`);
-  for (const c of node.children) printStackTree(c, focusId, depth + 1);
+  console.log(`  ${node.id === focusId ? '▸' : ' '} ${'  '.repeat(depth)}#${node.id} ${node.repo}:${node.branch} [${node.status}]`);
+  for (const child of node.stackedBy || []) printStackTree(child, focusId, depth + 1);
 }
 
 async function cmdStackShow(args) {
-  const db = openDb();
-  const row = await resolveTarget(db, positionals(args)[0] || flagValue(args, '--fw'), 'show the stack for');
-  const parent = parentOf(db, row);
-  const tree = stackTree(db, row);
-  if (!parent && tree.children.length === 0) {
-    console.log(`#${row.id} (${row.branch}) isn't stacked on anything, and nothing is stacked on it.`);
-    console.log(`Stack it with: fw stack on <id|branch> --fw ${row.id}`);
-    return;
-  }
-  console.log('Stack (bottom first):');
-  printStackTree(tree, row.id);
-  // Only report GitHub-stack eligibility when the chain is linear; a branch point
-  // is a legitimate shape here, it just can't be one GitHub stack.
-  try {
-    const check = stackCheck(stackLine(db, row));
-    console.log(check.ok
-      ? `\nCan be a GitHub PR stack (${check.repo}): fw stack link --fw ${row.id}`
-      : `\nNot a GitHub PR stack: ${check.reason}`);
-  } catch (e) {
-    console.log(`\nNot a single GitHub PR stack: ${e.message}`);
-  }
+  const row = await resolveTarget(positionals(args)[0] || flagValue(args, '--fw'), 'show the stack for');
+  const { result } = await requestLocalService(`/fw/${encodeURIComponent(row.id)}/stack`);
+  printStackTree(result.stack, row.id);
+  console.log(result.canLinkOnGitHub ? `Can link on GitHub: ${result.githubRepo}` : result.reason || '');
 }
 
 async function cmdStackOn(args) {
   const positional = positionals(args);
-  const db = openDb();
-  // Two positionals -> [child, parent]; one -> parent against context/--fw.
   const [childSel, parentSel] = positional.length >= 2 ? positional : [flagValue(args, '--fw'), positional[0]];
-  const row = await resolveTarget(db, childSel, 'stack');
-  const target = parentSel || await prompt('Stack it on (id or branch): ');
-  if (!target) die('a parent workstream is required');
-  const parent = resolveRow(db, target);
-  if (!parent) die(`no workstream matching "${target}"`);
-  const updated = setParent(db, row, parent);
-  console.log(`#${updated.id} (${updated.branch}) is now stacked on #${parent.id} (${parent.branch})`);
-  // Recording the parent doesn't move any commits — say so, since the name suggests it might.
-  console.log('  (this records the relationship only; run `fw stack rebase` to move commits)');
+  const row = await resolveTarget(childSel, 'stack');
+  const parent = parentSel || await prompt('Stack it on (id or branch): ');
+  if (!parent) die('a parent workstream is required');
+  const { result } = await workstreamCommand(row.id, 'stack-set', { parent });
+  console.log(`#${row.id} is now stacked on #${result.stackedOn.id}`);
 }
 
 async function cmdStackOff(args) {
-  const db = openDb();
-  const row = await resolveTarget(db, positionals(args)[0] || flagValue(args, '--fw'), 'unstack');
-  const parent = parentOf(db, row);
-  if (!parent) { console.log(`#${row.id} (${row.branch}) isn't stacked on anything.`); return; }
-  setParent(db, row, null);
-  console.log(`#${row.id} (${row.branch}) is no longer stacked on #${parent.id} (${parent.branch})`);
+  const row = await resolveTarget(positionals(args)[0] || flagValue(args, '--fw'), 'unstack');
+  await workstreamCommand(row.id, 'stack-set', { clear: true });
+  console.log(`#${row.id} is no longer stacked on a parent`);
 }
 
-// Push the chain's branches and create/update the stack of PRs on GitHub.
-async function cmdStackLink(args) {
-  const db = openDb();
-  const row = await resolveTarget(db, positionals(args)[0] || flagValue(args, '--fw'), 'link the stack for');
-  const chain = stackLine(db, row);
-  const check = stackCheck(chain);
-  if (!check.ok) die(check.reason);
-  console.log(`Linking ${chain.length} branches into a GitHub stack on ${check.repo}:`);
-  for (const [i, r] of chain.entries()) console.log(`  ${i + 1}. ${r.branch}`);
-  const res = ghStackLink(chain, { open: args.includes('--open') });
-  if (res.output) console.log(res.output);
-  if (!res.ok) die(`${res.command} failed`);
+async function submitStackJob(args, command) {
+  const row = await resolveTarget(positionals(args)[0] || flagValue(args, '--fw'), command);
+  const body = { ...(command === 'stack-link' ? { open: args.includes('--open') } : { trunk: args.includes('--trunk') }),
+    ...(flagValue(args, '--idempotency-key') ? { idempotencyKey: flagValue(args, '--idempotency-key') } : {}) };
+  const suppliedRevision = flagValue(args, '--preview-revision');
+  if (suppliedRevision && args.includes('--confirm')) {
+    const { result } = await workstreamCommand(row.id, command, { ...body, previewRevision: suppliedRevision, confirm: true });
+    console.log(`Job ${result.job.id}: ${result.job.status}`);
+    return;
+  }
+  const preview = await previewIntent({ kind: command, target: String(row.id), body });
+  if (args.includes('--preview')) { console.log(JSON.stringify(preview, null, 2)); return; }
+  console.log(JSON.stringify(preview.consequences, null, 2));
+  if (preview.confirmationRequired && !await confirm('Apply these changes?')) return;
+  const { result } = await workstreamCommand(row.id, command, { ...preview.intent.body, ...(body.idempotencyKey ? { idempotencyKey: body.idempotencyKey } : {}), previewRevision: preview.revision, confirm: true });
+  console.log(`Job ${result.job.id}: ${result.job.status} (fw job show ${result.job.id})`);
 }
+const cmdStackLink = (args) => submitStackJob(args, 'stack-link');
+const cmdStackRebase = (args) => submitStackJob(args, 'stack-rebase');
 
-// Cascading rebase down the chain, each branch in its own worktree.
-async function cmdStackRebase(args) {
-  const db = openDb();
-  const row = await resolveTarget(db, positionals(args)[0] || flagValue(args, '--fw'), 'rebase the stack for');
-  const chain = stackLine(db, row);
-  if (chain.length < 2 && !args.includes('--trunk')) die('nothing to rebase: this chain has one workstream');
-  const trunk = args.includes('--trunk');
-  const res = rebaseStack(chain, { trunk });
-  for (const s of res.steps) {
-    console.log(s.ok ? `  ✓ ${s.branch} onto ${s.onto}` : `  ✗ ${s.branch} onto ${s.onto}`);
-  }
-  if (!res.ok) {
-    const failed = res.steps[res.steps.length - 1];
-    console.log(`\n${failed.error}`);
-    console.log(`\nResolve in ${failed.path}, then: git rebase --continue`);
-    console.log(`Re-run \`fw stack rebase --fw ${row.id}\` afterwards to finish the branches above it.`);
-    process.exit(1);
-  }
-  console.log('\nStack rebased. Push the rewritten branches yourself (each needs --force-with-lease).');
+async function cmdJob(args) {
+  const [command = 'list', id] = args;
+  if (!['list', 'show', 'cancel'].includes(command) || (command !== 'list' && !id)) throw new Error('usage: fw job list|show <id>|cancel <id>');
+  const path = command === 'list' ? '/jobs' : `/jobs/${encodeURIComponent(id)}${command === 'cancel' ? '/cancel' : ''}`;
+  const { result } = await requestLocalService(path, command === 'cancel' ? { method: 'POST', body: {} } : {});
+  console.log(JSON.stringify(result, null, 2));
 }
 
 // fw issue add|remove|list — manage issues linked to a workstream.
@@ -748,9 +698,8 @@ async function cmdIssue(args) {
 }
 
 async function cmdIssueAdd(args) {
-  const db = openDb();
   // Workstream comes from --fw or the current worktree; positionals are issue refs.
-  const row = await resolveTarget(db, flagValue(args, '--fw'), 'add an issue to');
+  const row = await resolveTarget(flagValue(args, '--fw'), 'add an issue to');
   let refs = positionals(args);
   if (refs.length === 0) {
     const r = await prompt('Issue link or id: ');
@@ -762,16 +711,15 @@ async function cmdIssueAdd(args) {
     console.log(issue.added ? `  + [${issue.kind}] ${issue.ref}` : `  (already linked) ${issue.ref}`);
   }
   console.log(`Issues on #${row.id} (${row.org}/${row.repo} @ ${row.branch}):`);
-  printIssues(db, row.id);
+  await printIssues(row.id);
 }
 
 async function cmdIssueRemove(args) {
   const positional = positionals(args);
-  const db = openDb();
-  const row = await resolveTarget(db, flagValue(args, '--fw'), 'remove an issue from');
+  const row = await resolveTarget(flagValue(args, '--fw'), 'remove an issue from');
   let target = positional[0];
   if (!target) {
-    printIssues(db, row.id);
+    await printIssues(row.id);
     target = await prompt('\nIssue to remove (id or exact link): ');
   }
   if (!target) die('no issue given');
@@ -781,18 +729,16 @@ async function cmdIssueRemove(args) {
 }
 
 async function cmdIssueList(args) {
-  const db = openDb();
-  const row = await resolveTarget(db, flagValue(args, '--fw'), 'list issues for');
+  const row = await resolveTarget(flagValue(args, '--fw'), 'list issues for');
   console.log(`#${row.id} ${row.org}/${row.repo} @ ${row.branch}`);
-  printIssues(db, row.id);
+  await printIssues(row.id);
 }
 
 // fw log [msg...] [--done] — jot a one-line work note against a workstream.
 // The workstream comes from --fw or the current worktree; positionals are the note.
 async function cmdLog(args) {
-  const db = openDb();
   const done = args.includes('--done');
-  const row = await resolveTarget(db, flagValue(args, '--fw'), 'log work against');
+  const row = await resolveTarget(flagValue(args, '--fw'), 'log work against');
   let body = positionals(args).join(' ').trim();
   if (!body) body = (await prompt('What did you do? ')).trim();
   if (!body) die('nothing to log');
@@ -806,24 +752,13 @@ async function cmdLog(args) {
 // logs, with linked issues) into notes-format bullets. Prints them; --write also
 // appends them under the day's heading in this week's configured work-notes file.
 async function cmdDigest(args) {
-  const db = openDb();
-  const write = args.includes('--write');
-  const date = positionals(args)[0]; // optional YYYY-MM-DD; defaults to today
-  const activity = collectDayActivity(db, { date });
-  const md = renderDigest(activity);
-  if (!md) {
-    console.log(`No workstream activity on ${activity.dateIso}.`);
-    return;
-  }
-  console.log(md);
-  if (write) {
-    const { file, heading } = appendDayEntry(md, activity.date, NOTES_ROOT);
-    console.log(`\nAppended under "${heading}" in ${file}`);
-  }
+  const date = positionals(args)[0];
+  const { result } = await requestLocalService('/fw/digest', { method: 'POST', body: { ...(date ? { date } : {}), write: args.includes('--write') } });
+  console.log(result.markdown || `No workstream activity on ${result.date || date || 'this day'}.`);
+  if (result.written) console.log(JSON.stringify(result.written));
 }
 
-// fw note list|show — legacy read view for per-session Markdown resources under
-// the configured notes root.
+// fw note list|show — daemon-owned session notes.
 async function cmdNote(args) {
   const [sub, ...rest] = args;
   switch (sub) {
@@ -834,9 +769,9 @@ async function cmdNote(args) {
 }
 
 async function cmdNoteList(args) {
-  const db = openDb();
-  const row = await resolveTarget(db, flagValue(args, '--fw'), 'list notes for');
-  const notes = listNotes(row);
+  const row = await resolveTarget(flagValue(args, '--fw'), 'list notes for');
+  const { result } = await requestLocalService(`/fw/${encodeURIComponent(row.id)}/notes`);
+  const notes = result.notes;
   console.log(`Notes on #${row.id} (${row.org}/${row.repo} @ ${row.branch}):`);
   if (notes.length === 0) { console.log('  (none)'); return; }
   for (const n of notes) console.log(`  ${n.year}/${n.file}`);
@@ -844,11 +779,45 @@ async function cmdNoteList(args) {
 
 async function cmdNoteShow(args) {
   const positional = positionals(args);
-  const db = openDb();
-  const row = await resolveTarget(db, flagValue(args, '--fw'), 'show a note for');
+  const row = await resolveTarget(flagValue(args, '--fw'), 'show a note for');
   const file = positional[0] || await prompt('Note filename (see: fw note list): ');
   if (!file) die('no note filename given');
-  console.log(readNote(row, file));
+  const { result } = await requestLocalService(`/fw/${encodeURIComponent(row.id)}/note-file?path=${encodeURIComponent(file)}`);
+  console.log(result.content);
+}
+
+async function cmdStorage(args) {
+  const [command, action = 'preview'] = args;
+  if (command === 'rebind') {
+    const { rebindStorage } = await import('./lib/storage-rebind.js');
+    const result = rebindStorage({ config: CONFIG, action,
+      source: flagValue(args, '--source') || CONFIG.paths.data,
+      destination: flagValue(args, '--destination'), revision: flagValue(args, '--revision'),
+      migrationId: flagValue(args, '--migration'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  const legacyConfigPath = flagValue(args, '--legacy-config');
+  let path, body;
+  if (command === 'inventory') path = `/migrations/storage${legacyConfigPath ? `?legacyConfigPath=${encodeURIComponent(legacyConfigPath)}` : ''}`;
+  else if (command === 'ledger') path = '/migrations';
+  else if (command === 'apply') {
+    path = '/migrations/storage/apply';
+    body = { revision: flagValue(args, '--revision'), legacyConfigPath, applyConfiguration: args.includes('--write-config') };
+  } else if (command === 'recover') {
+    path = '/migrations/storage/recover'; body = { migrationId: flagValue(args, '--migration') };
+  } else if (command === 'terminals' && ['preview', 'apply', 'recover'].includes(action)) {
+    path = `/migrations/terminals${action === 'preview' ? '' : `/${action}`}`;
+    if (action !== 'preview') body = { revision: flagValue(args, '--revision'), migrationId: flagValue(args, '--migration') };
+    const approvals = flagValue(args, '--legacy-approvals');
+    if (approvals) {
+      if (action !== 'apply') die('--legacy-approvals requires storage terminals apply');
+      body.legacyApprovals = JSON.parse(readFileSync(approvals, 'utf8'));
+    }
+  } else die('storage expects inventory, ledger, apply, recover, terminals, or rebind');
+  const { result } = await requestLocalService(path, { start: false, ...(body ? { method: 'POST', body } : {}) });
+  console.log(JSON.stringify(result, null, 2));
 }
 
 export function usageText() {
@@ -856,7 +825,7 @@ export function usageText() {
 
 Usage:
   fw list [--all]                  List active workstreams (--all includes archived)
-  fw new <org/repo> <ref>          Create and open a FritzWorks workspace (alias: create)
+  fw new <repository> <ref>          Create and open a FritzWorks workspace (alias: create)
                                    (--parent <id|branch>: branch off that workstream and stack on it)
   fw scratch [name]                Create a scratchpad under the configured root (alias: sp)
                                    (both take repeatable --link <ref> and --seed <file>)
@@ -884,9 +853,25 @@ Usage:
   fw stack off [--fw X]                 Detach it from its parent
   fw stack link [--open] [--fw X]       Push the chain and stack its PRs on GitHub (gh stack link)
   fw stack rebase [--trunk] [--fw X]    Cascade-rebase the chain, each branch in its own worktree
+  # Retryable creation/lifecycle/stack jobs: --idempotency-key <key>
+  # Destructive actions: --preview, then --preview-revision <hash> --confirm
+  fw --daemon <id> <command>          Select a target from the local daemon directory
+  fw capabilities                    Show selected daemon identity and capabilities
+  fw daemons                         Refresh the local connection directory
+  --acknowledge-instance <uuid>       Accept a changed target identity explicitly
+  --expect-instance <uuid>            Require the specified target identity
+  fw job list|show <id>|cancel <id>    Inspect or cancel daemon jobs
   fw log <msg...> [--done] [--fw X]     Jot a work note (--done marks it completed)
   fw note list [--fw X]                 List legacy per-session Markdown
   fw note show <file> [--fw X]          Print legacy per-session Markdown
+  fw storage inventory [--legacy-config <file>]  Preview storage adoption and config translation
+  fw storage apply --revision <hash> [--write-config]  Apply the reviewed inventory
+  fw storage recover --migration <id>       Replay an interrupted storage migration
+  fw storage terminals preview|apply|recover [--revision <hash>]
+    apply --legacy-approvals <json>  Explicitly acknowledge reviewed legacy processes
+  fw storage rebind preview|apply --destination <path> [--revision <hash>]
+  fw storage rebind recover --source <old-data> --migration <id>
+  fw storage ledger                        Show migration and backup records
   fw digest [YYYY-MM-DD] [--write]      Draft a day's notes from commits + work logs
                                         (--write appends to the configured weekly notes file)
   fw doctor [--json]               Check installation prerequisites and configuration
@@ -894,7 +879,7 @@ Usage:
                                    Link commands and install client integrations
   fw skills [install|status|uninstall] [--provider claude|codex]
                                    Manage bundled agent skills
-  fw config                        Print the resolved configuration and config file path
+  fw config [validate|active]      Validate or print effective settings and their sources
   fw sync [id|branch] [--fw X]     Sync session Markdown and discover its branch PR
   fw refresh                       Reconcile status with live browser terminal sessions
   fw hooks [install|status|uninstall]         Agent hooks; --provider claude|codex, --shell for Zsh
@@ -933,7 +918,7 @@ function usage() {
 
 // ---------------------------------------------------------------- entry
 
-export const run = async (argv = process.argv.slice(2)) => {
+const runCommand = async (argv) => {
   const [cmd, ...rest] = argv;
   if (argv.some((arg) => arg === '--model' || arg.startsWith('--model='))) {
     die('--model was removed; configure the provider model in config.ini instead');
@@ -963,10 +948,14 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'archive': case 'close': case 'rm': return cmdArchive(rest);
     case 'issue': case 'issues': return cmdIssue(rest);
     case 'stack': return cmdStack(rest);
+    case 'job': case 'jobs': return cmdJob(rest);
     case 'log': return cmdLog(rest);
     case 'note': return cmdNote(rest);
+    case 'storage': return cmdStorage(rest);
     case 'digest': return cmdDigest(rest);
-    case 'config': return cmdConfig();
+    case 'config': return cmdConfig(rest);
+    case 'capabilities': return console.log(JSON.stringify(await requestLocalService('/capabilities'), null, 2));
+    case 'daemons': return console.log(JSON.stringify((await (clientScope.getStore()?.request || localRequest)('/daemons', { daemon: 'local', ...(clientScope.getStore()?.config ? { config: clientScope.getStore().config } : {}) })).result, null, 2));
     case 'sync': return cmdSync(rest);
     case 'refresh': return cmdRefresh();
     case 'doctor': {
@@ -1009,9 +998,30 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'version': case '-V': case '--version': return console.log(VERSION);
     case undefined: case 'help': case '-h': case '--help': return usage();
     default:
-      if (CONFIG.locations[cmd]) return cmdConfiguredLocation(cmd, rest);
+      const { result: capabilities } = await requestLocalService('/capabilities');
+      if (capabilities.locations.some((location) => location.id === cmd)) return cmdConfiguredLocation(cmd, rest);
       die(`unknown command "${cmd}" (try: fw help)`);
   }
+};
+
+export const run = (argv = process.argv.slice(2), options = {}) => {
+  const args = [];
+  const globals = {};
+  const names = { '--daemon': 'daemon', '--acknowledge-instance': 'acknowledgeInstance', '--expect-instance': 'expectedInstance' };
+  for (let index = 0; index < argv.length; index += 1) {
+    const name = argv[index].split('=')[0];
+    if (!names[name]) { args.push(argv[index]); continue; }
+    const value = argv[index].includes('=') ? argv[index].slice(name.length + 1) : argv[++index];
+    if (!value || value.startsWith('--')) throw new Error(`${name} requires a value`);
+    if (globals[names[name]]) throw new Error(`${name} may be specified only once`);
+    globals[names[name]] = value;
+  }
+  const [command, subcommand] = args;
+  const remote = globals.daemon && globals.daemon !== 'local';
+  const bootstrap = ['setup', 'doctor', 'daemon', 'server', 'web', 'hooks', 'hook', 'skills'].includes(command)
+    || (command === 'config' && subcommand === 'validate') || (command === 'storage' && subcommand === 'rebind');
+  if (remote && bootstrap) throw Object.assign(new Error(`${command} is a local bootstrap operation; --daemon cannot select a remote`), { code: 'local_only', details: { code: 'local_only' } });
+  return clientScope.run({ ...options, ...globals, bindings: new Map() }, () => runCommand(args));
 };
 
 const isMain = (() => {

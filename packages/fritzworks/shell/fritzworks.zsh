@@ -3,7 +3,12 @@
 if [[ -n ${FRITZWORKS_ID:-${AI_WORKSTREAM_ID:-}} ]] && (( $+commands[fw] )); then
   autoload -Uz add-zsh-hook
 
+  typeset -gi _fritzworks_hook_sequence=0
+  export FRITZWORKS_HOOK_EMITTER="shell:$$:$RANDOM:$RANDOM"
+
   _fritzworks_shell_status() {
+    (( ++_fritzworks_hook_sequence ))
+    export FRITZWORKS_HOOK_SEQUENCE=$_fritzworks_hook_sequence
     command fw hook shell-status "$1" >/dev/null 2>&1
   }
 

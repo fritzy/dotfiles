@@ -8,6 +8,7 @@ import {
 import { MinimizeIcon, ShellIcon } from './icons.jsx';
 import NotePicker from './NotePicker.jsx';
 import { useTarget } from './target-context.js';
+import { discardDraft } from './markdown-drafts.js';
 import { STANDALONE_TERMINAL_DRAG_TYPE } from './constants.js';
 import TerminalPanel, {
   clampTerminalFontSize, DEFAULT_TERMINAL_FONT_SIZE,
@@ -386,6 +387,7 @@ const BottomTabs = forwardRef(function BottomTabs({
     if (tab.kind === 'editor') {
       if (dirtyPaths.has(tab.path)
           && !window.confirm(`${tab.label} has unsaved changes. Close it anyway?`)) return false;
+      discardDraft(target, tab.path, tab.source, tab.id);
       markDirty(tab.path, false);
       if (lastEditorPath === tab.path) {
         const nextEditor = tabs.filter((item) => item.kind === 'editor' && item.id !== id).at(-1);
@@ -420,7 +422,7 @@ const BottomTabs = forwardRef(function BottomTabs({
     }
     return true;
   }, [dirtyPaths, lastEditorPath, leaveFullscreen, markDirty, onCloseActive,
-    onPanelFocus, remember, splitGroups, tabs, targetId]);
+    onPanelFocus, remember, splitGroups, tabs, target]);
 
   const focusTerminalPanel = useCallback((id) => {
     if (!tabs.some((tab) => tab.id === id && tab.kind === 'terminal')) return false;
@@ -708,6 +710,7 @@ const BottomTabs = forwardRef(function BottomTabs({
               <div key={tab.id} className={`absolute inset-0 min-h-0 ${tabVisible ? 'flex' : 'hidden'}`}>
                 <MarkdownEditor
                   path={tab.path}
+                  draftKey={tab.id}
                   name={tab.label}
                   source={tab.source}
                   focused={tabVisible && focusedPanel === panelId(tab.id)}

@@ -1,6 +1,12 @@
+import { connections } from './connections.js';
+export { connections, subscribeConnections } from './connections.js';
+export const prepareSocket = (path, target) => connections.prepareSocket(path, target);
+
 import { browserClientId } from './browser-client.js';
 
 export function wsUrl(path, target) {
+  if (!target?.instanceId) throw new Error('Daemon identity must be verified before WebSocket connection');
+  path += `${path.includes('?') ? '&' : '?'}instance=${encodeURIComponent(target.instanceId)}`;
   if (target?.url) {
     const url = new URL(target.url);
     const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -15,8 +21,7 @@ export function wsUrl(path, target) {
 // doesn't happen to list "back to where you came from" could strand the
 // connection tabs with no way to switch back.
 export async function listDaemons(signal) {
-  const response = await fetch('/daemons', { signal });
-  return response.json();
+  return connections.directory(signal);
 }
 
 export function readBrowserState(scope, signal, target) {
@@ -94,18 +99,8 @@ export function readPullRequest(resourceId, signal, target) {
   return request(`/panel-layout/resources/${encodeURIComponent(resourceId)}/pull-request`, { signal }, target);
 }
 
-async function request(path, options = {}, target) {
-  const response = await fetch(`${target?.url || ''}${path}`, options);
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    body = null;
-  }
-  if (!response.ok) {
-    throw new Error(body?.message || body?.error || `HTTP ${response.status}`);
-  }
-  return body;
+function request(path, options = {}, target) {
+  return connections.request(path, options, target);
 }
 
 export function listWorkstreams({ type, status, page, perpage }, signal, target) {
@@ -160,11 +155,13 @@ export function syncWorkstream(id, target) {
   return postCommand(id, 'sync', {}, target);
 }
 
-export function resetAllTerminalSessions(target) {
+export async function resetAllTerminalSessions(target) {
+  const preview = await previewIntent({ kind: 'terminal-reset-all', body: {} }, undefined, target);
+  if (!window.confirm(preview.consequences.join('\n'))) return { cancelled: true };
   return request('/fw/terminal-reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({ previewRevision: preview.revision, confirm: true }),
   }, target);
 }
 
@@ -238,6 +235,22 @@ export function writeEditorTabs(scope, tabs, activePath, target) {
 
 export function resourcePreviewUrl(resource, target) {
   if (resource?.kind !== 'html') return resource?.value;
+  if (!target?.instanceId) throw new Error('Verify the owning daemon before opening an HTML resource');
   const name = resource.value.split('/').pop();
-  return `${target?.url || ''}/resource-files/${encodeURIComponent(resource.id)}/${encodeURIComponent(name)}`;
+  return `${target?.url || ''}/resource-files/${encodeURIComponent(target.instanceId)}/${encodeURIComponent(resource.id)}/${encodeURIComponent(name)}`;
+}
+
+export function previewIntent(intent, signal, target) {
+  return request('/intents/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(intent), signal }, target);
+}
+
+export async function awaitJob(response, target) {
+  if (!response.job) return response;
+  let job = response.job;
+  while (['queued', 'running', 'cancel_requested'].includes(job.status)) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    ({ job } = await request(`/jobs/${encodeURIComponent(job.id)}`, {}, target));
+  }
+  if (job.status !== 'succeeded') throw Object.assign(new Error(job.error?.message || `Operation ${job.status}; inspect job ${job.id}`), { job, details: job.error?.details });
+  return job.result;
 }

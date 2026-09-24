@@ -56,7 +56,9 @@ default =
     id: 'savefiles', name: 'savefiles', repo: 'example/savefiles', path: '/users/example/savefiles', branch: 'main',
     closeable: false,
   });
-  assert.equal(config.paths.dotfiles, join(dir, 'settings'));
+  assert.equal(config.paths.dotfiles, undefined);
+  assert.equal(config.configVersion, 1);
+  assert.equal(config.storage.layout, 'legacy');
   assert.equal(config.paths.data, '/var/example-data/fritzworks');
   assert.equal(config.paths.scratchpads, '/users/example/scratchpad');
   assert.deepEqual(config.commands.shell, ['fish', '--login']);
@@ -78,11 +80,11 @@ test('daemons are named remote endpoints validated as absolute URLs, with "local
   const configPath = join(dir, 'config.ini');
   writeFileSync(configPath, `
 [daemons.staging]
-url = https://staging.example.com:9000/
+url = https://127.0.0.1:9000/
 `);
   const config = resolveConfig({ configPath, home: '/users/example' });
   assert.deepEqual(config.daemons.staging, {
-    id: 'staging', name: 'Staging', url: 'https://staging.example.com:9000',
+    id: 'staging', name: 'Staging', url: 'https://127.0.0.1:9000',
   });
   assert.equal(config.daemons.workstation, undefined);
 
@@ -102,7 +104,7 @@ url = https://staging.example.com:9000/
 });
 
 test('configuration rejects unknown agents', () => {
-  const base = { configPath: '/tmp/does-not-exist-fritzworks.ini', home: '/users/example' };
+  const base = { home: '/users/example' };
   assert.throws(
     () => resolveConfig({ ...base, env: { FRITZWORKS_AGENT: 'other' } }),
     /unknown agent/,
@@ -119,7 +121,10 @@ test('default user path follows XDG_CONFIG_HOME and the bundled data path follow
   });
   assert.equal(config.configPath, '/var/example-config/fritzworks/config.ini');
   assert.equal(config.paths.data, '/var/example-data/fritzworks');
-  assert.equal(config.paths.notes, '/users/example/notes');
+  assert.equal(config.paths.notes, undefined);
+  assert.equal(config.paths.sessionNotes, '/var/example-data/fritzworks/session-notes');
+  assert.equal(config.paths.worktrees, '/var/example-data/fritzworks/worktrees');
+  assert.equal(config.configVersion, 2);
   assert.deepEqual(config.locations, {});
   assert.equal(config.server.port, 7337);
   assert.deepEqual(config.daemons, {});

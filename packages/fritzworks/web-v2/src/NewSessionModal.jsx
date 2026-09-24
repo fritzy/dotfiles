@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { createRepoSession, createScratchpadSession, getNewSessionDefaults } from './api.js';
-import { DEFAULT_WORKSPACE_ROLES } from './constants.js';
+import { createRepoSession, createScratchpadSession, getNewSessionDefaults, previewIntent, awaitJob } from './api.js';
 import { ChevronIcon, Spinner } from './icons.jsx';
 import LinkEditor from './LinkEditor.jsx';
 import { useTarget } from './target-context.js';
 import {
-  AgentToggle, Button, Definition, DefinitionList, ErrorMessage, Field, inputClass, Modal,
+  Button, Definition, DefinitionList, ErrorMessage, Field, inputClass, Modal,
 } from './ui.jsx';
-import { repoSelectorPreview, scratchpadSlug } from './utils.js';
 
 function RepoCombobox({ value, onChange, repositories, disabled }) {
   const [open, setOpen] = useState(false);
@@ -73,11 +71,13 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [agent, setAgent] = useState('claude');
+  const [agent, setAgent] = useState('');
+  const [preview, setPreview] = useState(null);
   const [repository, setRepository] = useState('');
   const [selector, setSelector] = useState('');
   const [name, setName] = useState('');
   const linkEditorRef = useRef(null);
+  const submissionRef = useRef(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -85,7 +85,7 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
     getNewSessionDefaults(controller.signal, target)
       .then((body) => {
         setDefaults(body);
-        setAgent(body.agent === 'codex' ? 'codex' : 'claude');
+        setAgent(body.panels.includes('agent') ? body.agent : '');
         setError('');
       })
       .catch((cause) => { if (cause.name !== 'AbortError') setError(cause.message); })
@@ -93,24 +93,23 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
     return () => controller.abort();
   }, [kind, target]);
 
-  const repoPreview = useMemo(() => repoSelectorPreview(selector.trim()), [selector]);
-  const preview = useMemo(() => {
-    if (!defaults) return { source: '—', path: '—' };
-    if (!repoMode) {
-      const root = defaults.scratchpadRoot?.replace(/\/+$/, '');
-      const leaf = scratchpadSlug(name) || '(random name)';
-      return { source: 'scratch', path: root ? `${root}/${leaf}` : '—' };
-    }
-    const parts = repository.trim().split('/');
-    const validRepo = parts.length === 2 && parts.every((part) => /^[A-Za-z0-9_.-]+$/.test(part));
-    const root = defaults.repositoryRoot?.replace(/\/+$/, '');
-    if (!validRepo || !selector.trim() || !root) return { source: repoPreview.source || '—', path: '—' };
-    const leaf = repoPreview.branch ? repoPreview.branch.replaceAll('/', '-') : '(resolved PR branch)';
-    return { source: repoPreview.source || '—', path: `${root}/${parts[0]}/${parts[1]}/${leaf}` };
-  }, [defaults, name, repoMode, repoPreview, repository, selector]);
+  const creation = repoMode ? defaults?.repositoryCreation : defaults?.scratchpadCreation;
+  const unavailable = creation?.available === false ? creation.reason : '';
+  useEffect(() => {
+    if (!defaults || (repoMode && (!repository.trim() || !selector.trim()))) { setPreview(null); return; }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      previewIntent({ kind: repoMode ? 'create-repo' : 'create-scratchpad', body: {
+        ...(repoMode ? { repository: repository.trim(), selector: selector.trim() } : { name: name.trim() }),
+        ...(agent ? { agent, panels: ['shell', 'agent'] } : { panels: ['shell'] }),
+      } }, controller.signal, target).then(setPreview).catch((cause) => { if (cause.name !== 'AbortError') setPreview(null); });
+    }, 200);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [defaults, repoMode, repository, selector, name, agent, target]);
 
   async function submit(event) {
     event.preventDefault();
+    if (unavailable) return;
     const links = await linkEditorRef.current.collect();
     if (!links) {
       setError('Choose a suggestion or enter a valid link reference.');
@@ -119,9 +118,17 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
     setBusy(true);
     setError('');
     try {
-      const body = repoMode
-        ? await createRepoSession({ repository: repository.trim(), selector: selector.trim(), agent, panels: [...DEFAULT_WORKSPACE_ROLES], links }, target)
-        : await createScratchpadSession({ name: name.trim(), agent, panels: [...DEFAULT_WORKSPACE_ROLES], links }, target);
+      const intent = { kind: repoMode ? 'create-repo' : 'create-scratchpad', body: {
+        ...(repoMode ? { repository: repository.trim(), selector: selector.trim() } : { name: name.trim() }),
+        ...(agent ? { agent, panels: ['shell', 'agent'] } : { panels: ['shell'] }), links,
+      } };
+      const signature = JSON.stringify(intent);
+      if (submissionRef.current?.signature !== signature) {
+        const checked = await previewIntent(intent, undefined, target);
+        submissionRef.current = { signature, payload: { ...checked.intent.body, previewRevision: checked.revision, async: true, idempotencyKey: crypto.randomUUID() } };
+      }
+      const payload = submissionRef.current.payload;
+      const body = await awaitJob(repoMode ? await createRepoSession(payload, target) : await createScratchpadSession(payload, target), target);
       if (body.workstream?.id === undefined || body.workstream?.id === null) {
         throw new Error('The server did not return the new session.');
       }
@@ -139,7 +146,12 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
       ) : (
         <form className="relative grid gap-5" aria-busy={busy} onSubmit={submit}>
           <div className="flex flex-wrap items-center gap-2 border-b-2 border-accent pb-3">
-            <AgentToggle value={agent} onChange={setAgent} disabled={busy} />
+            <label className="flex items-center gap-2">Agent
+              <select className={inputClass} value={agent} onChange={(event) => setAgent(event.target.value)} disabled={busy}>
+                <option value="">Shell only</option>
+                {defaults?.providers?.filter((provider) => provider.available).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
+              </select>
+            </label>
           </div>
 
           {repoMode ? (
@@ -160,15 +172,15 @@ export default function NewSessionModal({ kind, onClose, onCreated }) {
           <LinkEditor ref={linkEditorRef} disabled={busy} />
 
           <DefinitionList>
-            <Definition term="Source"><span className="font-mono">{preview.source}</span></Definition>
-            <Definition term="Path"><span className="font-mono">{preview.path}</span></Definition>
+            <Definition term="Source"><span className="font-mono">{preview?.resolved?.source || '—'}</span></Definition>
+            <Definition term="Path"><span className="font-mono">{preview?.resolved?.path || (preview?.resolved?.storageRoot ? `Allocated on creation under ${preview.resolved.storageRoot}` : '—')}</span></Definition>
           </DefinitionList>
 
-          <ErrorMessage>{error}</ErrorMessage>
+          <ErrorMessage>{unavailable || error}</ErrorMessage>
 
           <div className="flex justify-end gap-2 border-t border-primary/25 pt-4">
             <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button type="submit" disabled={busy}>{busy ? <><Spinner /> Creating and opening…</> : 'Create & Open'}</Button>
+            <Button type="submit" disabled={busy || Boolean(unavailable)}>{busy ? <><Spinner /> Creating and opening…</> : 'Create & Open'}</Button>
           </div>
 
           {busy && (

@@ -16,7 +16,7 @@ export function setupConfig({ config = CONFIG } = {}) {
   const path = config.configPath;
   if (existsSync(path)) return { path, created: false };
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, '# FritzWorks user overrides. Run fw config to see effective settings.\n', { flag: 'wx', mode: 0o600 });
+  writeFileSync(path, `# FritzWorks user overrides. Run fw config to see effective settings.\nconfigVersion = ${config.configVersion || 1}\n`, { flag: 'wx', mode: 0o600 });
   return { path, created: true };
 }
 

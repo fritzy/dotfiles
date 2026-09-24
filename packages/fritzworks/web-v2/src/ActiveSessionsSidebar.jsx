@@ -79,14 +79,16 @@ const panelGroupNavigationKey = (targetId, id) => `panel-group:${targetId}:${id}
 const resourceNavigationKey = (targetId, id) => `resource:${targetId}:${id}`;
 const SIDEBAR_VIEWS = ['sessions', 'settings'];
 
-function storedExpandedKeys(name) {
-  try {
-    const stored = JSON.parse(localStorage.getItem(SIDEBAR_TREE_STORAGE_KEY));
-    if (!Array.isArray(stored?.[name])) return new Set();
-    return new Set(stored[name].filter((key) => typeof key === 'string').slice(0, 2000));
-  } catch {
-    return new Set();
+function storedExpandedKeys(name, sections) {
+  const keys = [];
+  for (const { target } of sections) {
+    if (!target.instanceId) continue;
+    try {
+      const stored = JSON.parse(localStorage.getItem(`${SIDEBAR_TREE_STORAGE_KEY}:${target.instanceId}`));
+      if (Array.isArray(stored?.[name])) keys.push(...stored[name].filter((key) => typeof key === 'string').slice(0, 2000));
+    } catch { /* optional persistence */ }
   }
+  return new Set(keys);
 }
 
 function terminalDragPayload(dataTransfer) {
@@ -510,8 +512,8 @@ export default function ActiveSessionsSidebar({
   }), [sections]);
   // Unknown nodes remain collapsed, while nodes this browser has seen retain
   // their last explicit state across client refreshes.
-  const [expandedTargets, setExpandedTargets] = useState(() => storedExpandedKeys('targets'));
-  const [expandedGroups, setExpandedGroups] = useState(() => storedExpandedKeys('groups'));
+  const [expandedTargets, setExpandedTargets] = useState(() => storedExpandedKeys('targets', sections));
+  const [expandedGroups, setExpandedGroups] = useState(() => storedExpandedKeys('groups', sections));
   const [view, setView] = useState('sessions');
   const [terminalsResetting, setTerminalsResetting] = useState(false);
   const [terminalResetError, setTerminalResetError] = useState('');
@@ -570,12 +572,15 @@ export default function ActiveSessionsSidebar({
 
   useEffect(() => {
     try {
-      localStorage.setItem(SIDEBAR_TREE_STORAGE_KEY, JSON.stringify({
-        targets: [...expandedTargets],
-        groups: [...expandedGroups],
-      }));
+      for (const { target } of sections) {
+        if (!target.instanceId) continue;
+        localStorage.setItem(`${SIDEBAR_TREE_STORAGE_KEY}:${target.instanceId}`, JSON.stringify({
+          targets: expandedTargets.has(target.id) ? [target.id] : [],
+          groups: [...expandedGroups].filter((key) => key.startsWith(`group:${target.id}:`) || key.startsWith(`panel-group:${target.id}:`)),
+        }));
+      }
     } catch { /* browser storage is optional */ }
-  }, [expandedGroups, expandedTargets]);
+  }, [expandedGroups, expandedTargets, sections]);
 
   useEffect(() => {
     setHighlightedNavigationKey((current) => (
