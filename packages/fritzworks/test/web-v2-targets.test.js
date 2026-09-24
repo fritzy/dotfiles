@@ -332,7 +332,7 @@ for (const panelModel of [true, false]) {
         assert.match(label(target).closest('button').title, /fritzy\/leaf/);
       }
     };
-    assertLabels('…leaf');
+    assertLabels('fritzy/leaf');
 
     async function editPrefixes(value) {
       await actCall(() => mounted.container.querySelector('[aria-label="Open settings"]').click());

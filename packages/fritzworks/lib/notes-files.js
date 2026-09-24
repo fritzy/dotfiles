@@ -1,5 +1,5 @@
 // Filesystem access for the browser markdown editor. Everything here is scoped to
-// the configured notes root (see [locations.notes] in config.ini) and follows the
+// the configured notes root (see paths.notes in config.ini) and follows the
 // notes skill's layout: <root>/{work,journal}/<YYYY>/<YYYY-MM-DD>-week.md keyed to
 // the week's Monday, with one "## <Weekday>, <Month> <Day><ord>, <Year>" heading
 // per weekday that the day's entries accrete under.

@@ -68,3 +68,16 @@ test('FritzWorks launcher configures appmode, starts the daemon, and launches Fi
   assert.deepEqual(calls[2][2], ['-P', 'appmode', '--new-window', 'http://127.0.0.1:7337/v2/']);
   assert.equal(calls[2][3].env.MOZ_APP_REMOTINGNAME, 'fritzworks');
 });
+
+
+test('default launcher opens the system browser without a Firefox profile', async () => {
+  const opened = [];
+  const result = await launchApp({
+    profileName: null,
+    start: async () => ({ url: 'http://127.0.0.1:7337' }),
+    configure() { throw new Error('unexpected profile configuration'); },
+    open(url) { opened.push(url); return { url, opener: 'open' }; },
+  });
+  assert.deepEqual(opened, ['http://127.0.0.1:7337/v2/']);
+  assert.equal(result.opener, 'open');
+});

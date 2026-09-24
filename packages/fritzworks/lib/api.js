@@ -516,11 +516,12 @@ export function createScratchpadWorkstream(db, body = {}, context = {}) {
   };
 }
 
-export function openPathWithXdg(path, { run = spawnSync } = {}) {
-  const result = run('xdg-open', [path], { stdio: 'ignore' });
-  if (result.error) throw new Error(`could not run xdg-open: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`xdg-open exited with status ${result.status}`);
-  return { opener: 'xdg-open', path };
+export function openPathWithXdg(path, { run = spawnSync, platform = process.platform } = {}) {
+  const opener = platform === 'darwin' ? 'open' : 'xdg-open';
+  const result = run(opener, [path], { stdio: 'ignore' });
+  if (result.error) throw new Error(`could not run ${opener}: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`${opener} exited with status ${result.status}`);
+  return { opener, path };
 }
 
 export function executeWorkstreamCommand(db, id, command, body = {}, context = {}) {
@@ -901,7 +902,7 @@ export function workstreamDigest(db, body = {}, { notesRoot = CONFIG.paths.notes
 // a loopback Origin, so trusting one here is no broader than trusting the
 // same-origin case this server was already built for.
 function loopbackHostname(hostname) {
-  return hostname === 'localhost' || hostname === '::1' || /^127(\.\d{1,3}){3}$/.test(hostname);
+  return hostname === 'localhost' || hostname === '::1' || hostname === '[::1]' || /^127(\.\d{1,3}){3}$/.test(hostname);
 }
 
 function loopbackOrigin(req) {
@@ -909,7 +910,7 @@ function loopbackOrigin(req) {
   if (typeof origin !== 'string') return null;
   try {
     const parsed = new URL(origin);
-    return loopbackHostname(parsed.hostname) ? origin : null;
+    return ['http:', 'https:'].includes(parsed.protocol) && loopbackHostname(parsed.hostname) ? origin : null;
   } catch {
     return null;
   }
@@ -926,14 +927,7 @@ function json(res, status, value, extraHeaders = {}) {
   res.end(body);
 }
 
-// ws:/wss: as bare schemes already allow a WebSocket to any host, which is
-// how /fw/terminal and /fw/events reach another daemon; plain fetch() has no
-// such scheme-source, so each configured daemon's origin is listed here too
-// — otherwise the daemon-selector's switch to it is blocked by CSP before
-// CORS is ever evaluated.
-const DAEMON_CONNECT_SRC = Object.values(CONFIG.daemons).map((daemon) => daemon.url).join(' ');
-
-function staticFile(res, path, contentType, headOnly = false) {
+function staticFile(res, path, contentType, headOnly = false, config = CONFIG) {
   const body = readFileSync(path);
   res.writeHead(200, {
     'Content-Type': contentType,
@@ -941,7 +935,7 @@ function staticFile(res, path, contentType, headOnly = false) {
     'Cache-Control': 'no-store',
     // img-src is widened so markdown previews can show images a note links to;
     // everything else stays same-origin (plus the configured daemons above).
-    'Content-Security-Policy': `default-src 'self'; connect-src 'self' ws: wss: ${DAEMON_CONNECT_SRC}; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-src 'self' https: http:`,
+    'Content-Security-Policy': `default-src 'self'; connect-src 'self' ws: wss: ${Object.values(config.daemons || {}).map((daemon) => daemon.url).join(' ')}; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; frame-src 'self' https: http:`,
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(headOnly ? undefined : body);
@@ -1077,10 +1071,10 @@ export function createApiService({
     if (cached?.items && Date.now() - cached.loadedAt < suggestionCacheMs) return cached.items;
     if (cached?.pending) return cached.pending;
     const load = provider === 'linear' && query
-      ? () => linearSearch(query)
+      ? () => linearSearch(query, { config })
       : provider === 'linear'
-        ? () => linearSuggestions({ reference: clock() })
-      : () => githubSuggestions();
+        ? () => linearSuggestions({ reference: clock(), config })
+      : () => githubSuggestions({ config });
     const pending = Promise.resolve().then(load).then((items) => {
       suggestionCaches.set(key, { items, loadedAt: Date.now() });
       return items;
@@ -1863,7 +1857,16 @@ export function createApiService({
 
   const server = createServer((req, res) => {
     Promise.resolve().then(async () => {
+      let hostname;
+      try { hostname = new URL(`http://${req.headers.host}`).hostname; }
+      catch { throw new ApiError(403, 'invalid Host header'); }
+      if (!loopbackHostname(hostname)) throw new ApiError(403, 'Host must be a loopback address');
       const corsOrigin = loopbackOrigin(req);
+      if (req.headers.origin !== undefined && !corsOrigin) throw new ApiError(403, 'Origin must be a loopback HTTP origin');
+      if ((Number(req.headers['content-length']) > 0 || req.headers['transfer-encoding'])
+          && req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+        throw new ApiError(415, 'request body must use Content-Type: application/json');
+      }
       if (corsOrigin) {
         res.setHeader('Access-Control-Allow-Origin', corsOrigin);
         res.setHeader('Vary', 'Origin');
@@ -1891,19 +1894,19 @@ export function createApiService({
         }
       }
       if ((req.method === 'GET' || headOnly) && (url.pathname === '/' || url.pathname === '/v2' || url.pathname === '/v2/')) {
-        return staticFile(res, `${webRoot}/v2/index.html`, 'text/html; charset=utf-8', headOnly);
+        return staticFile(res, `${webRoot}/v2/index.html`, 'text/html; charset=utf-8', headOnly, config);
       }
       const v2Asset = url.pathname.match(/^\/v2\/assets\/([A-Za-z0-9_.-]+\.(css|js|map))$/);
       if ((req.method === 'GET' || headOnly) && v2Asset) {
-        return staticFile(res, `${webRoot}/v2/assets/${v2Asset[1]}`, V2_ASSET_TYPES.get(v2Asset[2]), headOnly);
+        return staticFile(res, `${webRoot}/v2/assets/${v2Asset[1]}`, V2_ASSET_TYPES.get(v2Asset[2]), headOnly, config);
       }
       const v2Font = url.pathname.match(/^\/v2\/fonts\/([A-Za-z0-9_.-]+\.(woff2|txt))$/);
       if ((req.method === 'GET' || headOnly) && v2Font) {
-        return staticFile(res, `${webRoot}/v2/fonts/${v2Font[1]}`, V2_FONT_TYPES.get(v2Font[2]), headOnly);
+        return staticFile(res, `${webRoot}/v2/fonts/${v2Font[1]}`, V2_FONT_TYPES.get(v2Font[2]), headOnly, config);
       }
       const iconName = url.pathname.match(/^\/icons\/([^/]+)$/)?.[1];
       if ((req.method === 'GET' || headOnly) && WEB_ICONS.has(iconName)) {
-        return staticFile(res, `${webRoot}/icons/${iconName}`, 'image/svg+xml', headOnly);
+        return staticFile(res, `${webRoot}/icons/${iconName}`, 'image/svg+xml', headOnly, config);
       }
       if (req.method === 'GET' && url.pathname === '/health') {
         return json(res, 200, {
@@ -2201,13 +2204,14 @@ export function createApiService({
     let requestUrl;
     try { requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`); }
     catch { socket.destroy(); return; }
+    if (!loopbackHostname(requestUrl.hostname)) { socket.destroy(); return; }
     const key = req.headers['sec-websocket-key'];
     const origin = req.headers.origin;
     let originAllowed = true;
     if (typeof origin === 'string') {
       try {
         const originUrl = new URL(origin);
-        originAllowed = originUrl.host === req.headers.host || loopbackHostname(originUrl.hostname);
+        originAllowed = ['http:', 'https:'].includes(originUrl.protocol) && loopbackHostname(originUrl.hostname);
       } catch { originAllowed = false; }
     }
     const terminalUpgrade = requestUrl.pathname === '/fw/terminal';

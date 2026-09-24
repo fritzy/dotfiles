@@ -3,6 +3,7 @@ import {
   existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { connect } from 'node:net';
+import { get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -441,7 +442,7 @@ test('HTTP service exposes daemon-side stack, note, digest, and config routes', 
 test('path opener invokes xdg-open without shell interpolation', () => {
   const calls = [];
   const run = (...args) => { calls.push(args); return { status: 0 }; };
-  assert.deepEqual(openPathWithXdg('/tmp/a directory', { run }), {
+  assert.deepEqual(openPathWithXdg('/tmp/a directory', { run, platform: 'linux' }), {
     opener: 'xdg-open', path: '/tmp/a directory',
   });
   assert.deepEqual(calls, [['xdg-open', ['/tmp/a directory'], { stdio: 'ignore' }]]);
@@ -673,6 +674,16 @@ test('HTTP service serves assets, REST commands, and WebSocket invalidations', a
   });
   assert.equal(prChecks.length, 1);
 
+  assert.equal((await fetch(`${base}/health`, { headers: { Origin: 'https://attacker.example' } })).status, 403);
+  const hostileHostStatus = await new Promise((resolve, reject) => {
+    httpGet(`${base}/health`, { headers: { Host: 'attacker.example' } }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    }).on('error', reject);
+  });
+  assert.equal(hostileHostStatus, 403);
+  assert.equal((await fetch(`${base}/browser/refresh`, { method: 'POST', body: '{}' })).status, 415);
+  assert.equal((await fetch(`${base}/health`, { headers: { Origin: 'http://127.1.1.2:7337' } })).status, 200);
   const health = await (await fetch(`${base}/health`)).json();
   assert.match(health.revision, /^[a-f0-9]{16}$/);
   const refreshed = await (await fetch(`${base}/fw/refresh`, {

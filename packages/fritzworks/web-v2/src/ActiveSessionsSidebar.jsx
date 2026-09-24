@@ -1046,7 +1046,7 @@ export default function ActiveSessionsSidebar({
                   className={inputClass}
                   value={omittedBranchPrefixes}
                   onChange={(event) => onOmittedBranchPrefixesChange?.(event.target.value)}
-                  placeholder="fritzy/, username/"
+                  placeholder="username/, team/"
                   aria-describedby="sidebar-omitted-branch-prefixes-help"
                 />
                 <p id="sidebar-omitted-branch-prefixes-help" className="text-xs text-muted">Replace these prefixes with … in sidebar branch names. Separate with commas; leave empty to show full names. Hover a branch to see its full name.</p>

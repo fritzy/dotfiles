@@ -51,6 +51,36 @@ Codex's native MCP OAuth configuration currently exposes a client ID but no clie
 secret setting. See [Codex MCP documentation](https://developers.openai.com/codex/mcp/)
 and [mcp-remote](https://github.com/punkpeye/mcp-remote).
 
+## Libraries Build work report
+
+[`home/.scripts/libraries-build-work.sh`](home/.scripts/libraries-build-work.sh)
+gathers review work in `chainguard-dev/mono`, your unfinished Linear assignments
+across all teams, and unfinished ECO issues related to mentat, judge, and axlotl.
+Requires authenticated [`gh`](https://cli.github.com/manual/gh_api),
+[`linear`](https://github.com/schpet/linear-cli) with `linear api`, and `jq` 1.6+.
+
+```bash
+~/.scripts/libraries-build-work.sh --tty
+~/.scripts/libraries-build-work.sh --markdown > work.md
+~/.scripts/libraries-build-work.sh --workspace chainguard --markdown
+```
+
+Without a mode flag, terminals get the terminal layout and redirected output gets
+Markdown. `NO_COLOR=1` disables terminal color. Progress goes to stderr. Queries
+are read-only, results are fully paginated, and API failures exit nonzero without
+printing a partial report.
+
+PR matching checks titles, descriptions, branch names, and changed paths for the
+three component names, case-insensitively. Non-draft PRs qualify when GitHub says
+review is required, a review request is outstanding, or there is no review
+decision and no approval/change-request review. This includes all authors and
+reviewers, including your own PRs. PRs appear most recently updated first.
+
+ECO matching uses titles, descriptions, labels, and project names through
+[Linear issue filters](https://linear.app/developers/filtering). Both Linear
+sections exclude completed, canceled, and archived issues and sort by priority,
+then due date. An issue matching both sections appears in both.
+
 ## About
 
 I use this primarily to keep my dev environment current on my local MacOS and my GitHub Codespaces VMs.

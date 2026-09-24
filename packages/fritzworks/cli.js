@@ -25,10 +25,15 @@ import {
   agentHookStatus,
   installAgentHooks,
   installShellHooks,
+  uninstallAgentHooks,
+  uninstallShellHooks,
   recordAgentHook,
   recordShellHook,
   shellHookStatus,
 } from './lib/hooks.js';
+
+import { diagnose } from './lib/doctor.js';
+import { manageSkills, setupCheckout } from './lib/setup.js';
 
 const PACKAGE = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 export const VERSION = PACKAGE.version;
@@ -503,24 +508,32 @@ async function cmdDaemon(args) {
 }
 
 function cmdHooks(args) {
-  const action = positionals(args)[0] || 'status';
+  const action = positionals(args, ['--provider'])[0] || 'status';
+  const provider = flagValue(args, '--provider');
+  const options = provider ? { providers: [provider] } : {};
+  if (action === 'uninstall') {
+    for (const result of uninstallAgentHooks(options)) console.log(`${result.provider}: removed ${result.removed} hooks (${result.path})`);
+    if (args.includes('--shell')) console.log(JSON.stringify(uninstallShellHooks()));
+    return;
+  }
   if (action === 'install') {
-    for (const result of installAgentHooks()) {
+    for (const result of installAgentHooks(options)) {
       console.log(`${result.provider}: ${result.added ? `installed ${result.added} hooks` : 'already installed'} (${result.path})`);
     }
+    if (!args.includes('--shell')) return;
     const shell = installShellHooks();
     console.log(`${shell.provider}: ${shell.added || shell.updated ? 'installed shell hooks' : 'already installed'} (${shell.path})`);
     return;
   }
   if (action === 'status') {
-    for (const result of agentHookStatus()) {
+    for (const result of agentHookStatus(options)) {
       console.log(`${result.provider}: ${result.installed ? 'installed' : 'not installed'} (${result.path})`);
     }
     const shell = shellHookStatus();
     console.log(`${shell.provider}: ${shell.installed ? 'installed' : 'not installed'} (${shell.path})`);
     return;
   }
-  die(`unknown hooks action "${action}" (try: install | status)`);
+  die(`unknown hooks action "${action}" (try: install | status | uninstall)`);
 }
 
 function cmdAgentHook(args) {
@@ -876,10 +889,15 @@ Usage:
   fw note show <file> [--fw X]          Print legacy per-session Markdown
   fw digest [YYYY-MM-DD] [--write]      Draft a day's notes from commits + work logs
                                         (--write appends to the configured weekly notes file)
+  fw doctor [--json]               Check installation prerequisites and configuration
+  fw setup [--provider claude|codex|all] [--shell|--no-shell] [--no-mcp]
+                                   Link commands and install client integrations
+  fw skills [install|status|uninstall] [--provider claude|codex]
+                                   Manage bundled agent skills
   fw config                        Print the resolved configuration and config file path
   fw sync [id|branch] [--fw X]     Sync session Markdown and discover its branch PR
   fw refresh                       Reconcile status with live browser terminal sessions
-  fw hooks [install|status]         Install or inspect Claude/Codex agent-status hooks
+  fw hooks [install|status|uninstall]         Agent hooks; --provider claude|codex, --shell for Zsh
   fw daemon [start|stop|restart|status|foreground|log] [--host H] [--port P]
                                    Manage the local REST/WebSocket service (default: start)
   fw web start [--host H] [--port P]
@@ -951,6 +969,39 @@ export const run = async (argv = process.argv.slice(2)) => {
     case 'config': return cmdConfig();
     case 'sync': return cmdSync(rest);
     case 'refresh': return cmdRefresh();
+    case 'doctor': {
+      const result = await diagnose();
+      console.log(rest.includes('--json') ? JSON.stringify(result, null, 2)
+        : result.checks.map(({ name, level, detail }) => `${level.toUpperCase()} ${name}: ${detail}`).join('\n'));
+      if (!result.ok) process.exitCode = 1;
+      return;
+    }
+    case 'setup': {
+      if (rest.includes('--help') || rest.includes('-h')) return usage();
+      const provider = flagValue(rest, '--provider');
+      if (rest.includes('--provider') && !provider) die('--provider requires claude, codex, or all');
+      const result = setupCheckout({
+        ...(provider ? { providers: provider === 'all' ? ['claude', 'codex'] : [provider] } : {}),
+        ...(rest.includes('--shell') ? { shell: true } : {}),
+        ...(rest.includes('--no-shell') ? { shell: false } : {}),
+        mcp: !rest.includes('--no-mcp'),
+      });
+      console.log(`${result.config.created ? 'Created' : 'Using'} ${result.config.path}`);
+      for (const command of result.commands) console.log(`${command.name}: ${command.path}`);
+      for (const hook of result.hooks) console.log(`${hook.provider}: hooks configured (${hook.path})`);
+      for (const skill of result.skills) console.log(`${skill.provider}: ${skill.status} (${skill.path})`);
+      for (const registration of result.registrations) console.log(`${registration.provider}: ${registration.status}`);
+      if (result.shellHooks) console.log(`Zsh hooks: ${result.shellHooks.rcPath}`);
+      if (!result.providers.length) console.log('No AI clients detected. Install one and rerun setup, or select --provider claude|codex|all.');
+      console.log('Keep ~/.local/bin on PATH. Restart AI clients to load integrations. Run npm start to open FritzWorks.');
+      return;
+    }
+    case 'skills': {
+      const provider = flagValue(rest, '--provider');
+      const action = positionals(rest, ['--provider'])[0] || 'status';
+      console.log(JSON.stringify(manageSkills(action, provider ? { providers: [provider] } : {}), null, 2));
+      return;
+    }
     case 'hooks': return cmdHooks(rest);
     case 'hook': return cmdAgentHook(rest);
     case 'daemon': case 'server': return cmdDaemon(rest);

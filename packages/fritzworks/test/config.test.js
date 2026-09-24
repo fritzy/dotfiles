@@ -47,10 +47,7 @@ default =
 
   assert.equal(config.paths.repositories, join(dir, 'repos'));
   assert.equal(config.paths.notes, '/users/example/writing');
-  assert.deepEqual(config.locations.notes, {
-    id: 'notes', name: 'notes', repo: 'fritzy/notes', path: '/users/example/writing', branch: 'main',
-    closeable: false,
-  });
+  assert.equal(config.locations.notes, undefined);
   assert.deepEqual(config.locations.dotfiles, {
     id: 'dotfiles', name: 'dotfiles', repo: 'example/dotfiles', path: join(dir, 'settings'), branch: 'trunk',
     closeable: false,
@@ -70,9 +67,7 @@ default =
   assert.equal(config.models.claude.scratch, 'sonnet');
   assert.equal(config.gitProtocol, 'https');
   assert.deepEqual(config.server, { host: '127.0.0.1', port: 7444, pollInterval: 1000 });
-  assert.deepEqual(config.daemons.workstation, {
-    id: 'workstation', name: 'Workstation', url: 'http://127.1.1.2:7337',
-  });
+  assert.equal(config.daemons.workstation, undefined);
   assert.equal(config.defaultConfigPath, DEFAULT_CONFIG_PATH);
   assert.equal(config.configPath, configPath);
 });
@@ -89,9 +84,7 @@ url = https://staging.example.com:9000/
   assert.deepEqual(config.daemons.staging, {
     id: 'staging', name: 'Staging', url: 'https://staging.example.com:9000',
   });
-  assert.deepEqual(config.daemons.workstation, {
-    id: 'workstation', name: 'Workstation', url: 'http://127.1.1.2:7337',
-  });
+  assert.equal(config.daemons.workstation, undefined);
 
   const badUrl = join(dir, 'bad-url.ini');
   writeFileSync(badUrl, '[daemons.staging]\nurl = not-a-url\n');
@@ -126,13 +119,12 @@ test('default user path follows XDG_CONFIG_HOME and the bundled data path follow
   });
   assert.equal(config.configPath, '/var/example-config/fritzworks/config.ini');
   assert.equal(config.paths.data, '/var/example-data/fritzworks');
-  assert.equal(config.locations.notes.repo, 'fritzy/notes');
-  assert.equal(config.locations.notes.branch, 'main');
-  assert.equal(config.locations.dotfiles.repo, 'fritzy/dotfiles');
-  assert.deepEqual(Object.keys(config.locations), ['notes', 'dotfiles']);
+  assert.equal(config.paths.notes, '/users/example/notes');
+  assert.deepEqual(config.locations, {});
   assert.equal(config.server.port, 7337);
-  assert.deepEqual(Object.keys(config.daemons), ['workstation']);
-  assert.equal(config.daemons.workstation.url, 'http://127.1.1.2:7337');
+  assert.deepEqual(config.daemons, {});
+  assert.equal(config.suggestions.linear.enabled, false);
+  assert.equal(config.suggestions.github.enabled, false);
 });
 
 test('INI parser reports malformed input with its source and line', () => {
@@ -173,4 +165,21 @@ test('upgrades reuse legacy config and data while explicit and new paths take pr
   writeFileSync(newConfig, '');
   mkdirSync(join(dataHome, 'fritzworks'));
   assert.equal(resolveConfig(options).paths.data, join(dataHome, 'fritzworks'));
+});
+
+test('locations and daemons can be disabled, while notes remain usable independently', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'fw-disabled-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const configPath = join(home, 'config.ini');
+  writeFileSync(configPath, '[locations.notes]\nenabled = false\n[daemons.old]\nenabled = false\n');
+  const config = resolveConfig({ home, configPath, env: {} });
+  assert.deepEqual(config.locations, {});
+  assert.deepEqual(config.daemons, {});
+  assert.equal(config.paths.notes, join(home, 'notes'));
+  writeFileSync(configPath, '[locations.notes]\nrepo = example/notes\npath = ~/writing\n');
+  assert.equal(resolveConfig({ home, configPath, env: {} }).paths.notes, join(home, 'writing'));
+  writeFileSync(configPath, '[suggestions.linear]\nenabled = true\n');
+  assert.throws(() => resolveConfig({ home, configPath, env: {} }), /team is required/);
+  writeFileSync(configPath, '[daemons.old]\nenabled = maybe\n');
+  assert.throws(() => resolveConfig({ home, configPath, env: {} }), /must be true or false/);
 });

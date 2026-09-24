@@ -1,9 +1,6 @@
 import { execFile } from 'node:child_process';
 
-const CUSTOMER_REPO = 'chainguard-dev/customer-issues';
-const CUSTOMER_LABEL = 'eng:ecosystems:javascript';
-const REVIEW_REPOS = ['chainguard-dev/mono', 'chainguard-dev/ecosystems-rebuilder.js'];
-const TEAMMATES = new Set(['indexzero', 'jumoel', 'dakaneye']);
+import { CONFIG } from './config.js';
 
 function command(run, program, args) {
   return new Promise((resolve, reject) => {
@@ -25,7 +22,9 @@ async function jsonCommand(run, program, args) {
   catch { throw new Error(`${program} autocomplete returned invalid JSON`); }
 }
 
-export async function linearWorkSuggestions({ run = execFile, reference = new Date() } = {}) {
+export async function linearWorkSuggestions({ run = execFile, reference = new Date(), config = CONFIG } = {}) {
+  const source = config.suggestions?.linear;
+  if (!source?.enabled) return [];
   const timestamp = new Date(reference);
   if (Number.isNaN(timestamp.valueOf())) throw new Error('invalid Linear autocomplete reference date');
   const query = `{
@@ -33,7 +32,7 @@ export async function linearWorkSuggestions({ run = execFile, reference = new Da
     cycles(first: 5, filter: {
       startsAt: { lte: "${timestamp.toISOString()}" }
       endsAt: { gte: "${timestamp.toISOString()}" }
-      team: { key: { eq: "ECO" } }
+      team: { key: { eq: ${JSON.stringify(source.team)} } }
     }) {
       nodes {
         issues(first: 100, filter: {
@@ -66,17 +65,19 @@ export async function linearWorkSuggestions({ run = execFile, reference = new Da
       id: issue.identifier,
       title: issue.title,
       url: issue.url,
-      group: 'Current ECO cycle',
+      group: `Current ${source.team} cycle`,
       meta: `${issue.state?.name || 'Unknown'} · ${issue.assignee?.name || 'unassigned'}`,
       updatedAt: issue.updatedAt || null,
     }));
 }
 
-export async function linearSearchSuggestions(query, { run = execFile } = {}) {
+export async function linearSearchSuggestions(query, { run = execFile, config = CONFIG } = {}) {
+  const source = config.suggestions?.linear;
+  if (!source?.enabled) return [];
   const search = String(query || '').trim();
   if (!search) return [];
   const response = await jsonCommand(run, 'linear', [
-    'issue', 'query', '--search', search, '--team', 'ECO',
+    'issue', 'query', '--search', search, '--team', source.team,
     '--state', 'triage', '--state', 'backlog', '--state', 'unstarted', '--state', 'started',
     '--limit', '20', '--json', '--no-pager',
   ]);
@@ -110,19 +111,23 @@ function githubSuggestion(item, repository, kind, group, meta) {
   };
 }
 
-export async function githubWorkSuggestions({ run = execFile } = {}) {
+export async function githubWorkSuggestions({ run = execFile, config = CONFIG } = {}) {
+  const source = config.suggestions?.github;
+  if (!source?.enabled || (!source.issueRepository && !source.reviewRepositories.length)) return [];
+  const { issueRepository, issueLabel, reviewRepositories } = source;
+  const teammates = new Set(source.teammates);
   const login = await command(run, 'gh', ['api', 'user', '--jq', '.login']);
   const fields = 'number,title,url,updatedAt,assignees,labels';
   const [byLabel, byInvolvement, ...reviewResults] = await Promise.all([
-    jsonCommand(run, 'gh', [
-      'search', 'issues', '--repo', CUSTOMER_REPO, '--state', 'open', '--label', CUSTOMER_LABEL,
+    issueRepository && issueLabel ? jsonCommand(run, 'gh', [
+      'search', 'issues', '--repo', issueRepository, '--state', 'open', '--label', issueLabel,
       '--include-prs=false', '--limit', '200', '--json', fields,
-    ]),
-    jsonCommand(run, 'gh', [
-      'search', 'issues', '--repo', CUSTOMER_REPO, '--state', 'open', '--involves', login,
+    ]) : [],
+    issueRepository ? jsonCommand(run, 'gh', [
+      'search', 'issues', '--repo', issueRepository, '--state', 'open', '--involves', login,
       '--include-prs=false', '--limit', '200', '--json', fields,
-    ]),
-    ...REVIEW_REPOS.map((repository) => jsonCommand(run, 'gh', [
+    ]) : [],
+    ...reviewRepositories.map((repository) => jsonCommand(run, 'gh', [
       'search', 'prs', '--repo', repository, '--state', 'open', '--draft=false', '--review', 'required',
       '--sort', 'created', '--order', 'desc', '--limit', '100',
       '--json', 'number,title,url,createdAt,updatedAt,author',
@@ -136,24 +141,24 @@ export async function githubWorkSuggestions({ run = execFile } = {}) {
     .slice(0, 20)
     .map((issue) => {
       const assigned = (issue.assignees || []).some((assignee) => assignee.login === login);
-      const javascript = (issue.labels || []).some((label) => label.name === CUSTOMER_LABEL);
-      const flags = [assigned ? 'assigned' : null, javascript ? 'javascript' : null].filter(Boolean);
+      const javascript = (issue.labels || []).some((label) => label.name === issueLabel);
+      const flags = [assigned ? 'assigned' : null, javascript ? issueLabel : null].filter(Boolean);
       return githubSuggestion(
-        issue, CUSTOMER_REPO, 'issue', 'Customer escalations',
-        ['Customer escalation', ...flags].join(' · '),
+        issue, issueRepository, 'issue', `${issueRepository.split('/').at(-1)} issues`,
+        ['Issue', ...flags].join(' · '),
       );
     });
   for (const [index, pulls] of reviewResults.entries()) {
-    const repository = REVIEW_REPOS[index];
+    const repository = reviewRepositories[index];
     suggestions.push(...pulls
       .sort((left, right) => {
-        const teammate = Number(!TEAMMATES.has(left.author?.login)) - Number(!TEAMMATES.has(right.author?.login));
+        const teammate = Number(!teammates.has(left.author?.login)) - Number(!teammates.has(right.author?.login));
         return teammate || String(right.createdAt).localeCompare(String(left.createdAt));
       })
       .slice(0, 20)
       .map((pull) => githubSuggestion(
         pull, repository, 'pull_request', `${repository.split('/').at(-1)} PRs`,
-        `PR by @${pull.author?.login || 'unknown'}${TEAMMATES.has(pull.author?.login) ? ' · teammate' : ''}`,
+        `PR by @${pull.author?.login || 'unknown'}${teammates.has(pull.author?.login) ? ' · teammate' : ''}`,
       )));
   }
   return suggestions;

@@ -364,7 +364,7 @@ if [[ -f "$fw_pkg/package.json" ]] && command -v npm >/dev/null 2>&1; then
       ln -sfn "$fw_pkg/${old_target##*/}" "$old_link"
     fi
   done
-  if "$HOME/.local/bin/fw" hooks install >/dev/null 2>&1; then
+  if "$HOME/.local/bin/fw" hooks install --shell >/dev/null 2>&1; then
     echo "  installed fw activity hooks"
   else
     echo "  warning: fw activity hook installation failed"

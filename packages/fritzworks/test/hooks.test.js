@@ -12,6 +12,7 @@ import {
   upsertWorkstream,
 } from '../lib/core.js';
 import {
+  AGENT_HOOK_COMMAND,
   agentHookStatus,
   installAgentHooks,
   installShellHooks,
@@ -33,13 +34,13 @@ test('hook installation preserves existing hooks and is idempotent', (t) => {
   }));
 
   const command = 'fw hook agent-status';
-  const installed = installAgentHooks({ home, command });
+  const installed = installAgentHooks({ home, env: {}, command });
   assert.deepEqual(installed.map(({ provider, added }) => ({ provider, added })), [
     { provider: 'claude', added: 6 },
     { provider: 'codex', added: 5 },
   ]);
-  assert.deepEqual(installAgentHooks({ home, command }).map(({ added }) => added), [0, 0]);
-  assert.deepEqual(agentHookStatus({ home, command }).map(({ provider, installed: present }) => ({
+  assert.deepEqual(installAgentHooks({ home, env: {}, command }).map(({ added }) => added), [0, 0]);
+  assert.deepEqual(agentHookStatus({ home, env: {}, command }).map(({ provider, installed: present }) => ({
     provider, installed: present,
   })), [
     { provider: 'claude', installed: true },
@@ -146,13 +147,13 @@ test('agent lifecycle hooks update the correct workstream', (t) => {
 test('hook upgrades replace legacy commands and shell sources without duplicating handlers', (t) => {
   const home = mkdtempSync(join(tmpdir(), 'fritzworks-hook-upgrade-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  installAgentHooks({ home, command: 'ws hook agent-status' });
-  assert.deepEqual(installAgentHooks({ home }).map(({ added }) => added), [0, 0]);
-  assert.ok(agentHookStatus({ home }).every(({ installed }) => installed));
+  installAgentHooks({ home, env: {}, command: 'ws hook agent-status' });
+  assert.deepEqual(installAgentHooks({ home, env: {} }).map(({ added }) => added), [0, 0]);
+  assert.ok(agentHookStatus({ home, env: {} }).every(({ installed }) => installed));
   for (const file of ['.claude/settings.json', '.codex/hooks.json']) {
     const settings = readFileSync(join(home, file), 'utf8');
     assert.doesNotMatch(settings, /ws hook/);
-    assert.match(settings, /fw hook agent-status/);
+    assert.ok(settings.includes(JSON.stringify(AGENT_HOOK_COMMAND).slice(1, -1)));
   }
   const configHome = join(home, '.config');
   writeFileSync(join(home, '.zshrc'), `# keep this\n# ai-workstream shell status hook\nsource '${configHome}/ai-workstream/shell.zsh'\n`);
@@ -190,4 +191,18 @@ test('shell installation recognizes the conditional source already in dotfiles',
   assert.equal(installShellHooks(options).added, 0);
   assert.equal(readFileSync(join(home, '.zshrc'), 'utf8'), rc);
   assert.equal(shellHookStatus(options).installed, true);
+});
+
+
+test('setup replaces its recorded hook command after changing Node paths', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'fritzworks-hook-node-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const options = { home, env: {}, providers: ['codex'] };
+  const oldCommand = "'/old/node' --no-warnings '/checkout/cli.js' hook agent-status";
+  const [first] = installAgentHooks({ ...options, command: oldCommand });
+  assert.equal(installAgentHooks(options)[0].added, 0);
+  const settings = JSON.parse(readFileSync(first.path, 'utf8'));
+  assert.equal(settings.hooks.Stop.length, 1);
+  assert.equal(settings.hooks.Stop[0].hooks[0].command, AGENT_HOOK_COMMAND);
+  assert.equal(readFileSync(`${first.path}.fritzworks-command`, 'utf8'), AGENT_HOOK_COMMAND);
 });

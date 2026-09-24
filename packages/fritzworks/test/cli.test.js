@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { creationRequestBody, VERSION, usageText } from '../cli.js';
+import { fileURLToPath } from 'node:url';
 import { CONFIG } from '../lib/config.js';
 
 test('CLI exposes help, version, and resolved configuration without running on import', () => {
@@ -14,12 +15,12 @@ test('CLI exposes help, version, and resolved configuration without running on i
   assert.match(help, /fw archive \[id\|branch\]/);
   assert.match(help, /--link <ref>/);
   assert.match(help, /aliases: close, rm/);
-  assert.match(help, /fw hooks \[install\|status]/);
+  assert.match(help, /fw hooks \[install\|status\|uninstall]/);
   assert.doesNotMatch(help, /--model/);
   assert.doesNotMatch(help, /open-shell/);
   assert.equal(VERSION, '1.0.0');
-  assert.ok(CONFIG.defaultConfigPath.endsWith('/fritzworks/config.ini'));
-  assert.ok(CONFIG.configPath.endsWith('/fritzworks/config.ini'));
+  assert.equal(CONFIG.defaultConfigPath, fileURLToPath(new URL('../config.ini', import.meta.url)));
+  assert.equal(typeof CONFIG.configPath, 'string');
   assert.equal(CONFIG.panels, undefined);
 });
 

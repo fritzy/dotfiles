@@ -7,6 +7,16 @@ import {
   linearWorkSuggestions,
 } from '../lib/suggestions.js';
 
+const config = { suggestions: {
+  linear: { enabled: true, team: 'ECO' },
+  github: {
+    enabled: true, issueRepository: 'chainguard-dev/customer-issues',
+    issueLabel: 'eng:ecosystems:javascript',
+    reviewRepositories: ['chainguard-dev/mono', 'chainguard-dev/ecosystems-rebuilder.js'],
+    teammates: ['indexzero', 'jumoel', 'dakaneye'],
+  },
+} };
+
 function runner(handler) {
   return (program, args, _options, callback) => {
     try {
@@ -52,7 +62,7 @@ test('Linear suggestions include current-cycle work assigned to the viewer or un
   });
 
   const suggestions = await linearWorkSuggestions({
-    run,
+    run, config,
     reference: new Date('2026-08-27T12:00:00.000Z'),
   });
 
@@ -82,7 +92,7 @@ test('typed Linear search finds active ECO issues outside the current cycle', as
     };
   });
 
-  const suggestions = await linearSearchSuggestions('axlotl', { run });
+  const suggestions = await linearSearchSuggestions('axlotl', { run, config });
 
   assert.deepEqual(suggestions.map((item) => item.id), ['ECO-3380']);
   assert.equal(suggestions[0].group, 'Linear search');
@@ -145,17 +155,25 @@ test('GitHub suggestions combine customer escalations and review-required PRs in
     throw new Error(`unexpected command: ${program} ${args.join(' ')}`);
   });
 
-  const suggestions = await githubWorkSuggestions({ run });
+  const suggestions = await githubWorkSuggestions({ run, config });
 
   assert.deepEqual(suggestions.map((item) => item.id), [
     'customer-issues#12', 'customer-issues#11',
     'mono#20', 'mono#21',
     'ecosystems-rebuilder.js#31',
   ]);
-  assert.equal(suggestions[1].meta, 'Customer escalation · assigned · javascript');
+  assert.equal(suggestions[1].meta, 'Issue · assigned · eng:ecosystems:javascript');
   assert.equal(suggestions[2].meta, 'PR by @indexzero · teammate');
   assert.deepEqual([...new Set(suggestions.map((item) => item.group))], [
-    'Customer escalations', 'mono PRs', 'ecosystems-rebuilder.js PRs',
+    'customer-issues issues', 'mono PRs', 'ecosystems-rebuilder.js PRs',
   ]);
   assert.equal(calls.filter(([, args]) => args[0] === 'search' && args[1] === 'prs').length, 2);
+});
+
+
+test('disabled work sources never invoke external commands', async () => {
+  const options = { config: { suggestions: {} }, run() { throw new Error('unexpected command'); } };
+  assert.deepEqual(await linearWorkSuggestions(options), []);
+  assert.deepEqual(await linearSearchSuggestions('query', options), []);
+  assert.deepEqual(await githubWorkSuggestions(options), []);
 });

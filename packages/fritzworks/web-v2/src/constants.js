@@ -58,7 +58,7 @@ export const SYNC_WINDOW_FULLSCREEN_STORAGE_KEY = 'fritzworks-sync-window-fullsc
 export const SIDEBAR_WIDTH_STORAGE_KEY = 'fritzworks-sidebar-width';
 export const SIDEBAR_TREE_STORAGE_KEY = 'fritzworks-sidebar-tree';
 export const OMITTED_BRANCH_PREFIXES_STORAGE_KEY = 'fritzworks-omitted-branch-prefixes';
-export const DEFAULT_OMITTED_BRANCH_PREFIXES = 'fritzy/';
+export const DEFAULT_OMITTED_BRANCH_PREFIXES = '';
 export const STANDALONE_TERMINAL_DRAG_TYPE = 'application/x-fritzworks-terminal';
 // Every stack falls back to Symbols Nerd Font Mono, which supplies the Nerd Font
 // glyphs the chosen family does not have. Text still renders from the family

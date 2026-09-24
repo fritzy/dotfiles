@@ -166,7 +166,11 @@ function daemonUrlValue(value, name) {
     throw new Error(`daemons.${name}.url must be a non-empty string`);
   }
   const url = value.trim();
-  try { new URL(url); }
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password
+        || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('unsupported URL');
+  }
   catch { throw new Error(`daemons.${name}.url must be a valid absolute URL`); }
   return url.replace(/\/+$/, '');
 }
@@ -177,6 +181,46 @@ function daemonNameValue(value, id) {
     throw new Error(`daemons.${id}.name must be a non-empty string`);
   }
   return value.trim();
+}
+
+function enabledValue(value, name, fallback = true) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'boolean') throw new Error(`${name} must be true or false`);
+  return value;
+}
+
+function stringList(value, name) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
+    throw new Error(`${name} must be an array of non-empty strings`);
+  }
+  return value;
+}
+
+function resolveSuggestions(value = {}) {
+  const linear = value.linear || {};
+  const github = value.github || {};
+  const linearEnabled = enabledValue(linear.enabled, 'suggestions.linear.enabled', false);
+  if (linearEnabled && (typeof linear.team !== 'string' || !/^[A-Za-z0-9_-]+$/.test(linear.team))) {
+    throw new Error('suggestions.linear.team is required when enabled');
+  }
+  const reviewRepositories = stringList(github.reviewRepositories, 'suggestions.github.reviewRepositories');
+  for (const repo of [...reviewRepositories, ...(github.issueRepository ? [github.issueRepository] : [])]) {
+    repositoryValue(repo, 'suggestions.github');
+  }
+  if (github.issueLabel != null && typeof github.issueLabel !== 'string') {
+    throw new Error('suggestions.github.issueLabel must be a string');
+  }
+  return {
+    linear: { enabled: linearEnabled, team: linear.team || null },
+    github: {
+      enabled: enabledValue(github.enabled, 'suggestions.github.enabled', false),
+      issueRepository: github.issueRepository || null,
+      issueLabel: github.issueLabel || null,
+      reviewRepositories,
+      teammates: stringList(github.teammates, 'suggestions.github.teammates'),
+    },
+  };
 }
 
 export function resolveConfig({
@@ -213,7 +257,7 @@ export function resolveConfig({
     dotfiles: firstDefined(env.FRITZWORKS_DOTFILES, env.FW_DOTFILES),
     data: firstDefined(env.FRITZWORKS_DATA, env.FW_DATA_DIR),
   };
-  const pathNames = ['repositories', 'scratchpads', 'data'];
+  const pathNames = ['repositories', 'scratchpads', 'data', 'notes'];
   const paths = Object.fromEntries(pathNames.map((name) => [
     name,
     expandPath(firstDefined(pathEnv[name], file.paths?.[name]), { home, dataHome, base }),
@@ -225,14 +269,14 @@ export function resolveConfig({
       && !existsSync(paths.data) && existsSync(join(legacyData, 'workstreams.db'))) {
     paths.data = legacyData;
   }
-  const locations = Object.fromEntries(Object.entries(file.locations || {}).map(([id, location]) => {
+  const locations = Object.fromEntries(Object.entries(file.locations || {}).filter(([id, item]) => enabledValue(item?.enabled, `locations.${id}.enabled`)).map(([id, location]) => {
     if (RESERVED_LOCATION_IDS.has(id)) {
       throw new Error(`locations.${id} uses a reserved location name`);
     }
     if (!location || typeof location !== 'object' || Array.isArray(location)) {
       throw new Error(`locations.${id} must be a section with repo and path settings`);
     }
-    const path = expandPath(firstDefined(pathEnv[id], file.paths?.[id], location.path), {
+    const path = expandPath(firstDefined(pathEnv[id], userFile.paths?.[id], location.path, file.paths?.[id]), {
       home, dataHome, base,
     });
     paths[id] = path;
@@ -246,7 +290,7 @@ export function resolveConfig({
     }];
   }));
 
-  const daemons = Object.fromEntries(Object.entries(file.daemons || {}).map(([id, daemon]) => {
+  const daemons = Object.fromEntries(Object.entries(file.daemons || {}).filter(([id, item]) => enabledValue(item?.enabled, `daemons.${id}.enabled`)).map(([id, daemon]) => {
     if (id === 'local') throw new Error('daemons.local is reserved for the current daemon');
     if (!daemon || typeof daemon !== 'object' || Array.isArray(daemon)) {
       throw new Error(`daemons.${id} must be a section with a url setting`);
@@ -297,7 +341,10 @@ export function resolveConfig({
     ),
   };
 
+  const suggestions = resolveSuggestions(file.suggestions);
+
   return {
+    suggestions,
     defaultConfigPath,
     configPath: selectedConfigPath,
     home,

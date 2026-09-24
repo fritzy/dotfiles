@@ -1,4 +1,11 @@
-import * as nodePty from 'node-pty';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+let native;
+function nodePty() {
+  try { return native ||= require('node-pty'); }
+  catch { throw new Error('Native terminal support is unavailable. Run fw doctor for installation instructions.'); }
+}
 
 export function spawnZshTerminal({
   command = 'zsh',
@@ -11,7 +18,7 @@ export function spawnZshTerminal({
   const shellEnv = { ...env };
   delete shellEnv.NO_COLOR;
   delete shellEnv.FORCE_COLOR;
-  return nodePty.spawn(command, args, {
+  return nodePty().spawn(command, args, {
     name: 'xterm-256color',
     cols,
     rows,
@@ -42,7 +49,7 @@ export function spawnZellijAttachTerminal({
   delete attachEnv.ZELLIJ_SESSION_NAME;
   delete attachEnv.NO_COLOR;
   delete attachEnv.FORCE_COLOR;
-  return nodePty.spawn('zellij', ['--config', configFile, 'attach', session], {
+  return nodePty().spawn('zellij', ['--config', configFile, 'attach', session], {
     name: 'xterm-256color',
     cols,
     rows,

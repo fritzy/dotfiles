@@ -5,21 +5,23 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { CONFIG } from './lib/config.js';
-import { startDaemon } from './lib/daemon.js';
+import { openWebPage, startDaemon } from './lib/daemon.js';
 import { configureFirefoxProfile } from './desktop/configure-firefox.js';
 
 export async function launchApp({
   config = CONFIG,
-  profileName = process.env.FRITZWORKS_FIREFOX_PROFILE || 'appmode',
+  profileName = process.env.FRITZWORKS_FIREFOX_PROFILE,
   firefox = process.env.FIREFOX || 'firefox',
   env = process.env,
   run = spawn,
   start = startDaemon,
   configure = configureFirefoxProfile,
+  open = openWebPage,
 } = {}) {
-  configure({ profileName, env, home: env.HOME });
+  if (profileName) configure({ profileName, env, home: env.HOME });
   const status = await start({ config });
   const url = `${status.url}/v2/`;
+  if (!profileName) return open(url);
   const child = run(firefox, ['-P', profileName, '--new-window', url], {
     env: { ...env, MOZ_APP_REMOTINGNAME: 'fritzworks' },
     stdio: 'ignore',

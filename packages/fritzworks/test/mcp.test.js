@@ -89,7 +89,7 @@ test('MCP exposes daemon discovery and a daemon selector on every tool', async (
   assert.ok(tools.some((tool) => tool.name === 'fw_daemons'));
   for (const tool of tools) {
     assert.ok(tool.inputSchema.properties.daemon, `${tool.name} must accept daemon`);
-    assert.deepEqual(tool.inputSchema.properties.daemon.enum, ['local', 'workstation', 'relay']);
+    assert.deepEqual(tool.inputSchema.properties.daemon.enum, ['local', 'relay']);
   }
   const resourceAdd = tools.find((tool) => tool.name === 'fw_resource_add');
   assert.equal(resourceAdd.inputSchema.properties.open.type, 'boolean');

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,8 +14,11 @@ import {
   setShellStatus,
 } from './core.js';
 
-export const AGENT_HOOK_COMMAND = 'fw hook agent-status';
-export const SHELL_HOOK_COMMAND = 'fw hook shell-status';
+const shellQuote = (value) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+const CLI = fileURLToPath(new URL('../cli.js', import.meta.url));
+const HOOK_COMMAND = `${shellQuote(process.execPath)} --no-warnings ${shellQuote(CLI)} hook`;
+export const AGENT_HOOK_COMMAND = `${HOOK_COMMAND} agent-status`;
+export const SHELL_HOOK_COMMAND = `${HOOK_COMMAND} shell-status`;
 const SHELL_HOOK_SOURCE = fileURLToPath(new URL('../shell/fritzworks.zsh', import.meta.url));
 const SHELL_HOOK_MARKER = '# fritzworks shell status hook';
 
@@ -54,6 +57,10 @@ function addHandler(settings, event, { matcher, command = AGENT_HOOK_COMMAND } =
 }
 
 function writeJsonAtomic(path, value) {
+  if (existsSync(path)) {
+    path = realpathSync(path);
+    if (!existsSync(`${path}.fritzworks-backup`)) writeFileSync(`${path}.fritzworks-backup`, readFileSync(path), { mode: 0o600 });
+  }
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -67,7 +74,12 @@ function writeTextAtomic(path, value, mode = 0o600) {
   renameSync(temporary, path);
 }
 
-const shellQuote = (value) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+
+function shellHookScript(source = SHELL_HOOK_SOURCE) {
+  return readFileSync(source, 'utf8')
+    .replace(' && (( $+commands[fw] ))', '')
+    .replace('command fw hook shell-status', `command ${SHELL_HOOK_COMMAND}`);
+}
 
 function shellHookSourced(rc, path, home) {
   const lines = rc.split(/\r?\n/);
@@ -78,6 +90,8 @@ function shellHookSourced(rc, path, home) {
 
 function installFile(path, provider, command) {
   const settings = readJson(path);
+  const marker = `${path}.fritzworks-command`;
+  const previous = existsSync(marker) ? readFileSync(marker, 'utf8') : null;
   let migrated = false;
   if (command === AGENT_HOOK_COMMAND) {
     for (const groups of Object.values(settings.hooks || {})) {
@@ -85,7 +99,8 @@ function installFile(path, provider, command) {
       for (const group of groups) {
         if (!Array.isArray(group?.hooks)) continue;
         for (const hook of group.hooks) {
-          if (hook?.type === 'command' && hook.command === 'ws hook agent-status') {
+          if (hook?.type === 'command' && hook.command !== command
+              && ['fw hook agent-status', 'ws hook agent-status', previous].includes(hook.command)) {
             hook.command = command;
             migrated = true;
           }
@@ -102,25 +117,97 @@ function installFile(path, provider, command) {
     }));
   }
   if (added || migrated) writeJsonAtomic(path, settings);
+  writeFileSync(marker, command, { mode: 0o600 });
   return { provider, path, added, installed: true };
 }
 
-export function installAgentHooks({ home = homedir(), command = AGENT_HOOK_COMMAND } = {}) {
-  return [
-    installFile(join(home, '.claude', 'settings.json'), 'claude', command),
-    installFile(join(home, '.codex', 'hooks.json'), 'codex', command),
-  ];
+export function clientHomes({ home = homedir(), env = process.env } = {}) {
+  return {
+    claude: env.CLAUDE_CONFIG_DIR || join(home, '.claude'),
+    codex: env.CODEX_HOME || join(home, '.codex'),
+  };
 }
 
-export function agentHookStatus({ home = homedir(), command = AGENT_HOOK_COMMAND } = {}) {
-  return [
-    ['claude', join(home, '.claude', 'settings.json'), [...COMMON_EVENTS, 'Notification']],
-    ['codex', join(home, '.codex', 'hooks.json'), COMMON_EVENTS],
-  ].map(([provider, path, events]) => {
+function agentFiles(options) {
+  const homes = clientHomes(options);
+  const providers = options.providers || ['claude', 'codex'];
+  for (const provider of providers) {
+    if (!homes[provider]) throw new Error(`unknown hook provider: ${provider}`);
+  }
+  return providers.map((provider) => [provider,
+    options[`${provider}Path`] || join(homes[provider], provider === 'claude' ? 'settings.json' : 'hooks.json'),
+    provider === 'claude' ? [...COMMON_EVENTS, 'Notification'] : COMMON_EVENTS,
+  ]);
+}
+
+export function installAgentHooks(options = {}) {
+  const command = options.command || AGENT_HOOK_COMMAND;
+  return agentFiles(options).map(([provider, path]) => installFile(path, provider, command));
+}
+
+export function agentHookStatus(options = {}) {
+  const command = options.command || AGENT_HOOK_COMMAND;
+  return agentFiles(options).map(([provider, path, events]) => {
     const settings = readJson(path);
     const installedEvents = events.filter((event) => hasHandler(settings.hooks?.[event], command));
     return { provider, path, installed: installedEvents.length === events.length, events: installedEvents };
   });
+}
+
+export function uninstallAgentHooks(options = {}) {
+  const command = options.command || AGENT_HOOK_COMMAND;
+  return agentFiles(options).map(([provider, path]) => {
+    const settings = readJson(path);
+    const marker = `${path}.fritzworks-command`;
+    const previous = existsSync(marker) ? readFileSync(marker, 'utf8') : null;
+    const ownedCommands = command === AGENT_HOOK_COMMAND ? [command, previous] : [command];
+    let removed = 0;
+    for (const [event, groups] of Object.entries(settings.hooks || {})) {
+      if (!Array.isArray(groups)) continue;
+      settings.hooks[event] = groups.flatMap((group) => {
+        if (!Array.isArray(group?.hooks)) return [group];
+        const hooks = group.hooks.filter((hook) => {
+          const owned = hook?.type === 'command' && ownedCommands.includes(hook.command);
+          removed += Number(owned);
+          return !owned;
+        });
+        if (hooks.length === group.hooks.length) return [group];
+        return hooks.length ? [{ ...group, hooks }] : [];
+      });
+      if (groups.length && !settings.hooks[event].length) delete settings.hooks[event];
+    }
+    if (removed) {
+      writeJsonAtomic(path, settings);
+      if (ownedCommands.includes(previous)) rmSync(marker, { force: true });
+    }
+    return { provider, path, removed };
+  });
+}
+
+export function uninstallShellHooks({
+  home = homedir(), configHome = process.env.XDG_CONFIG_HOME || join(home, '.config'),
+} = {}) {
+  const path = join(configHome, 'fritzworks', 'shell.zsh');
+  const rcPath = join(home, '.zshrc');
+  let removed = false;
+  if (existsSync(rcPath)) {
+    const original = readFileSync(rcPath, 'utf8');
+    const lines = original.split('\n');
+    const source = `source ${shellQuote(path)}`;
+    const kept = lines.filter((line, index) => {
+      if (line === SHELL_HOOK_MARKER && lines[index + 1] === source) return false;
+      if (line === source && lines[index - 1] === SHELL_HOOK_MARKER) { removed = true; return false; }
+      return true;
+    });
+    if (removed) {
+      const target = realpathSync(rcPath);
+      writeTextAtomic(target, kept.join('\n'), statSync(target).mode & 0o777);
+    }
+  }
+  if (removed && existsSync(path) && readFileSync(path, 'utf8') === shellHookScript()) {
+    rmSync(path);
+  }
+  return { provider: 'zsh', path, removed };
 }
 
 export function installShellHooks({
@@ -130,7 +217,7 @@ export function installShellHooks({
 } = {}) {
   const path = join(configHome, 'fritzworks', 'shell.zsh');
   const rcPath = join(home, '.zshrc');
-  const script = readFileSync(source, 'utf8');
+  const script = shellHookScript(source);
   const installedScript = existsSync(path) ? readFileSync(path, 'utf8') : null;
   const scriptUpdated = installedScript !== script;
   if (scriptUpdated) writeTextAtomic(path, script, 0o644);

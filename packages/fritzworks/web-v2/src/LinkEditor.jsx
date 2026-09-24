@@ -284,7 +284,7 @@ const LinkEditor = forwardRef(function LinkEditor({
       <h3 className="border-b-2 border-danger pb-1 text-base font-bold">Associated links</h3>
       <div className="grid gap-2">
         <LinkInput ref={inputRefs[0]} label="Link" placeholder="URL or reference" disabled={disabled} onCommit={commitEntry} />
-        <LinkInput ref={inputRefs[1]} provider="linear" label="Linear" placeholder="Search the current ECO cycle" disabled={disabled} onCommit={commitEntry} />
+        <LinkInput ref={inputRefs[1]} provider="linear" label="Linear" placeholder="Search configured Linear team" disabled={disabled} onCommit={commitEntry} />
         <LinkInput ref={inputRefs[2]} provider="github" label="GitHub" placeholder="Search escalations and PR reviews" disabled={disabled} onCommit={commitEntry} />
       </div>
       {entries.length > 0 && (

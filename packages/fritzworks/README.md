@@ -1,31 +1,77 @@
-# @fritzy/fritzworks
+# FritzWorks
 
 `fritzworks` is an opinionated browser-based workstream manager for Git worktrees. Each workstream records a repository, branch, status, linked resources, short logs, and longer notes. FritzWorks displays each session as an ordered workspace of persistent terminals, one optional Claude Code or Codex panel, Markdown files, and associated web pages.
 
-The package also installs `fw-mcp`, an stdio MCP server exposing the non-interactive workstream operations.
+Setup also links `fw-mcp`, a stdio MCP server exposing the non-interactive workstream operations.
 
 ![](./fritzworks.png)
 
 ## Requirements
 
 - macOS or Linux
-- Node.js 22.13.0 or newer
+- Node.js 22.22.2+ (22.x), 24.15.0+ (24.x), or 26+
 - Git and Zellij
-- Claude Code, Codex, or both
-- An editor and shell for those panels, if enabled (defaults: `nvim` and `zsh`)
-- GitHub CLI (`gh`) for PR discovery and fork routing
-- The `github/gh-stack` extension for `fw stack link`
+- Claude Code or Codex for AI panels (optional for terminal and notes use)
+- An editor and shell for those panels, if enabled (defaults: `vi` and `/bin/sh`; configure your preferred commands)
+- Optional: authenticated GitHub CLI (`gh`) for PR discovery and fork routing
+- Optional: the `github/gh-stack` extension for `fw stack link`
 
 Repository clones default to SSH URLs. Set `gitProtocol` to `https` if that better matches your GitHub authentication.
 
 ## Install
 
+Clone the repository, then run these commands from the directory containing
+`package.json` (currently `packages/fritzworks` in the dotfiles checkout):
+
 ```sh
-npm install --global @fritzy/fritzworks
-fw --version
+npm i
+npm run setup
+npm start
 ```
 
-The package installs `fw` for the CLI, `fw-mcp` for MCP, and `fritzworks` for the desktop launcher.
+`npm run setup` builds the web client, creates a user config if absent, and links
+`fw`, `fw-mcp`, and `fritzworks` into `~/.local/bin`. It installs hooks and skills
+for detected Claude Code/Codex clients and registers the `fw` MCP server with
+available client CLIs. It installs Zsh status hooks when `$SHELL` or the configured
+shell selects Zsh. Keep `~/.local/bin` on your `PATH` to use the commands directly.
+`npm start` opens the system browser and starts the daemon if needed.
+
+Setup can be rerun. It preserves user configuration, unrelated hooks, customized
+skills, and existing MCP registrations. If a command name in `~/.local/bin`
+already belongs to something else, setup stops before changing integrations.
+Hooks and MCP registrations use absolute Node/checkout paths. Keep the checkout
+in place and rerun setup after changing the Node installation.
+
+Optional setup controls:
+
+```sh
+npm run setup -- --provider codex   # claude, codex, or all; default: detected clients
+npm run setup -- --shell            # explicitly install Zsh hooks
+npm run setup -- --no-shell         # skip Zsh hooks
+npm run setup -- --no-mcp           # leave MCP registration to you
+npm run doctor
+npm run fw -- config
+```
+
+Client detection uses the configured CLI executable or client home directory.
+Setup respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. Restart AI clients afterward
+to load skills, MCP tools, and hooks; client hook trust/enablement still applies.
+
+The checkout includes npm 12's install-script approval for `node-pty`. If native
+terminal support is unavailable, run `npm rebuild node-pty` and `npm run doctor`.
+A source build requires Python 3 and C/C++ build tools (`build-essential` on
+Debian/Ubuntu, Xcode Command Line Tools on macOS).
+See [node-pty requirements](https://github.com/microsoft/node-pty#dependencies).
+
+To update, pull the repository, run `npm i` and `npm run setup`, then run
+`npm run fw -- daemon restart`. Config, notes, worktrees, and SQLite data live
+outside the checkout and remain intact.
+
+Before removing the checkout, run `npm run fw -- hooks uninstall --shell`,
+`npm run fw -- skills uninstall`, and `npm run fw -- daemon stop`. Remove the
+clients' `fw` MCP registrations with their `mcp remove fw` commands and remove
+only the three `~/.local/bin` links pointing into this checkout. User data and
+customized/unmanaged files remain.
 
 ## Configuration
 
@@ -39,18 +85,11 @@ gitProtocol = ssh
 repositories = ~/github
 scratchpads = ~/scratchpad
 data = ${XDG_DATA_HOME}/fritzworks
-
-[locations.notes]
-repo = fritzy/notes
-path = /home/nathan.fritz/notes/
-
-[locations.dotfiles]
-repo = fritzy/dotfiles
-path = /home/nathan.fritz/dotfiles/
+notes = ~/notes
 
 [commands]
-shell = zsh
-editor = nvim
+shell = /bin/sh
+editor = vi
 claude = claude
 codex = codex
 
@@ -72,11 +111,39 @@ Paths beginning with `~/` are expanded against the user's home directory. `${HOM
 
 New installations store data in `~/.local/share/fritzworks`. For upgrades, configuration falls back to `~/.config/ai-workstream/config.ini` when the new file does not exist, and an existing `~/.local/share/ws/workstreams.db` is reused when neither a new data directory nor an explicit data path is present. These paths respect the XDG overrides. Existing workstream databases and Markdown directories keep their names. Move the legacy config/data directories to the new names while the daemon is stopped to finish migrating storage, updating any explicit paths in your config.
 
-After updating, rerun the dotfiles bootstrap (or reinstall the npm package and run `fw hooks install`), register the `fw` MCP server, and restart AI clients to reload skills and tools. Update remote daemons together: API paths now start with `/fw`, tool names with `fw_`, and environment overrides with `FRITZWORKS_` or `FW_`. Starting the new daemon replaces an identified legacy daemon. Existing terminal processes retain their old environment; restart those terminals to adopt the new hooks.
+After updating, rerun `npm run setup` and restart AI clients to reload skills and tools. Update remote daemons together: API paths now start with `/fw`, tool names with `fw_`, and environment overrides with `FRITZWORKS_` or `FW_`. Starting the new daemon replaces an identified legacy daemon. Existing terminal processes retain their old environment; restart those terminals to adopt the new hooks.
+
+### Optional locations and work suggestions
+
+Notes use `paths.notes` independently of Git. Add `[locations.<id>]` only for
+repositories you want permanently listed. An existing `[locations.notes]` still
+supplies the notes path unless explicitly overridden by `paths.notes` or the
+environment. Set `enabled = false` to disable a location or named daemon.
+
+```ini
+[locations.project]
+repo = example/project
+path = ~/projects/project
+
+[suggestions.linear]
+enabled = true
+team = TEAM
+
+[suggestions.github]
+enabled = true
+issueRepository = example/issues
+issueLabel = needs-help
+reviewRepositories = ["example/project"]
+teammates = ["colleague"]
+```
+
+Restart with `fw daemon restart` after editing configuration. Browser theme,
+font size, sidebar width, and omitted branch prefixes are browser-local preferences.
+Branch prefixes are displayed in full by default.
 
 ### Environment overrides
 
-Every setting can also be overridden without editing the INI file:
+These settings can also be overridden without editing the INI file:
 
 | Setting | Environment variable |
 | --- | --- |
@@ -104,18 +171,18 @@ Precedence is: one-run CLI flags, environment variables, the user INI file, then
 Repository sessions, scratchpads, and configured locations use one daemon-owned panel model. They support any number of terminals, at most one AI terminal, and associated Markdown or iframe resources. Terminal-only groups support any number of terminals and no resources. The legacy two-panel `shell,agent` and three-panel `shell,editor,agent` choices remain creation shortcuts and migrate into the ordered model:
 
 ```sh
-fw new fritzy/example feature-x --panels shell,agent
+fw new example/project feature-x --panels shell,agent
 fw resume feature-x --no-editor
 ```
 
 Choose an agent in configuration or per command:
 
 ```sh
-fw new fritzy/example feature-x --agent codex
+fw new example/project feature-x --agent codex
 fw scratch investigation --claude
 fw resume feature-x --codex
-fw new fritzy/example feature-x --link ECO-123 --link fritzy/example#456
-fw scratch investigation --link fritzy/example#456
+fw new example/project feature-x --link TEAM-123 --link example/project#456
+fw scratch investigation --link example/project#456
 ```
 
 `fw new` and `fw scratch` accept a repeatable `--link <ref>` option for associated Linear keys, GitHub references, or URLs. Those links are included in the new session's initial agent briefing. For an existing workstream directory, Claude uses `--continue`; Codex uses the officially documented cwd-scoped [`codex resume --last`](https://developers.openai.com/codex/cli/reference). Both fall back to a new session when no matching session exists. A `--seed file.md` is delivered to a fresh browser agent terminal as its first prompt; resuming an already-open workspace with a seed restarts only its agent terminal so the prompt is not ignored. Seed text is limited to 64 KiB. Agent models come from configuration; the old transient `--model` override no longer exists.
@@ -123,11 +190,11 @@ fw scratch investigation --link fritzy/example#456
 Install the user-level Claude Code, Codex, and Zsh lifecycle hooks once to track when an agent or shell is working or waiting for input:
 
 ```sh
-fw hooks install
+fw hooks install --shell
 fw hooks status
 ```
 
-The installer preserves existing hooks and is idempotent. It adds `UserPromptSubmit`, `Stop`, `PermissionRequest`, `PostToolUse`, and `SessionStart` handlers to both clients, plus Claude's idle/permission notification handler. It also installs a Zsh integration under `~/.config/fritzworks/shell.zsh` and sources it from `.zshrc`; `preexec` reports a running command and `precmd` reports a ready prompt. Browser agent and shell terminals carry their workstream ID, with working-directory matching as a fallback.
+The installer preserves existing hooks and is idempotent. It respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and saves existing JSON settings to a `.fritzworks-backup` file before the first change. Presence in the file does not verify execution: enable/trust hooks in your client and restart it. Agent and shell hooks write status to local SQLite, with a bounded busy timeout; they do not require an HTTP round trip. It adds `UserPromptSubmit`, `Stop`, `PermissionRequest`, `PostToolUse`, and `SessionStart` handlers to both clients, plus Claude's idle/permission notification handler. With `--shell`, it installs a Zsh integration under `~/.config/fritzworks/shell.zsh` and sources it from `.zshrc`; `preexec` reports a running command and `precmd` reports a ready prompt. Browser agent and shell terminals carry their workstream ID, with working-directory matching as a fallback.
 
 Run the installer on every machine that hosts an fritzworks daemon, including remote targets. Activity is recorded by the machine running the shell or agent; the browser's cross-origin event connection only relays those recorded changes. The dotfiles bootstrap runs this installation automatically.
 
@@ -169,13 +236,13 @@ fw web start              # ensure it is running and open the web client
 
 `restart`, `foreground`, and `log` are also available. `--host` and `--port` override the configured address for `start`, `restart`, `foreground`, or `web start`. The default is `http://127.0.0.1:7337`; opening that URL serves the React and Tailwind CSS web client, also reachable at `http://127.0.0.1:7337/v2/`. For frontend development, run `npm run dev:web:v2`; `npm run build:web:v2` writes its publishable assets only to `web/v2/`.
 
-On Linux, `fritzworks` starts the daemon and opens the client with Firefox's `appmode` profile. It keeps a native KDE/GTK title bar for moving, resizing, minimizing, maximizing, and closing the window while profile CSS hides the tab and navigation bars. The dotfiles bootstrap installs a branded `FritzWorks.desktop` launcher in KDE's application menu and Desktop folder. Set `FRITZWORKS_FIREFOX_PROFILE` or `FIREFOX` to override the profile name or browser executable.
+`fritzworks` starts the daemon and opens the default browser on Linux/macOS. Set `FRITZWORKS_FIREFOX_PROFILE=appmode` to opt into a dedicated, pre-existing Firefox profile. It keeps a native KDE/GTK title bar for moving, resizing, minimizing, maximizing, and closing the window while profile CSS hides the tab and navigation bars. Linux launcher and icon files are available under `desktop/` for optional manual installation. Set `FRITZWORKS_FIREFOX_PROFILE` or `FIREFOX` to override the profile name or browser executable.
 
 Browser terminals retain Zellij's mouse mode. A regular drag uses Zellij selection, whose OSC 52 text FritzWorks makes available to `Ctrl-Shift-C` and the browser's Copy command; Shift-drag bypasses Zellij and creates a native xterm selection.
 
 Local and configured remote machines share one sidebar as independently collapsible sections. Within each machine, session nodes are organized by repository, Scratchpads, Directories, and Terminals. The browser keeps each section's expanded or collapsed state in local storage across client refreshes; newly discovered nodes start collapsed. Associated links and Markdown files are children of their owning session; generated session notes are discovered across every year and marked as automatic. Terminal groups have a drag grip and can be merged by dropping one onto another. Machine content hosts remain isolated, so terminal processes, resources, and state never mix across daemons.
 
-Settings → **Omitted branch prefixes** accepts a comma-separated list, defaulting to `fritzy/`. The sidebar replaces the longest matching leading prefix with an ellipsis: `fritzy/fix-header` becomes `…fix-header`. Labels that still exceed the available width also end with an ellipsis; hover to see the full name. This browser-local setting applies across machines and survives reloads. Clear it to disable prefix omission. Custom session names and scratchpad names are preserved; actual branch names are never changed.
+Settings → **Omitted branch prefixes** accepts a comma-separated list, empty by default. The sidebar replaces the longest matching leading prefix with an ellipsis: `username/fix-header` with `username/` configured becomes `…fix-header`. Labels that still exceed the available width also end with an ellipsis; hover to see the full name. This browser-local setting applies across machines and survives reloads. Clear it to disable prefix omission. Custom session names and scratchpad names are preserved; actual branch names are never changed.
 
 The shared workspace has a group header, a minimized/resource pill shelf, one compact `+` icon button per panel type, and an ordered draggable and resizable panel strip. Drag anywhere on a panel header except its buttons to preview a live reorder, then drop to persist it. Click a terminal group's name in the group header, or any panel title, to rename it inline. The practical minimum panel width is 320 pixels. Shrinking a window minimizes visible panels from right to left while retaining at least one; growing it never restores them. A manual restore that cannot fit reports “Minimize another panel to open this.” The `^` action minimizes any panel. Terminal and AI panels keep their Zellij processes and also expose an explicit Close/Kill action. Markdown and iframe panels have no close action: minimizing unmounts them while preserving their association pill. Explicit associations can be disassociated separately, with dirty Markdown protection; discovered session notes cannot be disassociated.
 
@@ -236,7 +303,7 @@ Each workstream has an immutable UUID, assigned by an automatic idempotent datab
 
 The CLI exposes the same model through `fw panels`, `fw panel …`, and `fw resource …`. MCP clients use `fw_resource_list`, `fw_resource_add`, `fw_resource_read`, `fw_resource_write`, `fw_resource_open`, and `fw_resource_remove`; each accepts the standard optional `daemon` selector. Resource association does not open a panel by default. `fw_resource_add` accepts `content` to create Markdown and `open:true` (CLI: `fw resource add … --open`) to immediately create or restore its panel when the owning session is active, without changing the currently focused group.
 
-The New Repo button opens a creation modal with repository and branch/ref inputs, associated links, source and path previews, agent selection, and the initial panel layout. Its links section has a free-form field, a Linear autocomplete, and a GitHub autocomplete covering JavaScript customer escalations plus review-required PRs in `chainguard-dev/mono` and `chainguard-dev/ecosystems-rebuilder.js`. Press Enter or use the Add button to stage a link; each field accepts multiple links, shown together beneath the inputs as removable list-view pills with provider icons. Custom HTTP links use the site's favicon and hostname, with the complete URL in the hover tooltip. Opening the empty Linear control shows incomplete work assigned to the viewer or unassigned in the current ECO cycle; typing runs a debounced full-text search across active ECO issues, including issues outside the current cycle. The same three link inputs appear when creating a scratchpad. When a newly created repo or scratchpad has associated links, its seed briefing lists the canonical links and directs the agent to retrieve authenticated details with the Linear skill/CLI or `gh`; this also applies to CLI and MCP creation, and is appended to an explicit seed when one is supplied. It submits the following collection request, creates or restores the worktree, activates its browser terminal workspace, and then shows the new session details:
+The New Repo button opens a creation modal with repository and branch/ref inputs, associated links, source and path previews, agent selection, and the initial panel layout. Its links section has a free-form field and optional Linear/GitHub suggestions. Suggestions are disabled until configured; no integration commands run for disabled sources. Press Enter or use Add to stage a link. Linear searches the configured team's active issues; GitHub combines configured issue filters and repositories needing PR reviews. The same three link inputs appear when creating a scratchpad. When a newly created repo or scratchpad has associated links, its seed briefing lists the canonical links and directs the agent to retrieve authenticated details with the Linear skill/CLI or `gh`; this also applies to CLI and MCP creation, and is appended to an explicit seed when one is supplied. It submits the following collection request, creates or restores the worktree, activates its browser terminal workspace, and then shows the new session details:
 
 ```text
 POST /fw
@@ -315,30 +382,53 @@ Git cleanliness is cached in SQLite. List and detail GETs return the cached valu
 
 The API has no authentication and therefore binds to loopback by default. Do not expose it on a public interface without putting an authenticated proxy in front of it.
 
+## Remote access
+
+The daemon is an unauthenticated, single-user local service. Keep it bound to
+loopback. Access another machine through an authenticated SSH tunnel terminating
+on a local loopback address, and explicitly configure that endpoint:
+
+```ini
+[daemons.remote]
+url = http://127.0.0.2:7337
+```
+
+HTTP and WebSocket requests require loopback Host/Origin headers; request bodies
+require `Content-Type: application/json`. Endpoints must be HTTP(S) origin URLs
+without credentials, path prefixes, query strings, or fragments. Direct public
+network exposure and reverse-proxy subpaths are unsupported.
+
 ## MCP server
 
-After a global install, register the stdio server with either client:
+Setup registers the stdio server with detected clients. To register it manually from the checkout:
 
 ```sh
-claude mcp add --scope user fw -- fw-mcp
-codex mcp add fw -- fw-mcp
+claude mcp add --scope user fw -- "$(command -v node)" --no-warnings "$PWD/mcp.js"
+codex mcp add fw -- "$(command -v node)" --no-warnings "$PWD/mcp.js"
 ```
 
 The MCP tools share the same configuration and service as the CLI. `fw_daemons` exposes the local daemon and every configured `[daemons.<id>]` endpoint. Every tool accepts an optional `daemon` id (default: `local`) and relays its operation to that daemon, so filesystem, Git, GitHub, notes, and lifecycle work happens on the selected machine. Pass `workstream` explicitly for remote workstream operations because the MCP process's current directory can only identify a local workstream.
 
 Lifecycle, stack, issue, log, resource, digest, and browser-refresh tools all execute through the selected daemon's REST API. Consequently, `fw_new`, `fw_scratch`, `fw_resume`, `fw_pause`, and `fw_close` update that daemon's FritzWorks browser state rather than manipulating the MCP host terminal. `fw_new` and `fw_scratch` accept an optional `links` array; as in the web client and CLI, those links are included in the initial agent briefing. `fw_config` reports the selected daemon's resolved settings, and `fw_browser_refresh` asks its connected browser clients to reload the whole page.
 
-## Development and publishing
+## Development
 
 ```sh
-npm install
-npm test
+npm i
 npm run check
-npm pack --dry-run
+npm run test:checkout
 ```
 
-`prepack` and `prepublishOnly` both run the complete check suite. Scoped public publication uses:
+`check` builds the UI and runs the test suite. `test:checkout` copies the source
+to a temporary directory with no dependencies or built UI, runs `npm i` and
+`npm run setup` with an isolated home, and checks command links, hooks, skills,
+CLI/MCP, the native PTY, web assets, scratchpads, a Git worktree, and restart
+persistence. It requires network access to install dependencies. It runs setup
+repeatedly to check idempotence. MCP registration is covered using fake client
+runners; the smoke test does not modify real AI clients.
 
-```sh
-npm publish --access public
-```
+With Zellij installed, `FW_SMOKE_TERMINAL=1 npm run test:checkout` also checks
+that an isolated shell retains its PID and environment through repeated setup
+and daemon restart. The test cleans up its own sessions and files.
+
+CI covers Linux/macOS and Node 22/24/26. No npm publication is needed.
