@@ -1878,3 +1878,36 @@ Upstream reference: https://github.com/microsoft/node-pty/issues/850.
 The minimal Linux container remains green; final Mac smoke is being rerun.
 GitHub also reports pre-existing dependency advisories; advisory triage remains a
 separate release follow-up rather than changing dependencies during extraction.
+
+
+The final Linux CI lanes pass on Node 22/24/26, including fresh checkout and real
+Zellij continuity. Mac PTY permission repair works, exposing a second platform
+issue: long macOS temporary paths exceed the Unix socket limit for installation-
+scoped terminal names. Mac launches/listing/attachment now share a private,
+UID-owned `/tmp/fw-zellij-<uid>` directory. Explicit `ZELLIJ_SOCKET_DIR` settings
+are preserved; Linux is unchanged. The smoke canonicalizes its temporary root
+and cleanup uses asynchronous retries, which rescan late shutdown writes on
+Node 22. **35 focused installer/doctor/terminal tests passed**; Mac CI is rerunning.
+
+
+### Phase 6 extraction acceptance result
+
+**All six CI lanes passed** on Linux/macOS with Node 22/24/26: full build/check,
+317 tests, fresh dependency installation, CLI/MCP, notes, startup build refresh,
+real Zellij PID/environment continuity through source relocation and daemon
+restart, and owned cleanup. Run:
+https://github.com/chainguard-sandbox/fritzworks/actions/runs/36072148771
+Validated implementation: `47d8007` (subsequent standalone documentation updates
+only record these results). Container install/upgrade validation also passed as
+recorded above. Package history is published, builds are ignored, the standalone
+checkout is clean, and dotfiles bootstrap uses the new installer.
+
+The local `fw doctor --json` returned `ok: true`, refreshed the web build and
+reported all required dependencies healthy. It reports optional Claude/Codex
+hooks as missing for the new command path; existing hook/MCP integrations were
+preserved during the move. The live daemon and persistent user terminals were
+not restarted. Dotfiles extraction/bootstrap changes are committed locally.
+
+Packaging/extraction acceptance is complete. The separately tracked existing-data
+migration, multi-remote browser acceptance and dependency-advisory review gates
+remain open; passing clean-install CI does not certify those legacy workflows.
