@@ -340,8 +340,10 @@ fi
 # FritzWorks owns its installation and integration lifecycle.
 echo
 echo "Installing or upgrading FritzWorks..."
-bash "$dotfiles_root/bin/install-fritzworks" --desktop \
-  || echo "  warning: FritzWorks installation failed; inspect the output above"
+if ! bash "$dotfiles_root/bin/install-fritzworks" --desktop; then
+  echo "FritzWorks installation failed; fix the error above and rerun bin/install-fritzworks --desktop." >&2
+  exit 1
+fi
 
 # Install eget (used to install GitHub release binaries)
 if ! command -v eget &> /dev/null && [[ ! -f $eget_bin ]]; then
@@ -363,6 +365,24 @@ if ! command -v starship &> /dev/null && [[ ! -f $HOME/.local/bin/starship ]]; t
     starship_libc="gnu"
   fi
   $eget_bin starship/starship --to $HOME/.local/bin --asset "${machine_arch}-unknown-linux-${starship_libc}"
+fi
+
+# Install linear CLI (schpet/linear-cli; used by the `linear` skill)
+if ! command -v linear &> /dev/null && [[ ! -f $HOME/.local/bin/linear ]]; then
+  echo
+  echo "Installing linear CLI..."
+  if [[ $machine_arch == "arm64" ]]; then
+    linear_arch="aarch64"
+  else
+    linear_arch="x86_64"
+  fi
+  if [[ $machine_os == "macos" ]]; then
+    linear_triple="${linear_arch}-apple-darwin"
+  else
+    linear_triple="${linear_arch}-unknown-linux-gnu"
+  fi
+  $eget_bin schpet/linear-cli --to $HOME/.local/bin \
+    --asset "linear-${linear_triple}.tar.xz" --file linear
 fi
 
 have_sufficient_system_nvim() {
