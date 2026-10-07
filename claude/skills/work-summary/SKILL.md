@@ -13,13 +13,26 @@ to absolute before querying.
 
 ## Gather (run in parallel)
 
-1. **Workstreams** — `mcp__fw__ws_list {all: true}`. This is the spine: each active
-   workstream maps to a branch, a repo, and linked Linear/GitHub issues. Use it to
-   discover which PRs and tickets to pull.
-2. **PRs** — for the repos/branches fw surfaces:
-   `gh pr view <num> --repo <owner/repo> --json title,state,createdAt,updatedAt,body`.
-   Also `gh search prs --author=@me --updated ">=<date>"` to catch anything fw missed.
-   Read the PR `body` for the real "what/why" — summarize from it, don't just restate the title.
+1. **Workstreams** — the spine for day grouping and themes. Work runs on more than one
+   fw daemon (`local` and `workstation`); query every one.
+   - `mcp__fw__fw_daemons` → daemon ids.
+   - Per daemon, `mcp__fw__fw_digest {daemon, date}` for each day in the window: that
+     day's commits per workstream (repo, branch), work-log notes, and linked issues.
+   - Per daemon, `mcp__fw__fw_list {daemon}` for workstream branches and linked issues.
+     Don't pass `all: true` — closed workstreams overflow the tool output limit.
+   - Linked GitHub refs are often context (a parent PR, someone else's PR), not Nathan's
+     PRs. Some repos show as `local/<name>-<hash>` (e.g. stereo); match to GitHub by branch.
+2. **PRs** — `bash ~/.scripts/gh-activity.sh -s <YYYY-MM-DD>` (or `-d <days>`). From the
+   events feed, across all repos: authored PRs, others' PRs he reviewed, commented on,
+   pushed to, merged, or closed, plus pushes with no PR — each with dated actions. Only
+   PRs he acted on in the window; others' updates don't count. This is the PR list —
+   fw only supplies grouping.
+   - If it warns the feed is truncated (90 days / 300 events), fill gaps with
+     `gh search prs --author=@me`, `--reviewed-by=@me`, and `--commenter=@me`, each with
+     `--updated ">=<date>" --limit 100`.
+   - Then `gh pr view <num> --repo <owner/repo> --json title,state,body` per PR. Read the
+     `body` for the real "what/why" — summarize from it, don't just restate the title.
+   - Match PRs to fw workstreams by head branch to place them under the right day/theme.
 3. **Tickets** — invoke the **[[linear]]** skill, which documents the `linear` CLI
    (authenticated as Nathan, default team ECO). Use it for:
    - `linear issue view <CODE>` on each issue fw links (title, state, description).
@@ -44,7 +57,8 @@ a **bullet tree**:
 
 - Lead top-level bullets group by **day or day-range** (e.g. `**Monday and Tuesday**`),
   each with a short theme after an em-dash. Add sibling top-level bullets for standalone
-  themes like **PR reviews for others** (reviewing others' PRs is real work — call it out).
+  themes like **PR reviews for others** (reviewing others' PRs is real work — call it out;
+  source it from the `Others' PRs` section of `gh-activity.sh`).
   - Under each, sub-bullets for `PRs`, `Tickets`, `Discussions` (only those with content).
     - Leaf bullets are the individual items.
 - End with a top-level **`Currently`** bullet: what's in-flight and what's next.
