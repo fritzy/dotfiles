@@ -288,7 +288,7 @@ else
 fi
 
 if ! bash "$dotfiles_root/workstation.sh" --auto; then
-  echo "Workstation browser setup failed. Run bash workstation.sh to retry." >&2
+  echo "Workstation setup failed. Run bash workstation.sh to retry." >&2
   exit 1
 fi
 

@@ -16,11 +16,13 @@ This is a [stow](https://www.gnu.org/software/stow/) based dotfiles repo with bo
 - Links the shell startup files directly when `stow` is temporarily unavailable
 - Bootstraps NeoVim Lazy plugins
 
-## Workstation browser relay
+## Workstation configuration
 
 Update dotfiles and run `bash bootstrap.sh` on both the laptop and workstation.
-Bootstrap runs `workstation.sh --auto`: Chainguard hosts get the remote browser
-commands; a laptop with the `workstation` SSH alias gets the local relay.
+Bootstrap delegates work-specific setup to `workstation.sh --auto`: Chainguard
+hosts get the gitsign fork, credential cache, and remote browser commands; a
+laptop with the `workstation` SSH alias gets the local relay and SSH tunnel.
+Other hosts skip workstation configuration.
 On a fresh Linux laptop, run `bash workstation.sh --local` once to opt in.
 Run `bash workstation.sh --remote` to install just the remote components.
 
@@ -69,6 +71,48 @@ Relay tests: `python3 -m unittest discover -s tests -p 'test_url_relay.py'`.
 Protocol references: [gh browser selection](https://cli.github.com/manual/gh_help_environment),
 [gitsign URL opener](https://github.com/sigstore/gitsign#configuration), and
 [SSH forwarding control](https://man.openbsd.org/ssh#O).
+
+## Gitsign fork
+
+`bash bootstrap.sh` on a Chainguard workstation, or `bash workstation.sh --remote`
+explicitly, runs `bin/install-gitsign-fork --system`. Git, Go 1.21+ and sudo must
+be available. No existing fork checkout or manual build is needed.
+
+The installer clones the [fork](https://github.com/fritzy/gitsign) at commit
+`48435a8f7995eabe5d1f7dde9a74ae7905c985e1` and builds both binaries with Go 1.27.1
+(downloaded by Go if needed). Source lives in `~/github/fritzy/gitsign`;
+installed binaries live in `~/.local/lib/gitsign`, with links in `~/.local/bin`.
+Local checkout edits or a different origin stop installation without replacing
+the installed binaries. Repeat runs preserve an unchanged running cache.
+
+Setup enables X.509 commit/tag signing, selects Google with the default login
+hint `nathan.fritz@chainguard.dev`, enables automatic cache discovery, and sets
+`gitsign.rekorMode=offline` to embed Rekor proofs. Signing still publishes to
+Rekor; verification doesn't depend on its delayed search index. Existing
+connector, login-hint, and browser-opener settings are preserved.
+
+On Linux, setup installs and enables `gitsign-credential-cache.service`. If no
+user systemd bus is available, it installs the unit and prints the activation
+command. Installation doesn't initiate a browser login; the first signing
+request fills the cache. A changed daemon binary or unit restarts the service.
+
+`--system` backs up and replaces `/usr/bin/gitsign` and installs the passthrough
+wrapper at `/usr/local/bin/gitsign`, covering old sessions and explicit signer
+paths. Rerunning workstation setup repairs those paths after a host update.
+For a user-only install, run `bash bin/install-gitsign-fork` without sudo.
+
+Override `GITSIGN_CHECKOUT`, `GITSIGN_REPOSITORY`, `GITSIGN_REVISION` (a full
+commit SHA), or `GITSIGN_TOOLCHAIN` to change the source/build inputs.
+`GITSIGN_LOGIN_HINT` explicitly overrides the saved hint, including an empty
+value to disable it. Update the pinned revision in the installer when adopting
+new fork changes.
+
+An older online signature can report `could not find matching tlog entry`
+until Rekor indexes it. Retry verification of the same commit; re-signing
+creates another entry and restarts that wait. The cache only reuses credentials
+while their short-lived Fulcio certificate remains valid.
+
+Installer and wrapper tests: `python3 -m unittest discover -s tests -p 'test_gitsign*.py'`.
 
 ## Codex and npm
 

@@ -53,7 +53,8 @@ case "$mode" in
       gh config set browser "$HOME/.scripts/url-open"
     fi
     git config --global gitsign.urlOpener "$HOME/.scripts/url-open {{.URL}}"
-    echo 'Workstation browser relay installed. Reopen existing shells to load the environment.'
+    bash "$root/bin/install-gitsign-fork" --system
+    echo 'Workstation signing and browser relay installed. Reopen existing shells to load the browser environment.'
     ;;
   --local)
     command -v python3 >/dev/null
