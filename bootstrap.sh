@@ -80,6 +80,7 @@ fi
 # ensuring we have target directories
 mkdir -p $HOME/.local/opt
 mkdir -p $HOME/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
 mkdir -p $HOME/.local/brew
 mkdir -p $nvim_config
 
@@ -263,7 +264,7 @@ else
   # otherwise `fw hooks install` would create a hook-only .zshrc and hide the
   # actual prompt configuration in this repo.
   echo "stow not available. Linking persistent shell config directly..."
-  for rel in .bash_profile .bashrc .zprofile .zshrc; do
+  for rel in .bash_profile .bashrc .zprofile .zshrc .zshenv; do
     source_file="$dotfiles_root/home/$rel"
     target="$HOME/$rel"
     if [[ -L "$target" && $(readlink -f "$target") == "$source_file" ]]; then
@@ -284,6 +285,11 @@ else
   echo "stow not available. Forcing replacement of $nvim_config ..."
   rm -rf $nvim_config
   cp -R ./home/.config/nvim/* $nvim_config/
+fi
+
+if ! bash "$dotfiles_root/workstation.sh" --auto; then
+  echo "Workstation browser setup failed. Run bash workstation.sh to retry." >&2
+  exit 1
 fi
 
 # Claude and Codex keep credentials, transcripts, databases, and other runtime
@@ -321,20 +327,28 @@ sync_ai_skills() {
 
 echo
 echo "Syncing Claude and Codex config..."
+codex_dir=${CODEX_HOME:-$HOME/.codex}
 sync_ai_file "$dotfiles_root/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" 644
 sync_ai_file "$dotfiles_root/claude/settings.json" "$HOME/.claude/settings.json" 600
 sync_ai_file "$dotfiles_root/claude/plugins/known_marketplaces.json" "$HOME/.claude/plugins/known_marketplaces.json" 600
-sync_ai_file "$dotfiles_root/codex/AGENTS.md" "$HOME/.codex/AGENTS.md" 644
-sync_ai_file "$dotfiles_root/codex/config.toml" "$HOME/.codex/config.toml" 600
+sync_ai_file "$dotfiles_root/codex/AGENTS.md" "$codex_dir/AGENTS.md" 644
+if [[ ! -e $codex_dir/config.toml && ! -L $codex_dir/config.toml ]]; then
+  sync_ai_file "$dotfiles_root/codex/config.toml" "$codex_dir/config.toml" 600
+fi
 sync_ai_skills "$dotfiles_root/claude/skills" "$HOME/.claude/skills"
-sync_ai_skills "$dotfiles_root/codex/skills" "$HOME/.codex/skills"
+sync_ai_skills "$dotfiles_root/codex/skills" "$codex_dir/skills"
 
 if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  if ! bash "$dotfiles_root/bin/setup-codex"; then
+    echo "Codex setup failed; fix the error above and rerun bin/setup-codex." >&2
+    exit 1
+  fi
+  export PATH="$(npm config get prefix)/bin:$PATH"
   echo "Setting up Google Sheets MCP for Claude Code and Codex..."
   bash "$dotfiles_root/packages/google-sheets-mcp/setup.sh" \
     || echo "Warning: Sheets MCP setup failed; rerun packages/google-sheets-mcp/setup.sh." >&2
 else
-  echo "Skipping Sheets MCP: install Node.js and npm, then run packages/google-sheets-mcp/setup.sh."
+  echo "Skipping Codex and Sheets MCP: install Node.js and npm, then rerun bootstrap."
 fi
 
 # FritzWorks owns its installation and integration lifecycle.

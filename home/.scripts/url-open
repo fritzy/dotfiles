@@ -1,7 +1,33 @@
 #!/usr/bin/env python3
-import socket, sys
-url = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read().strip()
-s = socket.socket(socket.AF_UNIX)
-s.connect('/tmp/url-open.sock')
-s.sendall(url.encode() + b'\n')
-s.close() 
+import os
+import socket
+import sys
+
+
+def main():
+    if len(sys.argv) > 2:
+        raise ValueError("usage: url-open <http(s) URL>")
+    url = sys.argv[1] if len(sys.argv) == 2 else sys.stdin.readline().strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("expected an HTTP(S) URL")
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        raise ValueError("URL contains control characters")
+    request = url.encode() + b"\n"
+    if len(request) > 65536:
+        raise ValueError("URL is too long")
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(30)
+        connection.connect(os.environ.get("URL_OPEN_SOCKET", "/tmp/url-open.sock"))
+        connection.sendall(request)
+        with connection.makefile("rb") as response:
+            status = response.readline(4096).decode().strip()
+        if status != "OK":
+            raise ValueError(status or "local browser relay closed without acknowledging")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        print(f"url-open: {error}; check the laptop's url-open.socket and workstation-tunnel.service", file=sys.stderr)
+        sys.exit(1)

@@ -134,8 +134,11 @@ linear schema                        # dump the full GraphQL schema
 
 Nathan keeps two ready-made summaries in `~/.scripts/` (built on `linear api`):
 
-- `linear-activity.sh [-d days] [-t team-key]` — cycles, assigned, and created issues
-  for the current user over a window (default 1 day, team ECO).
+- `linear-activity.sh [-d days | -s YYYY-MM-DD | -S timestamp] [-u until] [-t team-key] [-a] [-v] [-j]`
+  — your activity over a window (default 1 day, all teams): current cycles, issues you
+  filed, net state changes and assignment/team/project moves on your issues, others'
+  changes to issues you filed, and your changes to anyone else's. Each change names who
+  made it (`me`, `automation`, or a person). `-a` adds open assigned issues; `-j` JSON.
 - `linear-cycle-issues.sh [-t team-key] [-l limit]` — current-cycle issues that are
   unassigned or assigned to you, sorted by priority.
 

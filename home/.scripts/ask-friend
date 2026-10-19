@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+checkout=${ASK_FRIEND_CHECKOUT:-$HOME/sandbox-of-power}
+source_dir=$checkout/bdmurray/ask-friend
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/ask-friend
+action=${1:-help}
+if [[ $# -gt 0 ]]; then shift; fi
+
+case "$action" in
+  help|-h|--help)
+    cat <<'EOF'
+Usage: ask-friend COMMAND [ARGS...]
+
+  refresh          Fetch the live queue and render the dashboard
+  serve [PORT]     Serve the saved dashboard on localhost (default: 8767)
+  queue [ARGS]     Run ask-friend-queue.py
+  render [ARGS]    Run render_html.py
+  audit [ARGS]     Run ask-friend-audit.py
+  answer [ARGS]    Run ask-friend-answer.py (dry run unless --yes)
+
+Dashboard: ~/.local/state/ask-friend/index.html (honors XDG_STATE_HOME)
+Checkout: ~/sandbox-of-power (override with ASK_FRIEND_CHECKOUT)
+EOF
+    exit 0
+    ;;
+esac
+
+[[ -f $source_dir/ask-friend-queue.py ]] || {
+  echo "ask-friend is missing at $source_dir; run bin/install-ask-friend." >&2
+  exit 1
+}
+
+case "$action" in
+  refresh)
+    [[ $# -eq 0 ]] || { echo 'refresh takes no arguments; use queue/render for custom filters.' >&2; exit 1; }
+    umask 077
+    mkdir -p "$state_dir"
+    pending=$(mktemp -d "$state_dir/.refresh.XXXXXX")
+    trap 'rm -rf "$pending"' EXIT
+    python3 "$source_dir/ask-friend-queue.py" --format json > "$pending/queue.json"
+    python3 "$source_dir/render_html.py" "$pending/queue.json" -o "$pending/index.html"
+    mv "$pending/queue.json" "$state_dir/queue.json"
+    mv "$pending/index.html" "$state_dir/index.html"
+    echo "Dashboard: $state_dir/index.html"
+    ;;
+  serve)
+    [[ $# -le 1 ]] || { echo 'Usage: ask-friend serve [PORT]' >&2; exit 1; }
+    [[ -f $state_dir/index.html ]] || { echo 'Run ask-friend refresh first.' >&2; exit 1; }
+    exec python3 -m http.server "${1:-8767}" --bind 127.0.0.1 --directory "$state_dir"
+    ;;
+  queue|audit|answer) exec python3 "$source_dir/ask-friend-$action.py" "$@" ;;
+  render) exec python3 "$source_dir/render_html.py" "$@" ;;
+  *) echo "Unknown command: $action; run ask-friend help." >&2; exit 1 ;;
+esac

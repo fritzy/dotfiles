@@ -3,9 +3,9 @@ Description=Persistent SSH tunnel to the cg workstation (url-open reverse forwar
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/ssh -N workstation-tunnel
+ExecStart=/usr/bin/ssh -N -M -S %h/.ssh/workstation-tunnel.control workstation-tunnel
 Restart=always
-RestartSec=3
+RestartSec=30
 
 [Install]
 WantedBy=default.target

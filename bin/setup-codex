@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v node >/dev/null || { echo 'Codex setup requires Node.js.' >&2; exit 1; }
+command -v npm >/dev/null || { echo 'Codex setup requires npm.' >&2; exit 1; }
+
+writable_path() {
+  local target=$1
+  while [[ ! -e $target && ! -L $target ]]; do
+    target=$(dirname "$target")
+  done
+  [[ -w $target ]]
+}
+
+prefix_writable() {
+  local prefix=$1
+  writable_path "$prefix/bin" &&
+    writable_path "$prefix/lib/node_modules" &&
+    writable_path "$prefix/lib/node_modules/@openai" &&
+    writable_path "$prefix/lib/node_modules/@openai/codex" &&
+    writable_path "$prefix/bin/codex"
+}
+
+npm_prefix=$(npm config get prefix)
+if ! prefix_writable "$npm_prefix"; then
+  echo 'Using ~/.local for npm global packages.'
+  mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/node_modules"
+  npm config set prefix "$HOME/.local" --location=user
+  npm_prefix=$(npm config get prefix)
+  if ! prefix_writable "$npm_prefix"; then
+    echo 'npm prefix is still not writable; check npm_config_prefix/NPM_CONFIG_PREFIX overrides.' >&2
+    exit 1
+  fi
+fi
+
+export PATH="$npm_prefix/bin:$HOME/.local/bin:$PATH"
+if [[ ! -x $npm_prefix/bin/codex ]]; then
+  npm install --global @openai/codex --no-audit --no-fund
+fi
+"$npm_prefix/bin/codex" --version
+echo 'Codex updates: npm install --global @openai/codex@latest (no sudo).'
+echo 'Sign in on this machine with codex login; MCP services have separate sign-ins.'

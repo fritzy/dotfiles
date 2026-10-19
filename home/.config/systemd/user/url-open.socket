@@ -3,7 +3,7 @@ Description=URL open socket (accepts URLs over ssh reverse forward)
 
 [Socket]
 ListenStream=/tmp/url-open.sock
-Accept=yes
+Accept=no
 SocketMode=0600
 RemoveOnStop=yes
 

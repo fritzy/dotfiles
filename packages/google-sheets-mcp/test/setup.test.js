@@ -27,7 +27,14 @@ const name = basename(process.argv[1]);
 const args = process.argv.slice(2);
 if (args[0] === '--version') process.exit(0);
 appendFileSync(process.env.TEST_CALLS, JSON.stringify({name, args}) + '\\n');
-if (name === 'codex') process.exit(0);
+if (name === 'codex') {
+  const path = process.env.TEST_CODEX_CONFIG;
+  const servers = JSON.parse(readFileSync(path, 'utf8'));
+  if (args[1] === 'list') console.log(JSON.stringify(servers));
+  else if (args[1] === 'remove') writeFileSync(path, JSON.stringify(servers.filter(s => s.name !== args[2])));
+  else if (args[1] !== 'add') process.exit(1);
+  process.exit(0);
+}
 const path = join(process.env.CLAUDE_CONFIG_DIR, 'claude.json');
 const config = JSON.parse(readFileSync(path, 'utf8'));
 if (args[1] === 'remove') delete config.mcpServers.sheets;
@@ -40,12 +47,15 @@ writeFileSync(path, JSON.stringify(config));
     chmodSync(join(bin, cli), 0o700);
   }
   writeFileSync(join(bin, 'package.json'), '{"type":"module"}');
+  const codexConfig = join(root, 'codex.json');
+  writeFileSync(codexConfig, '[]');
   const env = {
     ...process.env, PATH: bin, CLAUDE_CONFIG_DIR: claudeDir,
     XDG_CONFIG_HOME: join(root, 'config'), XDG_STATE_HOME: join(root, 'state'),
     TEST_CALLS: join(root, 'calls.jsonl'),
+    TEST_CODEX_CONFIG: codexConfig,
   };
-  return { root, bin, env, claudeConfig, credentials: join(env.XDG_CONFIG_HOME, 'google-sheets-mcp', 'oauth-client.json') };
+  return { root, bin, env, claudeConfig, codexConfig, credentials: join(env.XDG_CONFIG_HOME, 'google-sheets-mcp', 'oauth-client.json') };
 }
 
 test('bootstrap imports credentials privately, preserves other settings, and can run twice', t => {
@@ -93,4 +103,35 @@ test('invalid credentials fail before changing either client', t => {
   assert.equal(readFileSync(f.claudeConfig, 'utf8'), original);
   assert.equal(existsSync(f.credentials), false);
   assert.equal(existsSync(f.env.TEST_CALLS), false);
+});
+
+test('missing credentials defer registration and remove stale managed entries only', t => {
+  const f = fixture(t);
+  const stale = { command: 'node', args: ['/home/other/dotfiles/packages/google-sheets-mcp/sheets.js'] };
+  const claude = JSON.parse(readFileSync(f.claudeConfig));
+  claude.mcpServers.sheets = stale;
+  writeFileSync(f.claudeConfig, JSON.stringify(claude));
+  const fw = { name: 'fw', transport: { command: 'keep-me' } };
+  writeFileSync(f.codexConfig, JSON.stringify([fw, { name: 'sheets', transport: stale }]));
+  for (let i = 0; i < 2; i++) {
+    const output = execFileSync(process.execPath, [setup], { env: f.env, encoding: 'utf8' });
+    assert.match(output, /setup deferred/);
+    assert.match(output, /Credentials missing/);
+  }
+  assert.deepEqual(JSON.parse(readFileSync(f.codexConfig)), [fw]);
+  assert.deepEqual(JSON.parse(readFileSync(f.claudeConfig)), { theme: 'dark', mcpServers: { fw: { command: 'keep-me' } } });
+  const calls = readFileSync(f.env.TEST_CALLS, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(calls.filter(call => call.args[1] === 'remove').length, 2);
+  assert.ok(calls.every(call => !['add', 'add-json', 'login'].includes(call.args[1])));
+  assert.equal(existsSync(f.credentials), false);
+});
+
+test('missing credentials preserve independently configured Sheets servers', t => {
+  const f = fixture(t);
+  const claude = readFileSync(f.claudeConfig, 'utf8');
+  const codex = JSON.stringify([{ name: 'sheets', transport: { type: 'http', url: 'https://example.test/mcp' } }]);
+  writeFileSync(f.codexConfig, codex);
+  execFileSync(process.execPath, [setup], { env: f.env });
+  assert.equal(readFileSync(f.claudeConfig, 'utf8'), claude);
+  assert.equal(readFileSync(f.codexConfig, 'utf8'), codex);
 });

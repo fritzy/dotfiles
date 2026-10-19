@@ -3,49 +3,418 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Gear Pine Icon Preview</title>
+  <title>Gear + Pine · SVG icon preview</title>
   <style>
-    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: #0b1d27; color: #e9f1f4; }
-    main { width: min(1100px, calc(100% - 40px)); margin: 0 auto; padding: 52px 0 68px; }
-    h1 { margin: 0 0 8px; font-size: clamp(1.7rem, 4vw, 2.6rem); letter-spacing: -0.04em; }
-    .intro { margin: 0 0 30px; color: #9db2bc; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
-    .card { min-height: 340px; border: 1px solid #294653; border-radius: 22px; padding: 24px; display: grid; place-items: center; align-content: center; gap: 16px; overflow: hidden; }
+    body { margin: 0; background: #0b1d27; color: #e9f1f4; line-height: 1.5; }
+    main { width: min(1120px, calc(100% - 32px)); margin: auto; padding: 48px 0 64px; }
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.04em; }
+    h2 { margin: 40px 0 6px; font-size: 24px; letter-spacing: -.02em; }
+    h3 { margin: 0; font-size: 17px; }
+    .intro { margin: 8px 0 24px; color: #afc1c9; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 18px; }
+    .card, .clock-card { min-width: 0; border: 1px solid #385462; border-radius: 20px; overflow: hidden; }
+    .card { padding: 24px 16px; display: flex; align-items: center; flex-direction: column; gap: 16px; }
     .light { background: #f3f6f4; color: #17303c; }
-    .dark { background: #132d39; }
-    .checker { color: #17303c; background-color: #eef3f1; background-image: linear-gradient(45deg, #dde7e2 25%, transparent 25%), linear-gradient(-45deg, #dde7e2 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #dde7e2 75%), linear-gradient(-45deg, transparent 75%, #dde7e2 75%); background-size: 24px 24px; background-position: 0 0, 0 12px, 12px -12px, -12px 0; }
-    .logo { width: min(258px, 75%); }
-    .web-logo { width: 112px; }
-    .label { margin: 0; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.72; }
-    .sizes { display: flex; align-items: end; justify-content: center; gap: 24px; min-height: 150px; }
-    .sample { display: grid; place-items: center; gap: 10px; font-size: 12px; color: #95aab4; }
-    .favicon { image-rendering: auto; }
+    .dark { background: #132d39; color: #e9f1f4; }
+    .checker { color: #17303c; background-color: #eef3f1; background-image: conic-gradient(#dde7e2 25%, transparent 0 50%, #dde7e2 0 75%, transparent 0); background-size: 24px 24px; }
+    svg { display: block; flex-shrink: 0; }
+    .logo-stage { width: 100%; min-height: 256px; display: grid; place-items: center; }
+    .desktop-logo { width: 256px; max-width: 100%; height: auto; aspect-ratio: 1; }
+    .label { margin: 0; font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+    .sizes { display: flex; align-items: end; justify-content: center; gap: 24px; }
+    .sample { display: grid; justify-items: center; gap: 10px; font-size: 12px; }
+    .clock-card { background: #16303c; }
+    .clock-hero { height: 160px; display: grid; place-items: center; }
+    .clock-details { padding: 20px; }
+    .clock-details > p { min-height: 42px; margin: 6px 0 20px; font-size: 14px; color: #afc1c9; }
+    .clock-surface { border-radius: 10px; padding: 18px 12px; margin-top: 12px; }
+    .clock-surface .sizes { justify-content: space-between; gap: 12px; }
+    .nav-row { display: flex; align-items: center; gap: 10px; margin-top: 22px; font-size: 14px; }
+    a { display: inline-block; margin-top: 18px; color: #b1dac8; font-size: 13px; text-underline-offset: 3px; }
   </style>
 </head>
 <body>
   <main>
     <h1>Gear + Pine</h1>
-    <p class="intro">Deep green pine, brown trunk and rounded roots, light steel-blue gear. Full mark and favicon on light and dark surfaces.</p>
-    <section class="grid">
-      <article class="card checker">
-        <img class="logo" src="gear-pine-logo.svg" alt="Gear and pine tree logo at desktop icon size">
-        <p class="label">Desktop · 256 px</p>
-      </article>
-      <article class="card dark">
-        <img class="logo web-logo" src="gear-pine-logo.svg" alt="Gear and pine tree logo at web logo size">
-        <p class="label">Web logo · 112 px</p>
-      </article>
-      <article class="card light">
-        <div class="sizes">
-          <div class="sample"><img class="favicon" src="gear-pine-favicon.svg" width="64" height="64" alt="Favicon at 64 pixels"><span>64 px</span></div>
-          <div class="sample"><img class="favicon" src="gear-pine-favicon.svg" width="32" height="32" alt="Favicon at 32 pixels"><span>32 px</span></div>
-          <div class="sample"><img class="favicon" src="gear-pine-favicon.svg" width="16" height="16" alt="Favicon at 16 pixels"><span>16 px</span></div>
-        </div>
-        <p class="label">Favicon scale check</p>
-      </article>
-    </section>
+    <p class="intro">Logo, favicon, and interface icons.</p>
+    <h2>Logo &amp; favicon</h2>
+    <p class="intro">Full marks and small icons on light, dark, and transparent surfaces.</p>
+    <section class="grid" aria-label="Logo and favicon previews"><article class="card light"><h3>Light</h3><div class="logo-stage"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="256" height="256" class="desktop-logo" aria-hidden="true">
+  <title id="preview-1-title">Gear and pine tree logo</title>
+  <desc id="preview-1-desc">A deep green pine with a brown trunk and compact rounded roots inside a light steel-blue gear.</desc>
+
+  <defs>
+    <path id="preview-1-gear" fill-rule="evenodd" d="M 225.6 155.2 L 234.2 153.6 L 234.2 109.3 L 277.8 109.3 L 277.8 153.6 L 286.4 155.2 L 301 159.1 L 309.3 162.1 L 331.5 123.6 L 369.3 145.4 L 347.1 183.9 L 353.8 189.6 L 364.4 200.2 L 370.1 206.9 L 408.6 184.7 L 430.4 222.5 L 391.9 244.7 L 394.9 253 L 398.8 267.6 L 400.4 276.2 L 444.7 276.2 L 444.7 319.8 L 400.4 319.8 L 398.8 328.4 L 394.9 343 L 391.9 351.3 L 430.4 373.5 L 408.6 411.3 L 370.1 389.1 L 364.4 395.8 L 353.8 406.4 L 347.1 412.1 L 369.3 450.6 L 331.5 472.4 L 309.3 433.9 L 301 436.9 L 286.4 440.8 L 277.8 442.4 L 277.8 486.7 L 234.2 486.7 L 234.2 442.4 L 225.6 440.8 L 211 436.9 L 202.7 433.9 L 180.5 472.4 L 142.7 450.6 L 164.9 412.1 L 158.2 406.4 L 147.6 395.8 L 141.9 389.1 L 103.4 411.3 L 81.6 373.5 L 120.1 351.3 L 117.1 343 L 113.2 328.4 L 111.6 319.8 L 67.3 319.8 L 67.3 276.2 L 111.6 276.2 L 113.2 267.6 L 117.1 253 L 120.1 244.7 L 81.6 222.5 L 103.4 184.7 L 141.9 206.9 L 147.6 200.2 L 158.2 189.6 L 164.9 183.9 L 142.7 145.4 L 180.5 123.6 L 202.7 162.1 L 211 159.1 Z M 256 215 A 83 83 0 1 0 256 381 A 83 83 0 1 0 256 215 Z" />
+  </defs>
+
+
+  <use href="#preview-1-gear" transform="translate(0 15)" fill="#475569" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+  <use href="#preview-1-gear" fill="#b0c4d2" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 244 260 H 268 V 338 C 268 348 274 352 281 357 C 285 360 284 367 279 367 C 273 367 264 360 260 357 Q 256 354 252 357 C 248 360 239 367 233 367 C 228 367 227 360 231 357 C 238 352 244 348 244 338 Z" fill="#9b653d" stroke="#543820" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="#19783d" stroke="#123f2c" stroke-width="8" stroke-linejoin="round" />
+</svg></div><p class="label">Desktop · 256 px</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="112" height="112" class="" aria-hidden="true">
+  <title id="preview-2-title">Gear and pine tree logo</title>
+  <desc id="preview-2-desc">A deep green pine with a brown trunk and compact rounded roots inside a light steel-blue gear.</desc>
+
+  <defs>
+    <path id="preview-2-gear" fill-rule="evenodd" d="M 225.6 155.2 L 234.2 153.6 L 234.2 109.3 L 277.8 109.3 L 277.8 153.6 L 286.4 155.2 L 301 159.1 L 309.3 162.1 L 331.5 123.6 L 369.3 145.4 L 347.1 183.9 L 353.8 189.6 L 364.4 200.2 L 370.1 206.9 L 408.6 184.7 L 430.4 222.5 L 391.9 244.7 L 394.9 253 L 398.8 267.6 L 400.4 276.2 L 444.7 276.2 L 444.7 319.8 L 400.4 319.8 L 398.8 328.4 L 394.9 343 L 391.9 351.3 L 430.4 373.5 L 408.6 411.3 L 370.1 389.1 L 364.4 395.8 L 353.8 406.4 L 347.1 412.1 L 369.3 450.6 L 331.5 472.4 L 309.3 433.9 L 301 436.9 L 286.4 440.8 L 277.8 442.4 L 277.8 486.7 L 234.2 486.7 L 234.2 442.4 L 225.6 440.8 L 211 436.9 L 202.7 433.9 L 180.5 472.4 L 142.7 450.6 L 164.9 412.1 L 158.2 406.4 L 147.6 395.8 L 141.9 389.1 L 103.4 411.3 L 81.6 373.5 L 120.1 351.3 L 117.1 343 L 113.2 328.4 L 111.6 319.8 L 67.3 319.8 L 67.3 276.2 L 111.6 276.2 L 113.2 267.6 L 117.1 253 L 120.1 244.7 L 81.6 222.5 L 103.4 184.7 L 141.9 206.9 L 147.6 200.2 L 158.2 189.6 L 164.9 183.9 L 142.7 145.4 L 180.5 123.6 L 202.7 162.1 L 211 159.1 Z M 256 215 A 83 83 0 1 0 256 381 A 83 83 0 1 0 256 215 Z" />
+  </defs>
+
+
+  <use href="#preview-2-gear" transform="translate(0 15)" fill="#475569" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+  <use href="#preview-2-gear" fill="#b0c4d2" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 244 260 H 268 V 338 C 268 348 274 352 281 357 C 285 360 284 367 279 367 C 273 367 264 360 260 357 Q 256 354 252 357 C 248 360 239 367 233 367 C 228 367 227 360 231 357 C 238 352 244 348 244 338 Z" fill="#9b653d" stroke="#543820" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="#19783d" stroke="#123f2c" stroke-width="8" stroke-linejoin="round" />
+</svg><p class="label">Web · 112 px</p><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="64" height="64" class="" aria-hidden="true">
+  <title id="preview-3-title">Gear and pine favicon</title>
+  <desc id="preview-3-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>64 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="32" height="32" class="" aria-hidden="true">
+  <title id="preview-4-title">Gear and pine favicon</title>
+  <desc id="preview-4-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>32 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="16" height="16" class="" aria-hidden="true">
+  <title id="preview-5-title">Gear and pine favicon</title>
+  <desc id="preview-5-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>16 px</span></div></div><p class="label">Favicon</p></article><article class="card dark"><h3>Dark</h3><div class="logo-stage"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="256" height="256" class="desktop-logo" aria-hidden="true">
+  <title id="preview-6-title">Gear and pine tree logo</title>
+  <desc id="preview-6-desc">A deep green pine with a brown trunk and compact rounded roots inside a light steel-blue gear.</desc>
+
+  <defs>
+    <path id="preview-6-gear" fill-rule="evenodd" d="M 225.6 155.2 L 234.2 153.6 L 234.2 109.3 L 277.8 109.3 L 277.8 153.6 L 286.4 155.2 L 301 159.1 L 309.3 162.1 L 331.5 123.6 L 369.3 145.4 L 347.1 183.9 L 353.8 189.6 L 364.4 200.2 L 370.1 206.9 L 408.6 184.7 L 430.4 222.5 L 391.9 244.7 L 394.9 253 L 398.8 267.6 L 400.4 276.2 L 444.7 276.2 L 444.7 319.8 L 400.4 319.8 L 398.8 328.4 L 394.9 343 L 391.9 351.3 L 430.4 373.5 L 408.6 411.3 L 370.1 389.1 L 364.4 395.8 L 353.8 406.4 L 347.1 412.1 L 369.3 450.6 L 331.5 472.4 L 309.3 433.9 L 301 436.9 L 286.4 440.8 L 277.8 442.4 L 277.8 486.7 L 234.2 486.7 L 234.2 442.4 L 225.6 440.8 L 211 436.9 L 202.7 433.9 L 180.5 472.4 L 142.7 450.6 L 164.9 412.1 L 158.2 406.4 L 147.6 395.8 L 141.9 389.1 L 103.4 411.3 L 81.6 373.5 L 120.1 351.3 L 117.1 343 L 113.2 328.4 L 111.6 319.8 L 67.3 319.8 L 67.3 276.2 L 111.6 276.2 L 113.2 267.6 L 117.1 253 L 120.1 244.7 L 81.6 222.5 L 103.4 184.7 L 141.9 206.9 L 147.6 200.2 L 158.2 189.6 L 164.9 183.9 L 142.7 145.4 L 180.5 123.6 L 202.7 162.1 L 211 159.1 Z M 256 215 A 83 83 0 1 0 256 381 A 83 83 0 1 0 256 215 Z" />
+  </defs>
+
+
+  <use href="#preview-6-gear" transform="translate(0 15)" fill="#475569" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+  <use href="#preview-6-gear" fill="#b0c4d2" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 244 260 H 268 V 338 C 268 348 274 352 281 357 C 285 360 284 367 279 367 C 273 367 264 360 260 357 Q 256 354 252 357 C 248 360 239 367 233 367 C 228 367 227 360 231 357 C 238 352 244 348 244 338 Z" fill="#9b653d" stroke="#543820" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="#19783d" stroke="#123f2c" stroke-width="8" stroke-linejoin="round" />
+</svg></div><p class="label">Desktop · 256 px</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="112" height="112" class="" aria-hidden="true">
+  <title id="preview-7-title">Gear and pine tree logo</title>
+  <desc id="preview-7-desc">A deep green pine with a brown trunk and compact rounded roots inside a light steel-blue gear.</desc>
+
+  <defs>
+    <path id="preview-7-gear" fill-rule="evenodd" d="M 225.6 155.2 L 234.2 153.6 L 234.2 109.3 L 277.8 109.3 L 277.8 153.6 L 286.4 155.2 L 301 159.1 L 309.3 162.1 L 331.5 123.6 L 369.3 145.4 L 347.1 183.9 L 353.8 189.6 L 364.4 200.2 L 370.1 206.9 L 408.6 184.7 L 430.4 222.5 L 391.9 244.7 L 394.9 253 L 398.8 267.6 L 400.4 276.2 L 444.7 276.2 L 444.7 319.8 L 400.4 319.8 L 398.8 328.4 L 394.9 343 L 391.9 351.3 L 430.4 373.5 L 408.6 411.3 L 370.1 389.1 L 364.4 395.8 L 353.8 406.4 L 347.1 412.1 L 369.3 450.6 L 331.5 472.4 L 309.3 433.9 L 301 436.9 L 286.4 440.8 L 277.8 442.4 L 277.8 486.7 L 234.2 486.7 L 234.2 442.4 L 225.6 440.8 L 211 436.9 L 202.7 433.9 L 180.5 472.4 L 142.7 450.6 L 164.9 412.1 L 158.2 406.4 L 147.6 395.8 L 141.9 389.1 L 103.4 411.3 L 81.6 373.5 L 120.1 351.3 L 117.1 343 L 113.2 328.4 L 111.6 319.8 L 67.3 319.8 L 67.3 276.2 L 111.6 276.2 L 113.2 267.6 L 117.1 253 L 120.1 244.7 L 81.6 222.5 L 103.4 184.7 L 141.9 206.9 L 147.6 200.2 L 158.2 189.6 L 164.9 183.9 L 142.7 145.4 L 180.5 123.6 L 202.7 162.1 L 211 159.1 Z M 256 215 A 83 83 0 1 0 256 381 A 83 83 0 1 0 256 215 Z" />
+  </defs>
+
+
+  <use href="#preview-7-gear" transform="translate(0 15)" fill="#475569" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+  <use href="#preview-7-gear" fill="#b0c4d2" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 244 260 H 268 V 338 C 268 348 274 352 281 357 C 285 360 284 367 279 367 C 273 367 264 360 260 357 Q 256 354 252 357 C 248 360 239 367 233 367 C 228 367 227 360 231 357 C 238 352 244 348 244 338 Z" fill="#9b653d" stroke="#543820" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="#19783d" stroke="#123f2c" stroke-width="8" stroke-linejoin="round" />
+</svg><p class="label">Web · 112 px</p><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="64" height="64" class="" aria-hidden="true">
+  <title id="preview-8-title">Gear and pine favicon</title>
+  <desc id="preview-8-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>64 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="32" height="32" class="" aria-hidden="true">
+  <title id="preview-9-title">Gear and pine favicon</title>
+  <desc id="preview-9-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>32 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="16" height="16" class="" aria-hidden="true">
+  <title id="preview-10-title">Gear and pine favicon</title>
+  <desc id="preview-10-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>16 px</span></div></div><p class="label">Favicon</p></article><article class="card checker"><h3>Transparent</h3><div class="logo-stage"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="256" height="256" class="desktop-logo" aria-hidden="true">
+  <title id="preview-11-title">Gear and pine tree logo</title>
+  <desc id="preview-11-desc">A deep green pine with a brown trunk and compact rounded roots inside a light steel-blue gear.</desc>
+
+  <defs>
+    <path id="preview-11-gear" fill-rule="evenodd" d="M 225.6 155.2 L 234.2 153.6 L 234.2 109.3 L 277.8 109.3 L 277.8 153.6 L 286.4 155.2 L 301 159.1 L 309.3 162.1 L 331.5 123.6 L 369.3 145.4 L 347.1 183.9 L 353.8 189.6 L 364.4 200.2 L 370.1 206.9 L 408.6 184.7 L 430.4 222.5 L 391.9 244.7 L 394.9 253 L 398.8 267.6 L 400.4 276.2 L 444.7 276.2 L 444.7 319.8 L 400.4 319.8 L 398.8 328.4 L 394.9 343 L 391.9 351.3 L 430.4 373.5 L 408.6 411.3 L 370.1 389.1 L 364.4 395.8 L 353.8 406.4 L 347.1 412.1 L 369.3 450.6 L 331.5 472.4 L 309.3 433.9 L 301 436.9 L 286.4 440.8 L 277.8 442.4 L 277.8 486.7 L 234.2 486.7 L 234.2 442.4 L 225.6 440.8 L 211 436.9 L 202.7 433.9 L 180.5 472.4 L 142.7 450.6 L 164.9 412.1 L 158.2 406.4 L 147.6 395.8 L 141.9 389.1 L 103.4 411.3 L 81.6 373.5 L 120.1 351.3 L 117.1 343 L 113.2 328.4 L 111.6 319.8 L 67.3 319.8 L 67.3 276.2 L 111.6 276.2 L 113.2 267.6 L 117.1 253 L 120.1 244.7 L 81.6 222.5 L 103.4 184.7 L 141.9 206.9 L 147.6 200.2 L 158.2 189.6 L 164.9 183.9 L 142.7 145.4 L 180.5 123.6 L 202.7 162.1 L 211 159.1 Z M 256 215 A 83 83 0 1 0 256 381 A 83 83 0 1 0 256 215 Z" />
+  </defs>
+
+
+  <use href="#preview-11-gear" transform="translate(0 15)" fill="#475569" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+  <use href="#preview-11-gear" fill="#b0c4d2" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 244 260 H 268 V 338 C 268 348 274 352 281 357 C 285 360 284 367 279 367 C 273 367 264 360 260 357 Q 256 354 252 357 C 248 360 239 367 233 367 C 228 367 227 360 231 357 C 238 352 244 348 244 338 Z" fill="#9b653d" stroke="#543820" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="#19783d" stroke="#123f2c" stroke-width="8" stroke-linejoin="round" />
+</svg></div><p class="label">Desktop · 256 px</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="112" height="112" class="" aria-hidden="true">
+  <title id="preview-12-title">Gear and pine tree logo</title>
+  <desc id="preview-12-desc">A deep green pine with a brown trunk and compact rounded roots inside a light steel-blue gear.</desc>
+
+  <defs>
+    <path id="preview-12-gear" fill-rule="evenodd" d="M 225.6 155.2 L 234.2 153.6 L 234.2 109.3 L 277.8 109.3 L 277.8 153.6 L 286.4 155.2 L 301 159.1 L 309.3 162.1 L 331.5 123.6 L 369.3 145.4 L 347.1 183.9 L 353.8 189.6 L 364.4 200.2 L 370.1 206.9 L 408.6 184.7 L 430.4 222.5 L 391.9 244.7 L 394.9 253 L 398.8 267.6 L 400.4 276.2 L 444.7 276.2 L 444.7 319.8 L 400.4 319.8 L 398.8 328.4 L 394.9 343 L 391.9 351.3 L 430.4 373.5 L 408.6 411.3 L 370.1 389.1 L 364.4 395.8 L 353.8 406.4 L 347.1 412.1 L 369.3 450.6 L 331.5 472.4 L 309.3 433.9 L 301 436.9 L 286.4 440.8 L 277.8 442.4 L 277.8 486.7 L 234.2 486.7 L 234.2 442.4 L 225.6 440.8 L 211 436.9 L 202.7 433.9 L 180.5 472.4 L 142.7 450.6 L 164.9 412.1 L 158.2 406.4 L 147.6 395.8 L 141.9 389.1 L 103.4 411.3 L 81.6 373.5 L 120.1 351.3 L 117.1 343 L 113.2 328.4 L 111.6 319.8 L 67.3 319.8 L 67.3 276.2 L 111.6 276.2 L 113.2 267.6 L 117.1 253 L 120.1 244.7 L 81.6 222.5 L 103.4 184.7 L 141.9 206.9 L 147.6 200.2 L 158.2 189.6 L 164.9 183.9 L 142.7 145.4 L 180.5 123.6 L 202.7 162.1 L 211 159.1 Z M 256 215 A 83 83 0 1 0 256 381 A 83 83 0 1 0 256 215 Z" />
+  </defs>
+
+
+  <use href="#preview-12-gear" transform="translate(0 15)" fill="#475569" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+  <use href="#preview-12-gear" fill="#b0c4d2" stroke="#475569" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 244 260 H 268 V 338 C 268 348 274 352 281 357 C 285 360 284 367 279 367 C 273 367 264 360 260 357 Q 256 354 252 357 C 248 360 239 367 233 367 C 228 367 227 360 231 357 C 238 352 244 348 244 338 Z" fill="#9b653d" stroke="#543820" stroke-width="7" stroke-linejoin="round" />
+
+
+  <path d="M 256 45 L 210 134 L 234 126 L 189 201 L 222 189 L 166 275 L 218 256 L 187 318 L 239 294 L 239 310 H 273 V 294 L 325 318 L 294 256 L 346 275 L 290 189 L 323 201 L 278 126 L 302 134 Z" fill="#19783d" stroke="#123f2c" stroke-width="8" stroke-linejoin="round" />
+</svg><p class="label">Web · 112 px</p><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="64" height="64" class="" aria-hidden="true">
+  <title id="preview-13-title">Gear and pine favicon</title>
+  <desc id="preview-13-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>64 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="32" height="32" class="" aria-hidden="true">
+  <title id="preview-14-title">Gear and pine favicon</title>
+  <desc id="preview-14-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>32 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 64 64" width="16" height="16" class="" aria-hidden="true">
+  <title id="preview-15-title">Gear and pine favicon</title>
+  <desc id="preview-15-desc">A deep green pine with a brown trunk over a light steel-blue eight-tooth gear, with a transparent background and center opening.</desc>
+
+
+  <g fill="#b0c4d2">
+    <path fill-rule="evenodd" d="M 32 19 A 18 18 0 1 0 32 55 A 18 18 0 1 0 32 19 Z M 32 27.5 A 9.5 9.5 0 1 0 32 46.5 A 9.5 9.5 0 1 0 32 27.5 Z" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(45 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(90 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(135 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(180 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(225 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(270 32 37)" />
+    <rect x="28.5" y="9" width="7" height="16" rx="2" transform="rotate(315 32 37)" />
+  </g>
+
+
+  <rect x="29" y="40" width="6" height="12" rx="2" fill="#9b653d" stroke="#543820" stroke-width="2" />
+  <path d="M 32 9 L 23 25 L 28 23 L 19 37 L 27 34 L 22 45 L 29 42 H 35 L 42 45 L 37 34 L 45 37 L 36 23 L 41 25 Z" fill="#19783d" stroke="#0a3c29" stroke-width="2" stroke-linejoin="round" />
+</svg><span>16 px</span></div></div><p class="label">Favicon</p></article></section>
+    <h2>Scheduled tasks</h2>
+    <p class="intro">Three analog clocks at 16, 20, 24, and 32 pixels. Each follows the interface color.</p>
+    <section class="grid" aria-label="Scheduled task icons"><article class="clock-card"><div class="clock-hero light"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="80" height="80" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg></div><div class="clock-details"><h3>Outline</h3><p>A minimal clock for everyday navigation.</p><div class="clock-surface light"><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>16 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>20 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="24" height="24" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>24 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="32" height="32" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>32 px</span></div></div><div class="nav-row"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>Scheduled tasks</span></div></div><div class="clock-surface dark"><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>16 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>20 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="24" height="24" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>24 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="32" height="32" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>32 px</span></div></div><div class="nav-row"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 6.5V12l3.5 2" />
+</svg><span>Scheduled tasks</span></div></div><a href="data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%221.75%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%0A%20%20%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%229%22/%3E%0A%20%20%3Cpath%20d%3D%22M12%206.5V12l3.5%202%22/%3E%0A%3C/svg%3E%0A" download="clock-outline.svg">Download SVG</a></div></article><article class="clock-card"><div class="clock-hero light"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="80" height="80" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg></div><div class="clock-details"><h3>Dial</h3><p>Four hour marks for a familiar analog face.</p><div class="clock-surface light"><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>16 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>20 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="24" height="24" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>24 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="32" height="32" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>32 px</span></div></div><div class="nav-row"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>Scheduled tasks</span></div></div><div class="clock-surface dark"><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>16 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>20 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="24" height="24" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>24 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="32" height="32" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>32 px</span></div></div><div class="nav-row"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" class="" aria-hidden="true">
+  <circle cx="12" cy="12" r="9" />
+  <path d="M12 5.5V6m6 6h.5M12 18v.5M5.5 12H6M12 8v4l3 1.75" />
+</svg><span>Scheduled tasks</span></div></div><a href="data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%221.75%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%0A%20%20%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%229%22/%3E%0A%20%20%3Cpath%20d%3D%22M12%205.5V6m6%206h.5M12%2018v.5M5.5%2012H6M12%208v4l3%201.75%22/%3E%0A%3C/svg%3E%0A" download="clock-dial.svg">Download SVG</a></div></article><article class="clock-card"><div class="clock-hero light"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="80" height="80" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg></div><div class="clock-details"><h3>Solid</h3><p>A stronger silhouette for a selected state.</p><div class="clock-surface light"><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>16 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>20 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="24" height="24" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>24 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="32" height="32" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>32 px</span></div></div><div class="nav-row"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>Scheduled tasks</span></div></div><div class="clock-surface dark"><div class="sizes"><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>16 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>20 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="24" height="24" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>24 px</span></div><div class="sample"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="32" height="32" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>32 px</span></div></div><div class="nav-row"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20" class="" aria-hidden="true">
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm.875 4.5a.875.875 0 0 0-1.75 0V12c0 .314.168.604.44.76l3.5 2a.875.875 0 1 0 .87-1.52l-3.06-1.748V6.5Z" />
+</svg><span>Scheduled tasks</span></div></div><a href="data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22currentColor%22%3E%0A%20%20%3Cpath%20fill-rule%3D%22evenodd%22%20d%3D%22M12%202a10%2010%200%201%200%200%2020%2010%2010%200%200%200%200-20Zm.875%204.5a.875.875%200%200%200-1.75%200V12c0%20.314.168.604.44.76l3.5%202a.875.875%200%201%200%20.87-1.52l-3.06-1.748V6.5Z%22/%3E%0A%3C/svg%3E%0A" download="clock-solid.svg">Download SVG</a></div></article></section>
   </main>
 </body>
 </html>

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+dotfiles=$(cd "$(dirname "$0")/.." && pwd)
+checkout=${ASK_FRIEND_CHECKOUT:-$HOME/sandbox-of-power}
+repository=git@github.com:chainguard-sandbox/sandbox-of-power.git
+
+command -v git >/dev/null
+command -v python3 >/dev/null
+if [[ ! -e $checkout && ! -L $checkout ]]; then
+  git -c core.hooksPath=/dev/null clone --depth 1 --filter=blob:none --sparse "$repository" "$checkout"
+  git -C "$checkout" sparse-checkout set bdmurray/ask-friend \
+    bdmurray/skills/cgr.genome-audit-scored aczajkowski/skills/cgr.genome-audit
+fi
+
+[[ -f $checkout/bdmurray/ask-friend/ask-friend-queue.py ]] || {
+  echo "ask-friend is missing from existing checkout: $checkout" >&2
+  exit 1
+}
+mkdir -p "$HOME/.local/bin"
+target=$HOME/.local/bin/ask-friend
+if [[ -e $target || -L $target ]]; then
+  [[ -L $target && $(readlink "$target") == "$dotfiles/home/.scripts/ask-friend" ]] || {
+    echo "Preserving existing command: $target" >&2
+    exit 1
+  }
+else
+  ln -s "$dotfiles/home/.scripts/ask-friend" "$target"
+fi
+
+cg axlotl mentat questions list --help | grep -q -- --json || {
+  echo 'Update cg from current mono main using cg/hack/build.sh, then rerun setup.' >&2
+  exit 1
+}
+echo "Installed ask-friend from $checkout"
+echo 'Run ask-friend refresh, then ask-friend serve.'

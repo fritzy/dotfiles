@@ -1,0 +1,29 @@
+{
+  "title": "Work report",
+  "tz": "America/Los_Angeles",
+  "tz_label": "Pacific time",
+  "day_start_hour": 4,
+  "monday_start_sunday_hour": 18,
+  "author": {"name": "Nathan Fritz", "login": "fritzy", "team": "Ecosystems / BLD"},
+  "linear_workspace": "chainguard",
+  "github_owner": "chainguard-dev",
+  "standup_channel": {
+    "name": "eng-ecosystems-standup",
+    "id": "C08AW1DU4G4",
+    "base": "https://chainguard.enterprise.slack.com"
+  },
+  "repo_aliases": {"ecosystems-rebuilder.js": "rebuilder.js"},
+  "project_aliases": {"Rebuilders :: Axlotl :: Consolidating infrastructure": "Axlotl infra"},
+  "milestone": {"title": "^Phase demo", "label": "Phase demos done"},
+
+  "workstreams": [
+    {"name": "plasmad", "sub": "GPU executor modes",
+     "match": {"scopes": ["^microvm/plasmad"], "teams": ["BLD"], "titles": ["GPU executor mode"]}},
+    {"name": "Mentat", "sub": "npm skills & relocks",
+     "match": {"scopes": ["^mentat$"]}},
+    {"name": "JS Verify", "sub": "Jess release pins & intake",
+     "match": {"projects": ["^JS \\d+A Verify"], "scopes": ["^(eco-)?jess$"]}},
+    {"name": "JS Build", "sub": "toolchains & PM hardening",
+     "match": {"projects": ["^JS \\d+B Build"], "scopes": ["^axlotl"]}}
+  ]
+}

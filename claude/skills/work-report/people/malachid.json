@@ -1,0 +1,26 @@
+{
+  "title": "Work report",
+  "tz": "America/Los_Angeles",
+  "tz_label": "Pacific time",
+  "day_start_hour": 4,
+  "monday_start_sunday_hour": 18,
+  "author": {"name": "Malachi de AElfweald", "login": "malachid", "linear": "malachi.deaelfweald@chainguard.dev"},
+  "filed_label": "On tickets Malachi filed",
+  "linear_workspace": "chainguard",
+  "github_owner": "chainguard-dev",
+  "repo_aliases": {"ecosystems-rebuilder.js": "rebuilder.js"},
+  "milestone": {"title": "^Phase demo", "label": "Phase demos done"},
+  "project_aliases": {
+    "Rebuilders :: Mentat :: check_genome and Judge v2": "Mentat Judge v2",
+    "Mentat Gradle cohort: Ask-a-Friend parks": "Gradle cohort parks",
+    "SCM-357 cohort v1: blind audit labels (Java)": "Blind audit labels",
+    "mavenlint :: close the remaining comparator gaps": "mavenlint gaps"
+  },
+
+  "workstreams": [
+    {"name": "Mentat Judge v2", "sub": "catalog, locate & absorptions",
+     "match": {"projects": ["check_genome and Judge v2"], "titles": ["^(mentat|repositories|jartifact-proxy)", "\\(mentat"]}},
+    {"name": "Comparators", "sub": "mavenlint & cg compare",
+     "match": {"projects": ["^mavenlint"], "titles": ["axlotl", "mavenlint"]}}
+  ]
+}

@@ -14,6 +14,11 @@ function run(command, args, allowMissing = false) {
   return result.stdout;
 }
 
+function isManagedServer(server) {
+  return server?.args?.some(arg => typeof arg === 'string' &&
+    arg.endsWith('/packages/google-sheets-mcp/sheets.js'));
+}
+
 try {
   const args = process.argv.slice(2);
   if (args.length && (args.length !== 2 || args[0] !== '--credentials')) {
@@ -34,7 +39,8 @@ try {
     writeFileSync(temporary, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     renameSync(temporary, credentialsPath);
   }
-  if (existsSync(credentialsPath)) {
+  const ready = existsSync(credentialsPath);
+  if (ready) {
     normalizeCredentials(JSON.parse(readFileSync(credentialsPath, 'utf8')));
     chmodSync(credentialsPath, 0o600);
   }
@@ -46,22 +52,32 @@ try {
     const configPath = claudeDir ? join(claudeDir, 'claude.json') : join(homedir(), '.claude.json');
     const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
     const current = config.mcpServers?.sheets;
-    if (JSON.stringify(current) !== JSON.stringify(server)) {
+    if (!ready) {
+      if (isManagedServer(current)) run('claude', ['mcp', 'remove', '--scope', 'user', 'sheets']);
+      console.log('Sheets MCP setup deferred for Claude Code: OAuth client credentials missing.');
+    } else if (JSON.stringify(current) !== JSON.stringify(server)) {
       if (current) run('claude', ['mcp', 'remove', '--scope', 'user', 'sheets']);
       run('claude', ['mcp', 'add-json', '--scope', 'user', 'sheets', JSON.stringify(server)]);
     }
-    console.log('Sheets MCP registered with Claude Code (user scope).');
+    if (ready) console.log('Sheets MCP registered with Claude Code (user scope).');
   } else {
     console.log('Claude Code is not installed; rerun setup.sh after installing it.');
   }
   if (run('codex', ['--version'], true) !== null) {
-    // Stdio registration never starts an OAuth login during bootstrap.
-    run('codex', ['mcp', 'add', 'sheets', '--', 'node', launcher]);
-    console.log('Sheets MCP registered with Codex.');
+    if (ready) {
+      // Stdio registration never starts an OAuth login during bootstrap.
+      run('codex', ['mcp', 'add', 'sheets', '--', 'node', launcher]);
+      console.log('Sheets MCP registered with Codex.');
+    } else {
+      const servers = JSON.parse(run('codex', ['mcp', 'list', '--json']));
+      const current = servers.find(server => server.name === 'sheets');
+      if (isManagedServer(current?.transport)) run('codex', ['mcp', 'remove', 'sheets']);
+      console.log('Sheets MCP setup deferred for Codex: OAuth client credentials missing.');
+    }
   } else {
     console.log('Codex is not installed; rerun setup.sh after installing it.');
   }
-  if (!existsSync(credentialsPath)) {
+  if (!ready) {
     console.log(`Credentials missing: run setup.sh --credentials /path/to/google-oauth-client.json to create ${credentialsPath}.`);
   }
   console.log(`Google OAuth redirect URI: http://localhost:${callbackPort}/callback`);

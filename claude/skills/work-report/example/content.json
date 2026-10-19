@@ -1,0 +1,189 @@
+{
+  "title": "Two weeks of work",
+  "start": "2026-10-05",
+  "end": "2026-10-14",
+  "tz": "America/Los_Angeles",
+  "tz_label": "Pacific time",
+  "author": {
+    "name": "Nathan Fritz",
+    "login": "fritzy",
+    "team": "Ecosystems / BLD"
+  },
+  "linear_workspace": "chainguard",
+  "github_owner": "chainguard-dev",
+  "standup_channel": {
+    "name": "eng-ecosystems-standup",
+    "id": "C08AW1DU4G4",
+    "base": "https://chainguard.enterprise.slack.com"
+  },
+  "repo_aliases": {
+    "ecosystems-rebuilder.js": "rebuilder.js"
+  },
+  "project_aliases": {
+    "Rebuilders :: Axlotl :: Consolidating infrastructure": "Axlotl infra"
+  },
+  "workstreams": [
+    {
+      "name": "JS Build",
+      "sub": "toolchains & PM hardening",
+      "prs": [
+        "mono#65856",
+        "mono#65873",
+        "mono#65874",
+        "mono#65875",
+        "mono#67504",
+        "mono#67942",
+        "mono#67949",
+        "mono#67950",
+        "mono#67956",
+        "mono#67965",
+        "mono#69890",
+        "mono#69893",
+        "mono#69898",
+        "mono#70353"
+      ],
+      "summary": "Replaced <code>javascript.npm</code> with an exact package-manager pin (npm/pnpm/yarn version + per-arch sha256), then layered on build hygiene: lints refusing dangerous <code>.npmrc</code> / <code>.yarnrc.yml</code> keys and a default <code>.pnpmfile.cjs</code>, <code>NODE_ENV</code> kept out of npm steps, no shipped <code>npm-shrinkwrap.json</code>, pnpm guard env on every step, and offline replay of classic <code>yarn.lock</code>. Closed out <b>JS 1B Build</b> with the phase demo ([[ECO-4709]]): a 2017 package (<code>growl@1.10.2</code>) built on its own toolchain. Started activating pinned Yarn Classic builds ([[mono#70353]], [[ECO-4680]])."
+    },
+    {
+      "name": "JS Verify",
+      "sub": "Jess release pins & intake",
+      "prs": [
+        "mono#64611",
+        "mono#65816",
+        "mono#65829",
+        "mono#65838",
+        "mono#65857",
+        "mono#66961",
+        "stereo#366251",
+        "rebuilder.js#1496",
+        "rebuilder.js#1497"
+      ],
+      "summary": "Designed and landed per-genome exact Jess release pins (policy package with schema-set, floor and fault checks), shipped <b>eco-jess r1</b> bundling a pinned Node 22 + npm 12 and ran Jess under it, and hardened Jess intake against hostile tarballs — no escapes across the demo's 158 hostile-tarball runs. Closed out <b>JS 1A Verify</b> with the phase demo ([[ECO-4705]]): genomes pinned to r0 and r1 both pass; missing or bad pins hold before any guest starts."
+    },
+    {
+      "name": "plasmad",
+      "sub": "GPU executor modes",
+      "prs": [
+        "mono#69885",
+        "mono#69900",
+        "mono#69901",
+        "mono#69902",
+        "mono#69903"
+      ],
+      "summary": "Picked up BLD work from Dann's GPU executor-modes and held-pools designs (reviewed and approved both design docs on Oct 7). Five draft PRs: executor-mode taint, affinity and rotation ([[BLD-1192]]); tenant registry checked at claim ([[BLD-1306]], filed); entitlement at grant ([[BLD-1191]]); qualification-only incarnations and rollouts gated on qualification sessions ([[BLD-1188]])."
+    },
+    {
+      "name": "Mentat",
+      "sub": "npm skills & relocks",
+      "prs": [
+        "mono#68260",
+        "mono#67961",
+        "mono#69899"
+      ],
+      "summary": "Mentat's npm-layer skill selection now keys on the package manager, and Yarn Berry gets its own authoring skill ([[ECO-4606]], [[ECO-4650]]). Continued Julian's npm relocks PR as mono#67961 while Julian was out ([[ECO-4692]]); rebased onto the reworked judge, needs re-review."
+    }
+  ],
+  "other": {
+    "name": "Other",
+    "sub": "alerts, closed drafts",
+    "prs": [
+      "mono#60706",
+      "rebuilder.js#1437"
+    ],
+    "summary": "mentat-wq now alerts on dead-letter arrivals rather than depth ([[ECO-4444]], superseding mono#59455); closed the on-ice pack-phase journal draft."
+  },
+  "reviewed_foot": "2 design docs personally reviewed",
+  "tiles": [
+    {
+      "label": "Phase demos done",
+      "value": 2,
+      "foot": "JS 1A Verify · JS 1B Build"
+    }
+  ],
+  "highlights": [
+    "<b>JS 1A Verify closed out</b> ([[ECO-4705]]) — per-genome Jess release pins, eco-jess r1 with a bundled pinned Node, and hostile-tarball intake hardening; two genomes on two Jess releases pass through one processor.",
+    "<b>JS 1B Build closed out</b> ([[ECO-4709]]) — exact package-manager pins plus npm / yarn / pnpm hardening; a 2017 package builds on its own toolchain. Remaining items tracked in [[ECO-5527]].",
+    "<b>Started plasmad GPU executor modes</b> — five draft PRs across [[BLD-1188]], [[BLD-1191]], [[BLD-1192]] and [[BLD-1306]], after reviewing Dann's design docs.",
+    "<b>Kept the publish path moving</b> — on tickets I filed, Michael Smith closed the npm publish-to-serve-js trio ([[ECO-4674]], [[ECO-4918]], [[ECO-4919]]) and started [[ECO-4920]].",
+    "<b>Covered for Julian</b> — merged Julian's pinned-toolchains design and carried the npm relocks PR forward as mono#67961."
+  ],
+  "reviews": {
+    "mono#66797": {
+      "verdict": "Approved — personally reviewed",
+      "note": "Dann's GPU executor modes design; merged."
+    },
+    "mono#66793": {
+      "verdict": "Approved — personally reviewed",
+      "note": "Dann's GH200 host platform design, superseding hoarder."
+    },
+    "mono#64653": {
+      "verdict": "Changes requested",
+      "note": "Julian's npm relocks; carried forward as mono#67961 while Julian was out."
+    },
+    "mono#63229": {
+      "verdict": "Pushed & merged",
+      "note": "Julian's pinned JavaScript toolchains design, landed Oct 8."
+    },
+    "mono#67267": {
+      "verdict": "Approved",
+      "note": "Firestore document-ID escaping in sentinel."
+    },
+    "mono#69847": {
+      "verdict": "Commented",
+      "note": "Noted <code>TestLocalProfileRollout</code> fails locally on every run while CI is green; looks timing-dependent."
+    },
+    "mono#59455": {
+      "verdict": "Closed",
+      "note": "mentat-wq alerting, superseded by mono#60706."
+    }
+  },
+  "on_my_filed": [
+    "Michael Smith closed [[ECO-4674]], [[ECO-4918]], [[ECO-4919]] (npm publish to serve-js) and started [[ECO-4920]].",
+    "Julian's [[ECO-4678]] and [[ECO-4679]] auto-moved to In Review when my PRs went up.",
+    "[[SCM-541]] (APKINDEX cache) moved from ECO to SCM → Todo."
+  ],
+  "standups": [
+    {
+      "label": "Mon Oct 5 – Tue Oct 6",
+      "ts": "1791337037.232429",
+      "summary": "Jess pins + bundled Node, tarball intake hardening, npm/yarn config containment."
+    },
+    {
+      "label": "Wed Oct 7",
+      "ts": "1791439726.331009",
+      "summary": "Landed the Jess pin stack + npm config hardening; ran the EU-friendly Architecture Collab meeting at 6am."
+    },
+    {
+      "label": "Thu Oct 8",
+      "ts": "1791517277.793509",
+      "summary": "eco-jess r1 landed; JS toolchain pins + yarn/pnpm hardening out as drafts; picked up Julian's npm relocks."
+    },
+    {
+      "label": "Fri Oct 9",
+      "ts": "1791613836.697289",
+      "summary": "JS 1A Verify closed out; Jess intake hardening landed; filed demo follow-ups ECO-5411 / ECO-5412."
+    },
+    {
+      "label": "Tue Oct 13",
+      "ts": "1791996026.763689",
+      "summary": "Mentat picks npm-layer skills by package manager; JS toolchain PRs out of draft and approved."
+    },
+    {
+      "label": "Wed Oct 14",
+      "ts": "1792050412.733589",
+      "summary": "Landed the JS toolchain + yarn/pnpm hardening stack; JS 1B closed out; plasmad executor-mode drafts up."
+    }
+  ],
+  "open_notes": {
+    "mono#67961": "npm relocks, rebased and mergeable. Requested: developer-platform, integration, coreydaley-cg.",
+    "mono#69899": "remaining Yarn Berry skill facts. No reviewer requested.",
+    "mono#69890": "<code>node/version</code> parses on Node &lt; 8.3.",
+    "mono#69893": "refuse a manager pin that can't run on its Node ([[ECO-4679]]).",
+    "mono#69898": "record toolchain identity beyond npm ([[ECO-4678]])."
+  },
+  "next": [
+    "[[ECO-4680]] — activate Yarn Classic builds.",
+    "Land the plasmad drafts once Dann's mono#69860 and mono#69847 merge.",
+    "[[ECO-4448]] — rebuilder 06-publish timestamp fallback fails open."
+  ]
+}
