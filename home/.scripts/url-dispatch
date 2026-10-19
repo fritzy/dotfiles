@@ -1,9 +1,153 @@
-#!/bin/bash
-set -euo pipefail
-while true; do
-    while IFS= read -r url; do
-        case "$url" in
-            http://*|https://*) xdg-open "$url" >/dev/null 2>&1 & ;;
-        esac
-    done < /tmp/url-open.fifo
-done
+#!/usr/bin/env python3
+import os
+import signal
+import socket
+import socketserver
+import subprocess
+import sys
+import time
+from urllib.parse import parse_qs, urlsplit
+
+
+CONTROL = os.path.expanduser("~/.ssh/workstation-tunnel.control")
+LEASE_SECONDS = 900
+
+
+def callback_forwards(url):
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        raise ValueError("URL contains control characters")
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("expected an HTTP(S) URL")
+    candidates = [url]
+    query = parse_qs(parsed.query)
+    for key in ("redirect_uri", "redirect_url", "redirectURL"):
+        candidates.extend(query.get(key, []))
+    if len(candidates) > 4:
+        raise ValueError("too many callback URLs")
+    forwards = set()
+    for candidate in candidates:
+        callback = urlsplit(candidate)
+        host = callback.hostname
+        if callback.scheme not in ("http", "https") or host not in ("localhost", "127.0.0.1", "::1"):
+            continue
+        port = callback.port or (443 if callback.scheme == "https" else 80)
+        if port < 1024:
+            raise ValueError("loopback forwarding requires an unprivileged port")
+        destination = f"[{host}]" if host == "::1" else host
+        addresses = ("127.0.0.1", "[::1]") if host == "localhost" else (destination,)
+        for address in addresses:
+            forwards.add(f"{address}:{port}:{destination}:{port}")
+    return sorted(forwards)
+
+
+def ssh_forward(operation, spec):
+    result = subprocess.run(
+        ["ssh", "-F", "/dev/null", "-S", CONTROL, "-O", operation,
+         "-L", spec, "workstation-tunnel"],
+        stdin=subprocess.DEVNULL, capture_output=True, timeout=5,
+    )
+    if result.returncode:
+        raise ValueError(f"SSH callback {operation} failed for {spec}; check tunnel status and local port conflicts")
+
+
+class Relay(socketserver.UnixStreamServer):
+    def __init__(self, listener):
+        super().__init__("/tmp/url-open.sock", Handler, bind_and_activate=False)
+        self.socket.close()
+        self.socket = listener
+        self.leases = {}
+        self.control_identity = None
+
+    def refresh_control(self):
+        stat = os.stat(CONTROL)
+        identity = (stat.st_dev, stat.st_ino, stat.st_mtime_ns)
+        if identity != self.control_identity:
+            self.leases.clear()
+            self.control_identity = identity
+
+    def prepare(self, url):
+        specs = callback_forwards(url)
+        if not specs:
+            return
+        self.refresh_control()
+        added = []
+        try:
+            for spec in specs:
+                if spec not in self.leases:
+                    ssh_forward("forward", spec)
+                    added.append(spec)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            for spec in added:
+                self.cancel(spec)
+            raise
+        for spec in specs:
+            self.leases[spec] = time.monotonic() + LEASE_SECONDS
+
+    def cancel(self, spec):
+        try:
+            ssh_forward("cancel", spec)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            print(f"url-dispatch: {error}", file=sys.stderr, flush=True)
+        self.leases.pop(spec, None)
+
+    def service_actions(self):
+        if not self.leases:
+            return
+        try:
+            self.refresh_control()
+        except OSError:
+            self.leases.clear()
+        for spec, expiry in list(self.leases.items()):
+            if time.monotonic() >= expiry:
+                self.cancel(spec)
+
+    def server_close(self):
+        self.service_actions()
+        for spec in list(self.leases):
+            self.cancel(spec)
+        super().server_close()
+
+
+class Handler(socketserver.StreamRequestHandler):
+    timeout = 5
+
+    def handle(self):
+        try:
+            request = self.rfile.readline(65537)
+            if len(request) > 65536 or not request.endswith(b"\n"):
+                raise ValueError("invalid URL request")
+            url = request[:-1].decode()
+            self.server.prepare(url)
+            # Keep login URLs and their OAuth parameters out of the journal.
+            result = subprocess.run(
+                ["xdg-open", url], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+            )
+            if result.returncode:
+                raise ValueError("xdg-open failed; check the local desktop session")
+            response = "OK"
+        except subprocess.TimeoutExpired:
+            response = "ERROR: browser or SSH callback setup timed out"
+            print(f"url-dispatch: {response}", file=sys.stderr, flush=True)
+        except (OSError, ValueError) as error:
+            response = f"ERROR: {error}"
+            print(f"url-dispatch: {response}", file=sys.stderr, flush=True)
+        try:
+            self.wfile.write((response + "\n").encode())
+        except OSError:
+            pass
+
+    def finish(self):
+        try:
+            super().finish()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    if os.environ.get("LISTEN_PID") != str(os.getpid()) or os.environ.get("LISTEN_FDS") != "1":
+        sys.exit("url-dispatch must be started by url-open.socket")
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    with Relay(socket.socket(fileno=3)) as server:
+        server.serve_forever()

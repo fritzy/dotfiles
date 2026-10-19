@@ -263,7 +263,7 @@ else
   # otherwise `fw hooks install` would create a hook-only .zshrc and hide the
   # actual prompt configuration in this repo.
   echo "stow not available. Linking persistent shell config directly..."
-  for rel in .bash_profile .bashrc .zprofile .zshrc; do
+  for rel in .bash_profile .bashrc .zprofile .zshrc .zshenv; do
     source_file="$dotfiles_root/home/$rel"
     target="$HOME/$rel"
     if [[ -L "$target" && $(readlink -f "$target") == "$source_file" ]]; then
@@ -284,6 +284,11 @@ else
   echo "stow not available. Forcing replacement of $nvim_config ..."
   rm -rf $nvim_config
   cp -R ./home/.config/nvim/* $nvim_config/
+fi
+
+if ! bash "$dotfiles_root/workstation.sh" --auto; then
+  echo "Workstation setup failed. Run bash workstation.sh to retry." >&2
+  exit 1
 fi
 
 # Claude and Codex keep credentials, transcripts, databases, and other runtime

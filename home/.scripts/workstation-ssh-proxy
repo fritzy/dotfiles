@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+gcloud_bin="$HOME/.local/opt/google-cloud-sdk/bin/gcloud"
+[[ -x "$gcloud_bin" ]] || gcloud_bin=$(command -v gcloud)
+args=(compute ssh nathan-fritz-work-v2 --project=chainguard-workstations --zone=us-central1-a)
+if [[ ${3:-} == --tunnel ]]; then
+  "$gcloud_bin" "${args[@]}" --command='rm -f /tmp/url-open.sock' </dev/null >/dev/null
+fi
+exec "$gcloud_bin" "${args[@]}" -- -W "$1:$2"

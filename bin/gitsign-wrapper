@@ -1,0 +1,64 @@
+#!/bin/sh
+# Prefer explicit signing configuration; retain GCE identity fallback otherwise.
+
+GITSIGN_WRAP_ENABLE=${GITSIGN_WRAP_ENABLE:-true}
+wrapper_temp=""
+debug() {
+    [ -n "$GITSIGN_WRAP_LOG" ] || return 0
+    printf '[%s] %s\n' "$0" "$*" >> "$GITSIGN_WRAP_LOG"
+}
+fail() { debug "$*"; printf '[%s] %s\n' "$0" "$*" >&2; exit 1; }
+cleanup() {
+    [ -z "$wrapper_temp" ] || rm -rf -- "$wrapper_temp"
+}
+
+[ -z "$_GITSIGN_WRAPPED" ] || fail 'exec loop detected'
+case "$GITSIGN_WRAP_ENABLE" in
+    true|false) ;;
+    *) fail "GITSIGN_WRAP_ENABLE must be true or false" ;;
+esac
+
+# Read Git settings before the legacy fallback changes HOME.
+configured=$(git config --get gpg.x509.program 2>/dev/null || :)
+if [ -n "$configured" ] && [ "$configured" != gitsign ]; then
+    resolved=$(command -v -- "$configured" 2>/dev/null) ||
+        fail "configured signer not found: $configured"
+    [ -f "$resolved" ] && [ -x "$resolved" ] ||
+        fail "configured signer is not executable: $configured"
+    if ! [ "$resolved" -ef "$0" ]; then
+        debug "using configured signer: $resolved"
+        _GITSIGN_WRAPPED="pid-$$" exec "$resolved" "$@"
+    fi
+fi
+
+real=""
+saved_ifs="$IFS"
+IFS=:
+for directory in $PATH; do
+    directory=${directory:-.}
+    [ "$directory/gitsign" -ef "$0" ] && continue
+    [ -f "$directory/gitsign" ] && [ -x "$directory/gitsign" ] || continue
+    real="$directory/gitsign"
+    break
+done
+IFS="$saved_ifs"
+[ -x "$real" ] || fail 'could not find a real gitsign in PATH'
+
+if [ "$GITSIGN_WRAP_ENABLE" = false ] ||
+    git config --get-regexp '^gitsign\.' >/dev/null 2>&1; then
+    debug "passing through to: $real"
+    _GITSIGN_WRAPPED="pid-$$" exec "$real" "$@"
+fi
+
+product_name=""
+product_file=/sys/class/dmi/id/product_name
+[ ! -r "$product_file" ] || read -r product_name < "$product_file"
+if [ "$product_name" != 'Google Compute Engine' ]; then
+    _GITSIGN_WRAPPED="pid-$$" exec "$real" "$@"
+fi
+
+wrapper_temp=$(mktemp -d "${TMPDIR:-/tmp}/gitsign.XXXXXX") ||
+    fail 'could not create temporary home for GCE signing'
+trap cleanup EXIT
+debug "using legacy GCE identity with: $real"
+HOME="$wrapper_temp" _GITSIGN_WRAPPED="pid-$$" "$real" "$@"

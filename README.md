@@ -16,6 +16,104 @@ This is a [stow](https://www.gnu.org/software/stow/) based dotfiles repo with bo
 - Links the shell startup files directly when `stow` is temporarily unavailable
 - Bootstraps NeoVim Lazy plugins
 
+## Workstation configuration
+
+Update dotfiles and run `bash bootstrap.sh` on both the laptop and workstation.
+Bootstrap delegates work-specific setup to `workstation.sh --auto`: Chainguard
+hosts get the gitsign fork, credential cache, and remote browser commands; a
+laptop with the `workstation` SSH alias gets the local relay and SSH tunnel.
+Other hosts skip workstation configuration.
+On a fresh Linux laptop, run `bash workstation.sh --local` once to opt in.
+Run `bash workstation.sh --remote` to install just the remote components.
+
+The laptop needs Python 3, OpenSSH, `xdg-open`, a graphical session with user
+systemd, and authenticated gcloud. The checked-in SSH configuration targets
+`nathan-fritz-work-v2` in `chainguard-workstations/us-central1-a`; edit
+`home/.scripts/workstation-ssh-proxy` and `home/.ssh/config.d/workstation` to
+change the destination. Setup migrates the two workstation SSH aliases into
+that managed include, backs up existing files, and preserves other SSH hosts.
+The existing FritzWorks forward at `127.1.1.2:7337` is retained.
+Service enablement is local to each machine; remote setup disables laptop-only
+units left over from older Stow installs.
+
+On the workstation, `BROWSER`, `GH_BROWSER`, gitsign's URL opener, and a
+`~/.local/bin/xdg-open` shim send HTTP(S) URLs through `/tmp/url-open.sock`.
+Open a new shell after installing. Explicit gh and gitsign settings also cover
+processes that haven't loaded the new shell environment. The helper installs
+the required links even when stow is unavailable.
+For other tools in noninteractive Bash SSH commands, use a login shell
+(`ssh workstation 'bash -lc "your-command"'`) to load `BROWSER` and the user PATH.
+
+The laptop's `url-open.socket` starts `url-open.service`, which opens URLs in
+the desktop browser. `workstation-tunnel.service` maintains the SSH connection.
+Loopback URLs and OAuth `redirect_uri`, `redirect_url`, or `redirectURL` query
+parameters automatically get matching callback forwards to the workstation.
+Forwarding is restricted to `localhost`, `127.0.0.1`, and `::1`, ports 1024–65535;
+unused forwards expire 15 minutes after their last URL request. A conflicting
+local port fails the request. Flows hiding the callback address elsewhere need
+a manual SSH forward. URLs and OAuth parameters are not logged by the relay.
+
+Check or restart the laptop services:
+
+```sh
+systemctl --user status url-open.socket url-open.service workstation-tunnel.service
+journalctl --user -u url-open.service -u workstation-tunnel.service -n 30
+systemctl --user restart workstation-tunnel.service
+ssh workstation 'gh browse --repo cli/cli'
+```
+
+If the tunnel journal reports expired gcloud credentials, run `gcloud auth login`
+on the laptop, then restart the tunnel. Laptop sleep or loss of connectivity
+interrupts the relay; systemd reconnects it. No firewall ports are exposed.
+The old FIFO reader is disabled during migration.
+
+Relay tests: `python3 -m unittest discover -s tests -p 'test_url_relay.py'`.
+Protocol references: [gh browser selection](https://cli.github.com/manual/gh_help_environment),
+[gitsign URL opener](https://github.com/sigstore/gitsign#configuration), and
+[SSH forwarding control](https://man.openbsd.org/ssh#O).
+
+## Gitsign fork
+
+`bash bootstrap.sh` on a Chainguard workstation, or `bash workstation.sh --remote`
+explicitly, runs `bin/install-gitsign-fork --system`. Git, Go 1.21+ and sudo must
+be available. No existing fork checkout or manual build is needed.
+
+The installer clones the [fork](https://github.com/fritzy/gitsign) at commit
+`48435a8f7995eabe5d1f7dde9a74ae7905c985e1` and builds both binaries with Go 1.27.1
+(downloaded by Go if needed). Source lives in `~/github/fritzy/gitsign`;
+installed binaries live in `~/.local/lib/gitsign`, with links in `~/.local/bin`.
+Local checkout edits or a different origin stop installation without replacing
+the installed binaries. Repeat runs preserve an unchanged running cache.
+
+Setup enables X.509 commit/tag signing, selects Google with the default login
+hint `nathan.fritz@chainguard.dev`, enables automatic cache discovery, and sets
+`gitsign.rekorMode=offline` to embed Rekor proofs. Signing still publishes to
+Rekor; verification doesn't depend on its delayed search index. Existing
+connector, login-hint, and browser-opener settings are preserved.
+
+On Linux, setup installs and enables `gitsign-credential-cache.service`. If no
+user systemd bus is available, it installs the unit and prints the activation
+command. Installation doesn't initiate a browser login; the first signing
+request fills the cache. A changed daemon binary or unit restarts the service.
+
+`--system` backs up and replaces `/usr/bin/gitsign` and installs the passthrough
+wrapper at `/usr/local/bin/gitsign`, covering old sessions and explicit signer
+paths. Rerunning workstation setup repairs those paths after a host update.
+For a user-only install, run `bash bin/install-gitsign-fork` without sudo.
+
+Override `GITSIGN_CHECKOUT`, `GITSIGN_REPOSITORY`, `GITSIGN_REVISION` (a full
+commit SHA), or `GITSIGN_TOOLCHAIN` to change the source/build inputs.
+`GITSIGN_LOGIN_HINT` explicitly overrides the saved hint, including an empty
+value to disable it. Update the pinned revision in the installer when adopting
+new fork changes.
+
+An older online signature can report `could not find matching tlog entry`
+until Rekor indexes it. Retry verification of the same commit; re-signing
+creates another entry and restarts that wait. The cache only reuses credentials
+while their short-lived Fulcio certificate remains valid.
+
+Installer and wrapper tests: `python3 -m unittest discover -s tests -p 'test_gitsign*.py'`.
+
 ## FritzWorks
 
 Bootstrap installs or upgrades [FritzWorks](https://github.com/chainguard-sandbox/fritzworks)

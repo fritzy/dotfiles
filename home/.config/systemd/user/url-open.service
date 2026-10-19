@@ -1,0 +1,9 @@
+[Unit]
+Description=Open workstation URLs locally and forward login callbacks
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.scripts/url-dispatch
+Restart=on-failure
+RestartSec=2

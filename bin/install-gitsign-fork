@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+gitsign_checkout=${GITSIGN_CHECKOUT:-$HOME/github/fritzy/gitsign}
+gitsign_repository=${GITSIGN_REPOSITORY:-https://github.com/fritzy/gitsign.git}
+gitsign_revision=${GITSIGN_REVISION:-48435a8f7995eabe5d1f7dde9a74ae7905c985e1}
+gitsign_toolchain=${GITSIGN_TOOLCHAIN:-go1.27.1}
+mode=${1:---user}
+case "$mode" in
+  --user|--system) ;;
+  *) echo 'Usage: install-gitsign-fork [--user|--system]' >&2; exit 2 ;;
+esac
+
+fail() { echo "$*" >&2; exit 1; }
+[[ "$gitsign_revision" =~ ^[0-9a-f]{40}$ ]] || fail 'GITSIGN_REVISION must be a full commit SHA.'
+command -v git >/dev/null || fail 'Gitsign setup requires Git.'
+command -v go >/dev/null || fail 'Gitsign setup requires Go 1.21+ with toolchain download support.'
+if [[ "$mode" == --system ]]; then
+  [[ $(uname) == Linux ]] || fail '--system is only supported on Linux.'
+  command -v sudo >/dev/null || fail '--system requires sudo.'
+fi
+
+normalize_origin() { printf '%s\n' "$1" | sed -E 's#^git@github.com:#https://github.com/#; s#/$##; s#\.git$##'; }
+if [[ ! -e "$gitsign_checkout" ]]; then
+  mkdir -p "$(dirname -- "$gitsign_checkout")"
+  GIT_TERMINAL_PROMPT=0 git clone --no-checkout -- "$gitsign_repository" "$gitsign_checkout"
+else
+  [[ -d "$gitsign_checkout/.git" ]] || fail "Preserving non-checkout path: $gitsign_checkout"
+  [[ -z $(git -C "$gitsign_checkout" status --porcelain) ]] || fail "Preserving local changes: $gitsign_checkout"
+  origin=$(git -C "$gitsign_checkout" remote get-url origin)
+  [[ $(normalize_origin "$origin") == "$(normalize_origin "$gitsign_repository")" ]] || fail "Preserving checkout with a different origin: $gitsign_checkout"
+fi
+if ! git -C "$gitsign_checkout" cat-file -e "$gitsign_revision^{commit}" 2>/dev/null; then
+  GIT_TERMINAL_PROMPT=0 git -C "$gitsign_checkout" fetch origin "$gitsign_revision"
+fi
+if [[ $(git -C "$gitsign_checkout" rev-parse HEAD) != "$gitsign_revision" ]] || [[ ! -f "$gitsign_checkout/go.mod" ]]; then
+  git -C "$gitsign_checkout" -c core.hooksPath=/dev/null checkout --detach "$gitsign_revision"
+fi
+
+install_dir="$HOME/.local/lib/gitsign"
+mkdir -p "$install_dir" "$HOME/.local/bin"
+build_dir=$(mktemp -d "$install_dir/.build.XXXXXX")
+system_staging=""
+cleanup() {
+  rm -rf -- "$build_dir"
+  [[ -z "$system_staging" ]] || sudo rm -f -- "$system_staging"
+}
+trap cleanup EXIT
+echo "Building gitsign $gitsign_revision with $gitsign_toolchain..."
+(
+  cd -- "$gitsign_checkout"
+  export GOTOOLCHAIN="$gitsign_toolchain" CGO_ENABLED=0
+  go build -mod=readonly -trimpath -buildvcs=false -ldflags "-buildid= -X github.com/sigstore/gitsign/pkg/version.gitVersion=$gitsign_revision" -o "$build_dir/gitsign" .
+  go build -mod=readonly -trimpath -buildvcs=false -ldflags "-buildid= -X github.com/sigstore/gitsign/pkg/version.gitVersion=$gitsign_revision" -o "$build_dir/gitsign-credential-cache" ./cmd/gitsign-credential-cache
+)
+
+cache_changed=false
+for name in gitsign gitsign-credential-cache; do
+  if ! cmp -s -- "$build_dir/$name" "$install_dir/$name"; then
+    mv -f -- "$build_dir/$name" "$install_dir/$name"
+    [[ "$name" != gitsign-credential-cache ]] || cache_changed=true
+  fi
+  target="$HOME/.local/bin/$name"
+  if [[ ! -L "$target" || $(readlink "$target") != "$install_dir/$name" ]]; then
+    if [[ -e "$target" || -L "$target" ]]; then
+      mv -- "$target" "$(mktemp "${target}.backup.XXXXXX")"
+    fi
+    ln -s -- "$install_dir/$name" "$target"
+  fi
+done
+
+git config --global gpg.x509.program "$install_dir/gitsign"
+git config --global gpg.format x509
+git config --global commit.gpgSign true
+git config --global tag.gpgSign true
+# Embed the proof; Rekor's search index can lag behind successful writes.
+git config --global gitsign.rekorMode offline
+git config --global gitsign.credentialCache auto
+if ! git config --global --get gitsign.connectorID >/dev/null; then
+  git config --global gitsign.connectorID https://accounts.google.com
+fi
+if [[ -n ${GITSIGN_LOGIN_HINT+x} ]]; then
+  git config --global gitsign.loginHint "$GITSIGN_LOGIN_HINT"
+elif ! git config --global --get gitsign.loginHint >/dev/null; then
+  git config --global gitsign.loginHint nathan.fritz@chainguard.dev
+fi
+
+install_system_file() {
+  local source=$1 target=$2 backup
+  if [[ -L "$target" ]]; then
+    target=$(readlink -f "$target")
+  fi
+  cmp -s -- "$source" "$target" && return
+  sudo mkdir -p -- "$(dirname -- "$target")"
+  if [[ -e "$target" ]]; then
+    backup=$(sudo mktemp "${target}.backup.XXXXXX")
+    sudo cp -p -- "$target" "$backup"
+    echo "Previous system signer: $backup"
+  fi
+  system_staging=$(sudo mktemp "${target}.XXXXXX")
+  sudo install -m 0755 -- "$source" "$system_staging"
+  sudo mv -f -- "$system_staging" "$target"
+  system_staging=""
+}
+if [[ "$mode" == --system ]]; then
+  # Old sessions and explicit /usr/bin invocations bypass the user PATH.
+  install_system_file "$install_dir/gitsign" /usr/bin/gitsign
+  install_system_file "$root/bin/gitsign-wrapper" /usr/local/bin/gitsign
+fi
+
+if [[ $(uname) == Linux ]]; then
+  unit_dir="$HOME/.config/systemd/user"
+  unit=gitsign-credential-cache.service
+  mkdir -p "$unit_dir"
+  if ! cmp -s -- "$root/config/systemd/$unit" "$unit_dir/$unit"; then
+    if [[ -e "$unit_dir/$unit" || -L "$unit_dir/$unit" ]]; then
+      mv -- "$unit_dir/$unit" "$(mktemp "$unit_dir/$unit.backup.XXXXXX")"
+    fi
+    install -m 0644 -- "$root/config/systemd/$unit" "$unit_dir/$unit"
+    cache_changed=true
+  fi
+  if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    if [[ "$cache_changed" == true ]] && systemctl --user is-active --quiet "$unit"; then
+      systemctl --user restart "$unit"
+    fi
+    systemctl --user enable --now "$unit"
+  else
+    echo "Cache unit installed; start it in a user session: systemctl --user enable --now $unit"
+  fi
+else
+  echo 'Start gitsign-credential-cache in your session to enable credential reuse.'
+fi
+echo 'Gitsign fork installed with Google login hints and embedded Rekor proofs.'

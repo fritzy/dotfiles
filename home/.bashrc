@@ -1,3 +1,5 @@
+[ ! -r "$HOME/.config/shell/browser.sh" ] || . "$HOME/.config/shell/browser.sh"
+
 # Keep the persistent home directory authoritative on hosts whose passwd entry
 # is rebuilt with /bin/bash. Restrict the handoff to interactive shells so
 # `ssh host command`, scp, and Bash scripts continue to run under Bash.
