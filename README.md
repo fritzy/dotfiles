@@ -58,7 +58,14 @@ systemd, and authenticated gcloud. The checked-in SSH configuration targets
 `worklaptop/.scripts/workstation-ssh-proxy` and `worklaptop/.ssh/config.d/workstation` to
 change the destination. Setup migrates the two workstation SSH aliases into
 that managed include, backs up existing files, and preserves other SSH hosts.
-The existing FritzWorks forward at `127.1.1.2:7337` is retained.
+The tunnel also links the FritzWorks daemons both ways: the laptop reaches the
+workstation daemon at `127.1.1.2:7337`, and the workstation reaches the laptop
+daemon at its `127.0.0.1:7441`. Each role bootstrap adds the peer to the local
+`config.ini` as `[daemons.workstation]` or `[daemons.laptop]` (creating the file
+from the seed when absent); run `fw daemon restart` when it reports a change.
+`bin/setup-sshd-keepalive` sets `ClientAliveInterval 30` on the workstation so
+sessions orphaned by laptop sleep release port 7441 instead of blocking the
+tunnel's reconnect.
 Service enablement is local to each machine; remote setup disables laptop-only
 units left over from older Stow installs.
 

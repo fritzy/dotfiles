@@ -10,6 +10,7 @@ command -v xdg-open >/dev/null
 systemctl --user show-environment >/dev/null
 
 python3 "$root/bin/sync-dotfiles" worklaptop
+python3 "$root/bin/set-fw-daemon" workstation http://127.1.1.2:7337
 python3 - <<'PY'
 from pathlib import Path
 import re

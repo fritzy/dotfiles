@@ -24,7 +24,7 @@ class BootstrapRoleTests(unittest.TestCase):
         self.bin.mkdir()
         (self.repo / 'bin').mkdir(parents=True)
         for name in ('bootstrap.sh', 'bootstrap-worklaptop.sh', 'bootstrap-workstation.sh', 'workstation.sh',
-                     'bin/sync-dotfiles', 'bin/sync-ai-skills', 'bin/setup-fritzworks'):
+                     'bin/sync-dotfiles', 'bin/sync-ai-skills', 'bin/setup-fritzworks', 'bin/set-fw-daemon'):
             shutil.copyfile(ROOT / name, self.repo / name)
         for package in ('worklaptop', 'workstation'):
             shutil.copytree(ROOT / package, self.repo / package, symlinks=True)
@@ -43,6 +43,7 @@ class BootstrapRoleTests(unittest.TestCase):
         self.tool('gh', 'printf "%s\\n" "$*" >> "$HOME/gh-calls"')
         (self.bin / 'python3').symlink_to(sys.executable)
         (self.repo / 'bin/setup-work-tools').write_text('echo work-tools >> "$HOME/setup-calls"\n')
+        (self.repo / 'bin/setup-sshd-keepalive').write_text('echo sshd-keepalive >> "$HOME/sshd-calls"\n')
         (self.repo / 'bin/install-gitsign-fork').write_text(
             'echo "gitsign $*" >> "$HOME/setup-calls"\n'
             'exit "${TEST_SIGNER_EXIT:-0}"\n')
@@ -53,7 +54,8 @@ class BootstrapRoleTests(unittest.TestCase):
         target.chmod(0o755)
 
     def run_script(self, name, *args, success=True):
-        command = [sys.executable] if name in ('bin/sync-dotfiles', 'bin/sync-ai-skills', 'bin/setup-fritzworks') else ['bash']
+        python = ('bin/sync-dotfiles', 'bin/sync-ai-skills', 'bin/setup-fritzworks', 'bin/set-fw-daemon')
+        command = [sys.executable] if name in python else ['bash']
         result = subprocess.run([*command, str(self.repo / name), *args],
                                 env=self.env, capture_output=True, text=True, timeout=20)
         if success:
@@ -75,11 +77,18 @@ class BootstrapRoleTests(unittest.TestCase):
                 try:
                     case.prepare_general_bootstrap()
                     case.tool('fw', 'echo existing-fw')
+                    seed = case.repo / 'home/.config/fritzworks/config.ini'
+                    seed.parent.mkdir(parents=True)
+                    seed.write_text('[paths]\ndata = ~/data\n')
                     case.run_script('bootstrap.sh', '--no-nvim')
                     for _ in range(2):
                         case.run_script(f'bootstrap-{role}.sh')
                         case.run_script('bootstrap.sh', '--no-nvim')
                     self.assertEqual((case.home / '.config/nvim/init.lua').read_text(), 'original config')
+                    daemon = {'worklaptop': '[daemons.workstation]\nurl = http://127.1.1.2:7337\n',
+                              'workstation': '[daemons.laptop]\nurl = http://127.0.0.1:7441\n'}[role]
+                    self.assertEqual((case.home / '.config/fritzworks/config.ini').read_text(),
+                                     '[paths]\ndata = ~/data\n\n' + daemon)
                     if role == 'worklaptop':
                         self.assertTrue((case.home / '.ssh/config.d/workstation').is_file())
                         self.assertTrue((case.home / '.config/systemd/user/url-open.socket').is_file())
@@ -98,6 +107,7 @@ class BootstrapRoleTests(unittest.TestCase):
                      'coldbrew', 'eget', 'starship', 'node'):
             self.tool(name, 'exit 0')
         self.tool('npm', 'echo "$HOME/.local"')
+        self.tool('codex', 'echo "[]"')
         for name in ('setup-codex', 'install-fritzworks'):
             (self.repo / 'bin' / name).write_text(f'echo {name} >> "$HOME/general-calls"\n')
         self.env['SHELL'] = '/bin/bash'
@@ -234,6 +244,36 @@ class BootstrapRoleTests(unittest.TestCase):
         self.assertNotIn('setup --provider claude', calls)
         self.assertEqual((custom / 'claude.json').read_text(), registration)
 
+    def test_fw_daemon_entry_is_set_in_place_and_idempotent(self):
+        config = self.home / '.config/fritzworks/config.ini'
+        config.parent.mkdir(parents=True)
+        config.write_text('# personal\n[paths]\ndata = ~/data\n\n[daemons . laptop]\nname = Laptop\nurl = http://127.0.0.1:1\n'
+                          '\n[daemons.other]\nurl = http://127.0.0.1:2\n')
+        config.chmod(0o600)
+        self.run_script('bin/set-fw-daemon', 'laptop', 'http://127.0.0.1:7441')
+        self.run_script('bin/set-fw-daemon', 'workstation', 'http://127.1.1.2:7337')
+        expected = ('# personal\n[paths]\ndata = ~/data\n\n[daemons . laptop]\nname = Laptop\nurl = http://127.0.0.1:7441\n'
+                    '\n[daemons.other]\nurl = http://127.0.0.1:2\n\n[daemons.workstation]\nurl = http://127.1.1.2:7337\n')
+        self.assertEqual(config.read_text(), expected)
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        before = config.stat().st_mtime_ns
+        result = self.run_script('bin/set-fw-daemon', 'laptop', 'http://127.0.0.1:7441')
+        self.assertEqual((result.stdout, config.stat().st_mtime_ns), ('', before))
+
+    def test_fw_daemon_entry_seeds_missing_config_and_refuses_repository_link(self):
+        seed = self.repo / 'home/.config/fritzworks/config.ini'
+        seed.parent.mkdir(parents=True)
+        seed.write_text('[paths]\n')
+        config = self.home / '.config/fritzworks/config.ini'
+        self.run_script('bin/set-fw-daemon', 'laptop', 'http://127.0.0.1:7441')
+        self.assertEqual(config.read_text(), '[paths]\n\n[daemons.laptop]\nurl = http://127.0.0.1:7441\n')
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        config.unlink()
+        config.symlink_to(seed)
+        result = self.run_script('bin/set-fw-daemon', 'laptop', 'http://127.0.0.1:7441', success=False)
+        self.assertIn('links into the dotfiles checkout', result.stderr)
+        self.assertEqual(seed.read_text(), '[paths]\n')
+
     def test_invalid_fw_config_stops_integration_setup(self):
         self.tool('fw', '[ "$1" = config ] && exit 4\necho unexpected >> "$HOME/fw-calls"')
         result = self.run_script('bin/setup-fritzworks', success=False)
@@ -366,6 +406,7 @@ fi''')
         self.assertEqual((self.home / '.local/bin/xdg-open').resolve(),
                          self.repo / 'workstation/.scripts/url-open')
         self.assertIn('gitsign --system', (self.home / 'setup-calls').read_text())
+        self.assertEqual((self.home / 'sshd-calls').read_text(), 'sshd-keepalive\n' * 2)
         self.assertIn('urlOpener', (self.home / '.gitconfig').read_text())
         self.assertNotIn('enable', (self.home / 'services').read_text())
         self.assertFalse((self.home / '.ssh/config').exists())
