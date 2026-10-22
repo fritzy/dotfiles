@@ -47,6 +47,8 @@ One line per event, in this session's output:
 
 `MERGE READY | MERGED | ATTENTION REQUIRED <full pr or issue link> — <reason>`
 
+If a PR is approved, but the ci process `doc-approval` hasn't finished, it is not really approved.
+
 ATTENTION REQUIRED when an agent is blocked, waiting on doc reviews, asking you to merge because the gate isn't met, or facing a low (<0.5) confidence decision.
 
 Done when every issue is merged, closed, or flagged ATTENTION REQUIRED. Then send the user a final summary: merged PRs, open items, follow-up issues created.
@@ -55,7 +57,7 @@ Whenever you need the user attention, or a PR becomes ready, use the `fw_attenti
 
 ## Be proactive
 
-When you have a question you'd normally ask the user, spawn a research subagent. When you need a human doc-review, inform the right group on slack (usually #team-ixians for my team or #eng-ai-cicd when appropriate). When an fw child stalls, find a way to unblock it if reasonable.
+When you have a question you'd normally ask the user, spawn a research subagent. When you need a human doc-review (when the pr show ci for `doc-approval` running), inform the right group on slack (default #team-ixians, if gh shows `ai-cicd-team-write` as a requested reviewer, then #eng-ai-cicd). When an fw child stalls, find a way to unblock it if reasonable.
 
 A stalled child is one that hasn't had activity for 15 minutes. Check `fw_children` status, `fw_child_transcript`, `fw_child_terminal` and messages sent. Use one `loop` (self-paced) to check on all children. React to `fw_send` message as they arrive.
 
