@@ -26,7 +26,7 @@ After general bootstrap, run the appropriate work script:
 
 | Machine | Command | Additional setup |
 | --- | --- | --- |
-| Work laptop | `bash bootstrap-worklaptop.sh` | `ssh workstation`, local browser relay/socket, persistent SSH tunnel |
+| Work laptop | `bash bootstrap-worklaptop.sh` | `ssh workstation`, local browser relay/socket, persistent SSH tunnel, gitsign fork and credential cache |
 | Cloud workstation | `bash bootstrap-workstation.sh` | Remote browser commands, gitsign fork and credential cache |
 
 Both work scripts also install Linear and configure Sheets MCP when credentials
@@ -107,9 +107,11 @@ Protocol references: [gh browser selection](https://cli.github.com/manual/gh_hel
 
 ## Gitsign fork
 
-`bash bootstrap-workstation.sh` runs `bin/install-gitsign-fork --system`.
-Git, Go 1.21+ and sudo must be available. No existing fork checkout or manual build
-is needed.
+`bash bootstrap-workstation.sh` runs `bin/install-gitsign-fork --system`;
+`bash bootstrap-worklaptop.sh` runs `bin/install-gitsign-fork --user`, which needs
+no sudo and leaves `/usr/bin` alone. Git and Go 1.21+ must be available (plus sudo
+on the workstation); the laptop script checks for Go before changing anything. No
+existing fork checkout or manual build is needed.
 
 The installer clones the [fork](https://github.com/fritzy/gitsign) at commit
 `48435a8f7995eabe5d1f7dde9a74ae7905c985e1` and builds both binaries with Go 1.27.1
@@ -132,7 +134,8 @@ request fills the cache. A changed daemon binary or unit restarts the service.
 `--system` backs up and replaces `/usr/bin/gitsign` and installs the passthrough
 wrapper at `/usr/local/bin/gitsign`, covering old sessions and explicit signer
 paths. Rerunning workstation setup repairs those paths after a host update.
-For a user-only install, run `bash bin/install-gitsign-fork` without sudo.
+The laptop's `--user` install skips both; OIDC sign-in opens the laptop's own
+browser, so no URL opener is configured there.
 
 Override `GITSIGN_CHECKOUT`, `GITSIGN_REPOSITORY`, `GITSIGN_REVISION` (a full
 commit SHA), or `GITSIGN_TOOLCHAIN` to change the source/build inputs.

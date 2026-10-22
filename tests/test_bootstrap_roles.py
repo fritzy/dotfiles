@@ -40,6 +40,7 @@ class BootstrapRoleTests(unittest.TestCase):
                         CODEX_HOME=str(self.home / '.codex'), CLAUDE_CONFIG_DIR=str(self.home / '.claude'))
         self.tool('systemctl', 'printf "%s\\n" "$*" >> "$HOME/services"')
         self.tool('xdg-open', 'exit 0')
+        self.tool('go', 'exit 0')
         self.tool('gh', 'printf "%s\\n" "$*" >> "$HOME/gh-calls"')
         (self.bin / 'python3').symlink_to(sys.executable)
         (self.repo / 'bin/setup-work-tools').write_text('echo work-tools >> "$HOME/setup-calls"\n')
@@ -390,9 +391,27 @@ fi''')
         self.assertEqual(len(list(ssh.glob('config.backup.*'))), 1)
         self.assertEqual(next(ssh.glob('config.backup.*')).read_text(), original)
         self.assertIn('enable --now url-open.socket', (self.home / 'services').read_text())
-        self.assertNotIn('gitsign', (self.home / 'setup-calls').read_text())
+        self.assertEqual((self.home / 'setup-calls').read_text(), 'gitsign --user\nwork-tools\n' * 2)
         self.assertFalse((self.home / '.gitconfig').exists())
         self.assertFalse((self.home / '.local/bin/xdg-open').exists())
+
+    def test_laptop_without_go_fails_before_changing_anything(self):
+        (self.bin / 'go').unlink()
+        for name in ('dirname', 'ssh'):
+            (self.bin / name).symlink_to(shutil.which(name))
+        env = dict(self.env, PATH=str(self.bin))
+        result = subprocess.run([shutil.which('bash'), str(self.repo / 'bootstrap-worklaptop.sh')],
+                                env=env, capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Go 1.21+', result.stderr)
+        self.assertFalse((self.home / 'services').exists())
+        self.assertFalse((self.home / 'setup-calls').exists())
+
+    def test_signer_failure_stops_laptop_setup(self):
+        self.env['TEST_SIGNER_EXIT'] = '12'
+        result = self.run_script('bootstrap-worklaptop.sh', success=False)
+        self.assertEqual(result.returncode, 12)
+        self.assertEqual((self.home / 'setup-calls').read_text(), 'gitsign --user\n')
 
     def test_workstation_migrates_old_links_and_configures_signing(self):
         for relative in ('.scripts/url-open', '.config/shell/browser.sh'):
