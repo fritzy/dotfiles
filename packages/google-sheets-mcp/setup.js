@@ -1,5 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,9 +15,29 @@ function run(command, args, allowMissing = false) {
   return result.stdout;
 }
 
-function isManagedServer(server) {
-  return server?.args?.some(arg => typeof arg === 'string' &&
-    arg.endsWith('/packages/google-sheets-mcp/sheets.js'));
+function ensureAdapter() {
+  const packageDir = fileURLToPath(new URL('.', import.meta.url));
+  const lockText = readFileSync(join(packageDir, 'package-lock.json'), 'utf8');
+  const revision = createHash('sha256')
+    .update(readFileSync(join(packageDir, 'package.json'))).update(lockText).digest('hex');
+  const stamp = join(packageDir, 'node_modules/.dotfiles-dependencies');
+  const packages = Object.entries(JSON.parse(lockText).packages).filter(([path]) => path);
+  const complete = () => {
+    try {
+      return existsSync(join(packageDir, 'node_modules/mcp-remote/dist/proxy.js'))
+        && packages.every(([path, expected]) =>
+          JSON.parse(readFileSync(join(packageDir, path, 'package.json'), 'utf8')).version === expected.version);
+    } catch { return false; }
+  };
+  if (existsSync(stamp) && readFileSync(stamp, 'utf8') === revision && complete()) return;
+  const result = spawnSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    cwd: packageDir, stdio: 'inherit', timeout: 300000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`Installing the Sheets adapter failed: ${result.error?.message || result.status}`);
+  }
+  if (!complete()) throw new Error('Sheets adapter installation does not match package-lock.json.');
+  writeFileSync(stamp, revision);
 }
 
 try {
@@ -40,38 +61,42 @@ try {
     renameSync(temporary, credentialsPath);
   }
   const ready = existsSync(credentialsPath);
-  if (ready) {
-    normalizeCredentials(JSON.parse(readFileSync(credentialsPath, 'utf8')));
-    chmodSync(credentialsPath, 0o600);
-  }
-
   const launcher = fileURLToPath(new URL('sheets.js', import.meta.url));
   const server = { type: 'stdio', command: 'node', args: [launcher], env: {} };
+  const prepareRegistration = () => {
+    normalizeCredentials(JSON.parse(readFileSync(credentialsPath, 'utf8')));
+    ensureAdapter();
+  };
   if (run('claude', ['--version'], true) !== null) {
     const claudeDir = process.env.CLAUDE_CONFIG_DIR;
     const configPath = claudeDir ? join(claudeDir, 'claude.json') : join(homedir(), '.claude.json');
     const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
     const current = config.mcpServers?.sheets;
-    if (!ready) {
-      if (isManagedServer(current)) run('claude', ['mcp', 'remove', '--scope', 'user', 'sheets']);
+    if (current) {
+      if (current.args?.includes(launcher)) ensureAdapter();
+      console.log('Preserving existing Sheets MCP registration for Claude Code.');
+    } else if (!ready) {
       console.log('Sheets MCP setup deferred for Claude Code: OAuth client credentials missing.');
-    } else if (JSON.stringify(current) !== JSON.stringify(server)) {
-      if (current) run('claude', ['mcp', 'remove', '--scope', 'user', 'sheets']);
+    } else {
+      prepareRegistration();
       run('claude', ['mcp', 'add-json', '--scope', 'user', 'sheets', JSON.stringify(server)]);
+      console.log('Sheets MCP registered with Claude Code (user scope).');
     }
-    if (ready) console.log('Sheets MCP registered with Claude Code (user scope).');
   } else {
     console.log('Claude Code is not installed; rerun setup.sh after installing it.');
   }
   if (run('codex', ['--version'], true) !== null) {
-    if (ready) {
+    const servers = JSON.parse(run('codex', ['mcp', 'list', '--json']));
+    const current = servers.find(server => server.name === 'sheets');
+    if (current) {
+      if (current.transport?.args?.includes(launcher)) ensureAdapter();
+      console.log('Preserving existing Sheets MCP registration for Codex.');
+    } else if (ready) {
+      prepareRegistration();
       // Stdio registration never starts an OAuth login during bootstrap.
       run('codex', ['mcp', 'add', 'sheets', '--', 'node', launcher]);
       console.log('Sheets MCP registered with Codex.');
     } else {
-      const servers = JSON.parse(run('codex', ['mcp', 'list', '--json']));
-      const current = servers.find(server => server.name === 'sheets');
-      if (isManagedServer(current?.transport)) run('codex', ['mcp', 'remove', 'sheets']);
       console.log('Sheets MCP setup deferred for Codex: OAuth client credentials missing.');
     }
   } else {

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if command -v codex >/dev/null; then
+  codex --version
+  echo 'Codex already installed; preserving the existing installation and npm prefix.'
+  exit 0
+fi
+
 command -v node >/dev/null || { echo 'Codex setup requires Node.js.' >&2; exit 1; }
 command -v npm >/dev/null || { echo 'Codex setup requires npm.' >&2; exit 1; }
 

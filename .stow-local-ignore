@@ -7,3 +7,5 @@
 bootstrap.sh
 README.md
 .DS_STORE
+__pycache__
+.+\.py[co]

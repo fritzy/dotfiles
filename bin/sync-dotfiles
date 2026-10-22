@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGES = ('home', 'worklaptop', 'workstation')
+
+
+def ignored(path):
+    if path.parts[-3:] == ('.config', 'fritzworks', 'config.ini'):
+        return True
+    return path.name in ('.stow-local-ignore', '__pycache__', '.DS_Store', '.git', '.gitignore',
+                         '.claude', '.codex', 'README.md', 'bootstrap.sh') or path.name.endswith(('.pyc', '.pyo', '.tar.gz', '.tgz'))
+
+
+def remove(path):
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+class Changes:
+    def __init__(self):
+        self.undo = []
+
+    def backup(self, target):
+        saved = target.with_name(target.name + '.bak')
+        index = 1
+        while saved.exists() or saved.is_symlink():
+            saved = target.with_name(f'{target.name}.bak.{index}')
+            index += 1
+        target.rename(saved)
+        self.undo.append(lambda: saved.rename(target))
+        print(f'Backed up {target} to {saved}', flush=True)
+
+    def link(self, target, source):
+        desired = os.path.relpath(source, target.parent)
+        if target.is_symlink() and os.readlink(target) == desired:
+            return
+        if target.is_symlink():
+            previous = os.readlink(target)
+            target.unlink()
+            self.undo.append(lambda: target.symlink_to(previous))
+        target.symlink_to(desired)
+        self.undo.append(lambda: target.unlink())
+
+    def directory(self, target, home):
+        if target == home:
+            return
+        self.directory(target.parent, home)
+        if target.is_symlink():
+            source = target.resolve()
+            relative = target.relative_to(home)
+            if source not in [ROOT / package / relative for package in PACKAGES]:
+                raise RuntimeError(f'Preserving directory symlink outside the Stow packages: {target}')
+            # Copy the linked directory only, including ignored runtime/config files.
+            with tempfile.TemporaryDirectory(prefix='.dotfiles-unfold-', dir=target.parent) as temporary:
+                staged = Path(temporary) / 'directory'
+                if source.is_dir():
+                    shutil.copytree(source, staged, symlinks=True)
+                else:
+                    staged.mkdir()
+                self.backup(target)
+                staged.rename(target)
+                self.undo.append(lambda: remove(target))
+        elif not target.is_dir():
+            if target.exists():
+                self.backup(target)
+            target.mkdir()
+            self.undo.append(lambda: target.rmdir())
+
+    def rollback(self):
+        failures = []
+        for undo in reversed(self.undo):
+            try:
+                undo()
+            except OSError as error:
+                failures.append(str(error))
+        if failures:
+            raise RuntimeError('Rollback incomplete: ' + '; '.join(failures))
+
+
+def sync(package, home):
+    source_root = ROOT / package
+    home.mkdir(parents=True, exist_ok=True)
+    stow = shutil.which('stow')
+    if stow:
+        try:
+            result = subprocess.run([stow, '--version'], capture_output=True, timeout=10)
+            if result.returncode:
+                stow = None
+        except (OSError, subprocess.TimeoutExpired):
+            stow = None
+    if not stow:
+        print('Stow unavailable; creating compatible relative links.', flush=True)
+    changes = Changes()
+    try:
+        if package != 'home':
+            changes.directory(home / '.config/systemd/user', home)
+            for name in ('default.target.wants', 'sockets.target.wants', 'graphical-session.target.wants'):
+                target = home / '.config/systemd/user' / name
+                if target.exists() or target.is_symlink():
+                    changes.directory(target, home)
+        for directory, dirs, names in os.walk(source_root):
+            dirs[:] = [name for name in dirs if not ignored(Path(name))]
+            for name in names:
+                source = Path(directory) / name
+                if ignored(source):
+                    continue
+                relative = source.relative_to(source_root)
+                target = home / relative
+                changes.directory(target.parent, home)
+                managed = target.is_symlink() and target.resolve() in (source.resolve(), ROOT / 'home' / relative)
+                if (target.exists() or target.is_symlink()) and not managed:
+                    changes.backup(target)
+                changes.link(target, source)
+        # Stow validates ownership; all mutations above have rollback actions.
+        if stow:
+            subprocess.run([stow, '--dir', str(ROOT), '--target', str(home),
+                            '--no-folding', '--simulate', package], check=True)
+    except BaseException:
+        changes.rollback()
+        raise
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2 or sys.argv[1] not in PACKAGES:
+        sys.exit('Usage: sync-dotfiles home|worklaptop|workstation')
+    try:
+        sync(sys.argv[1], Path.home().resolve())
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        sys.exit(str(error))

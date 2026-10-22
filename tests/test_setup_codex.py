@@ -91,6 +91,25 @@ else:
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("Codex updates:", result.stdout)
 
+    def test_existing_codex_preserves_npm_and_does_not_install(self):
+        codex = self.bin / 'codex'
+        codex.write_text('#!/bin/sh\necho existing-codex\n')
+        codex.chmod(0o755)
+        (self.bin / 'node').unlink()
+        result = self.run_setup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('existing-codex', result.stdout)
+        self.assertEqual(json.loads(self.calls.read_text()), [])
+        self.assertFalse(self.prefix_file.exists())
+
+    def test_broken_existing_codex_is_not_automatically_replaced(self):
+        codex = self.bin / 'codex'
+        codex.write_text('#!/bin/sh\nexit 9\n')
+        codex.chmod(0o755)
+        result = self.run_setup()
+        self.assertEqual(result.returncode, 9)
+        self.assertEqual(json.loads(self.calls.read_text()), [])
+
 
 if __name__ == "__main__":
     unittest.main()
