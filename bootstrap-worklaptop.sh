@@ -7,6 +7,7 @@ export PATH="$HOME/.local/bin:$PATH"
 command -v python3 >/dev/null
 command -v ssh >/dev/null
 command -v xdg-open >/dev/null
+command -v go >/dev/null || { echo 'Gitsign setup requires Go 1.21+.' >&2; exit 1; }
 systemctl --user show-environment >/dev/null
 
 python3 "$root/bin/sync-dotfiles" worklaptop
@@ -51,5 +52,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now url-open.socket
 systemctl --user enable workstation-tunnel.service
 systemctl --user restart workstation-tunnel.service
+# User-only: no sudo, no /usr/bin replacement; signing opens the local browser.
+bash "$root/bin/install-gitsign-fork" --user
 bash "$root/bin/setup-work-tools"
 echo 'Work laptop configured; workstation-tunnel.service connects in the background.'
