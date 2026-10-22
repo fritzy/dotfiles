@@ -15,6 +15,10 @@ Orchestration tools act as the calling session (its terminal's `FRITZWORKS_ID`).
 
 Use `fw_sync` to discover session Markdown and its current-branch PR on demand; never poll.
 
+Use `fw_broadcast` to send one message to every running session and location (never you or Scheduled Task sessions). It runs as a job, one recipient every `delay` seconds (default 0.75); `paused: true` also starts paused sessions' agents and messages them. Check results with `fw_job`.
+
+Use `fw_attention` (CLI `fw attention [reason]`) when the user should look at your session but no prompt is blocking you: long work finished, or a decision is needed. Its sidebar icon reads like a waiting agent, `reason` as the tooltip, until the user focuses its AI panel. `fw_attention_clear` withdraws it.
+
 Use `fw_review` (CLI `fw review <org/repo#N|url> [--scratch]`) to start a PR review session; its agent runs the configured `prReviewSkill` on the PR. On `review_exists`, open the returned workstream instead.
 
 Use `fw_incoming` (CLI `fw incoming [<id>]`) to read the daemon's Incoming Work queries: with no `query` it lists them; with `query` it returns items, cached for 60s (`refresh: true` bypasses). A failed query returns `error` and no items. To start work from an item, pass the same `daemon` and:
