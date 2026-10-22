@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Reap SSH sessions orphaned by laptop sleep or network changes within ~90s.
+# A stale session keeps the tunnel's TCP RemoteForward bound, and with
+# ExitOnForwardFailure the reconnecting tunnel stays down until it dies.
+set -euo pipefail
+dropin=/etc/ssh/sshd_config.d/fritzworks-tunnel.conf
+setting='ClientAliveInterval 30'
+
+command -v sudo >/dev/null || { echo 'Configuring sshd requires sudo.' >&2; exit 1; }
+if [[ $(cat "$dropin" 2>/dev/null) != "$setting" ]]; then
+  echo "Installing $dropin..."
+  sudo mkdir -p "$(dirname "$dropin")"
+  printf '%s\n' "$setting" | sudo tee "$dropin" >/dev/null
+  if ! sudo sshd -t; then
+    sudo rm -f -- "$dropin"
+    echo "sshd rejected $dropin; removed it." >&2
+    exit 1
+  fi
+  # Socket-activated sshd has no running service; new connections read the file.
+  for unit in ssh.service sshd.service; do
+    if systemctl is-active --quiet "$unit"; then
+      sudo systemctl reload "$unit"
+      break
+    fi
+  done
+fi
+# Key case in sshd -T output varies by build.
+if ! sudo sshd -T 2>/dev/null | grep -qix 'clientaliveinterval 30'; then
+  echo "Warning: sshd ignores $dropin; check its Include line and earlier drop-ins." >&2
+fi

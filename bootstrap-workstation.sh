@@ -6,6 +6,9 @@ export PATH="$HOME/.local/bin:$PATH"
 [[ $# -eq 0 ]] || { echo 'Usage: bootstrap-workstation.sh' >&2; exit 2; }
 [[ $(uname) == Linux ]] || { echo 'Cloud workstation setup requires Linux.' >&2; exit 1; }
 python3 "$root/bin/sync-dotfiles" workstation
+# Reached through the laptop tunnel's RemoteForward.
+python3 "$root/bin/set-fw-daemon" laptop http://127.0.0.1:7441
+bash "$root/bin/setup-sshd-keepalive"
 if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
   systemctl --user disable --now workstation-tunnel.service url-open.socket url-open.service url-open-reader.service 2>/dev/null || true
 fi
