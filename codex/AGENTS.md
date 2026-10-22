@@ -13,3 +13,7 @@
 ## Workstream notes
 - When working within a workstream, keep relevant plan and research
   Markdown documents current in that workstream’s notes.
+
+## Temporary files
+- Put scratch files, clones, worktrees, and logs under `$TMPDIR` (`mktemp -d`), never a literal `/tmp`. `/tmp` may be RAM-backed.
+- Remove scratch you created when done; clones and worktrees are large.
