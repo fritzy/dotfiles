@@ -2,7 +2,9 @@
 
 # Purpose: Install and bootstrap dotfiles, neovim, and supporting tools.
 #
-# Due to the usage of "stow", we assume that the path is $HOME/dotfiles.
+# Shared setup; work roles have separate bootstrap scripts.
+
+set -e
 
 machine_os=$(uname)
 machine_arch=$(uname -m)
@@ -12,11 +14,12 @@ nvim_bin=$HOME/.local/bin/nvim
 eget_bin=$HOME/.local/bin/eget
 
 # Packages to install via the system package manager
-packages=(stow fzf zsh-autosuggestions nc zellij)
+packages=(python3 stow fzf zsh-autosuggestions nc zellij)
 
 # Maps "command:package_manager" -> actual package name, for commands whose
 # package name differs from the command itself.
 declare -A pkg_names=(
+  [python3:brew]="python"
   [nc:brew]="netcat"
   [nc:apt-get]="netcat-openbsd"
   [nc:pacman]="openbsd-netcat"
@@ -239,56 +242,8 @@ if (( ${#to_install[@]} > 0 )); then
   done
 fi
 
-have_stow=$(command -v stow >/dev/null 2>&1 && echo true || echo false)
-if [[ $have_stow = true ]]; then
-  echo
-  echo "Syncing home config..."
-  # Back up any real files that would block stow (e.g. pre-existing terminfo entries)
-  while IFS= read -r conflict; do
-    rel="${conflict#* existing target }"
-    rel="${rel%% *}"   # keep only the path (stop at first space)
-    target="$HOME/$rel"
-    if [[ -e "$target" && ! -L "$target" ]]; then
-      echo "Backing up conflicting file: $target -> $target.bak"
-      mv "$target" "$target.bak"
-    fi
-  done < <(stow -n -v --no-folding -t ~ home 2>&1 | grep "existing target")
-  # --no-folding: always create real directories and symlink individual files,
-  # rather than symlinking a whole directory when the target doesn't exist yet.
-  # Otherwise apps that write runtime state into a stowed directory (e.g.
-  # ~/.claude) end up writing straight into this git repo.
-  stow -v --no-folding -t ~ home
-else
-  # A workstation can lose its system packages while retaining $HOME. Restore
-  # the login-shell chain even when stow itself is temporarily unavailable;
-  # otherwise `fw hooks install` would create a hook-only .zshrc and hide the
-  # actual prompt configuration in this repo.
-  echo "stow not available. Linking persistent shell config directly..."
-  for rel in .bash_profile .bashrc .zprofile .zshrc .zshenv; do
-    source_file="$dotfiles_root/home/$rel"
-    target="$HOME/$rel"
-    if [[ -L "$target" && $(readlink -f "$target") == "$source_file" ]]; then
-      continue
-    fi
-    if [[ -e "$target" || -L "$target" ]]; then
-      backup="$target.bak"
-      backup_index=1
-      while [[ -e "$backup" || -L "$backup" ]]; do
-        backup="$target.bak.$backup_index"
-        ((backup_index++))
-      done
-      echo "Backing up conflicting file: $target -> $backup"
-      mv "$target" "$backup"
-    fi
-    ln -s "$source_file" "$target"
-  done
-  echo "stow not available. Forcing replacement of $nvim_config ..."
-  rm -rf $nvim_config
-  cp -R ./home/.config/nvim/* $nvim_config/
-fi
-
-if ! bash "$dotfiles_root/workstation.sh" --auto; then
-  echo "Workstation setup failed. Run bash workstation.sh to retry." >&2
+if ! python3 "$dotfiles_root/bin/sync-dotfiles" home; then
+  echo "Dotfile setup failed; fix the error above and rerun bootstrap.sh." >&2
   exit 1
 fi
 
@@ -306,55 +261,49 @@ sync_ai_file() {
   install -m "$mode" "$source_file" "$target_file"
 }
 
-sync_ai_skills() {
-  local source_root=$1
-  local target_root=$2
-  local source_skill skill_name target_skill
-
-  [[ -d $source_root ]] || return 0
-  [[ -L $target_root ]] && unlink "$target_root"
-  mkdir -p "$target_root"
-
-  for source_skill in "$source_root"/*; do
-    [[ -d $source_skill ]] || continue
-    skill_name=${source_skill##*/}
-    [[ -n $skill_name && $skill_name != .* ]] || continue
-    target_skill="$target_root/$skill_name"
-    rm -rf "$target_skill"
-    cp -R "$source_skill" "$target_skill"
-  done
+seed_config_file() {
+  if [[ -L $2 && ! -e $2 ]]; then
+    echo "Broken configuration link: $2; restore its target before rerunning bootstrap." >&2
+    return 1
+  fi
+  [[ ! -e $2 && ! -L $2 ]] || return 0
+  sync_ai_file "$@"
 }
 
 echo
 echo "Syncing Claude and Codex config..."
 codex_dir=${CODEX_HOME:-$HOME/.codex}
-sync_ai_file "$dotfiles_root/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" 644
-sync_ai_file "$dotfiles_root/claude/settings.json" "$HOME/.claude/settings.json" 600
-sync_ai_file "$dotfiles_root/claude/plugins/known_marketplaces.json" "$HOME/.claude/plugins/known_marketplaces.json" 600
+claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+sync_ai_file "$dotfiles_root/claude/CLAUDE.md" "$claude_dir/CLAUDE.md" 644
+seed_config_file "$dotfiles_root/claude/settings.json" "$claude_dir/settings.json" 600
+seed_config_file "$dotfiles_root/claude/plugins/known_marketplaces.json" "$claude_dir/plugins/known_marketplaces.json" 600
 sync_ai_file "$dotfiles_root/codex/AGENTS.md" "$codex_dir/AGENTS.md" 644
-if [[ ! -e $codex_dir/config.toml && ! -L $codex_dir/config.toml ]]; then
-  sync_ai_file "$dotfiles_root/codex/config.toml" "$codex_dir/config.toml" 600
-fi
-sync_ai_skills "$dotfiles_root/claude/skills" "$HOME/.claude/skills"
-sync_ai_skills "$dotfiles_root/codex/skills" "$codex_dir/skills"
+seed_config_file "$dotfiles_root/codex/config.toml" "$codex_dir/config.toml" 600
+python3 "$dotfiles_root/bin/sync-ai-skills" "$dotfiles_root/claude/skills" "$claude_dir/skills"
+python3 "$dotfiles_root/bin/sync-ai-skills" "$dotfiles_root/codex/skills" "$codex_dir/skills"
+seed_config_file "$dotfiles_root/home/.config/fritzworks/config.ini" "${XDG_CONFIG_HOME:-$HOME/.config}/fritzworks/config.ini" 600
 
 if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
   if ! bash "$dotfiles_root/bin/setup-codex"; then
     echo "Codex setup failed; fix the error above and rerun bin/setup-codex." >&2
     exit 1
   fi
-  export PATH="$(npm config get prefix)/bin:$PATH"
-  echo "Setting up Google Sheets MCP for Claude Code and Codex..."
-  bash "$dotfiles_root/packages/google-sheets-mcp/setup.sh" \
-    || echo "Warning: Sheets MCP setup failed; rerun packages/google-sheets-mcp/setup.sh." >&2
+  if ! command -v codex >/dev/null 2>&1; then
+    export PATH="$(npm config get prefix)/bin:$PATH"
+  fi
 else
-  echo "Skipping Codex and Sheets MCP: install Node.js and npm, then rerun bootstrap."
+  echo "Skipping Codex: install Node.js and npm, then rerun bootstrap."
 fi
 
 # FritzWorks owns its installation and integration lifecycle.
 echo
-echo "Installing or upgrading FritzWorks..."
-if ! bash "$dotfiles_root/bin/install-fritzworks" --desktop; then
+if command -v fw >/dev/null 2>&1; then
+  if ! fw --version >/dev/null 2>&1; then
+    echo "Existing FritzWorks command failed; repair it explicitly with bin/install-fritzworks --desktop." >&2
+    exit 1
+  fi
+  python3 "$dotfiles_root/bin/setup-fritzworks"
+elif ! bash "$dotfiles_root/bin/install-fritzworks" --desktop; then
   echo "FritzWorks installation failed; fix the error above and rerun bin/install-fritzworks --desktop." >&2
   exit 1
 fi
@@ -379,24 +328,6 @@ if ! command -v starship &> /dev/null && [[ ! -f $HOME/.local/bin/starship ]]; t
     starship_libc="gnu"
   fi
   $eget_bin starship/starship --to $HOME/.local/bin --asset "${machine_arch}-unknown-linux-${starship_libc}"
-fi
-
-# Install linear CLI (schpet/linear-cli; used by the `linear` skill)
-if ! command -v linear &> /dev/null && [[ ! -f $HOME/.local/bin/linear ]]; then
-  echo
-  echo "Installing linear CLI..."
-  if [[ $machine_arch == "arm64" ]]; then
-    linear_arch="aarch64"
-  else
-    linear_arch="x86_64"
-  fi
-  if [[ $machine_os == "macos" ]]; then
-    linear_triple="${linear_arch}-apple-darwin"
-  else
-    linear_triple="${linear_arch}-unknown-linux-gnu"
-  fi
-  $eget_bin schpet/linear-cli --to $HOME/.local/bin \
-    --asset "linear-${linear_triple}.tar.xz" --file linear
 fi
 
 have_sufficient_system_nvim() {

@@ -1,7 +1,6 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -143,31 +142,6 @@ if 'show-environment' in args and os.environ.get('TEST_NO_BUS'):
         self.assertIn('start it in a user session', result.stdout)
         self.assertTrue((self.home / '.config/systemd/user/gitsign-credential-cache.service').is_file())
         self.assertFalse(any('enable' in c for c in self.commands()))
-
-    def test_workstation_remote_installs_fork_without_existing_checkout(self):
-        root = self.home / 'dotfiles'
-        root.mkdir()
-        shutil.copyfile(ROOT / 'workstation.sh', root / 'workstation.sh')
-        (root / 'bin').mkdir()
-        (root / 'bin/install-gitsign-fork').write_text(
-            '#!/bin/sh\nprintf "%s\\n" "$1" > "$HOME/installer-mode"\nexit 12\n')
-        result = subprocess.run(['bash', str(root / 'workstation.sh'), '--remote'],
-                                env=self.env, capture_output=True, text=True, timeout=10)
-        self.assertEqual((self.home / 'installer-mode').read_text(), '--system\n')
-        self.assertEqual(result.returncode, 12, result.stderr)
-
-    def test_workstation_local_only_configures_relay_and_tunnel(self):
-        root = self.home / 'dotfiles'
-        root.mkdir()
-        shutil.copyfile(ROOT / 'workstation.sh', root / 'workstation.sh')
-        self.write_tool('xdg-open', 'sys.exit(0)\n')
-        result = subprocess.run(['bash', str(root / 'workstation.sh'), '--local'],
-                                env=self.env, capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.checkout.exists())
-        self.assertFalse((self.home / '.gitconfig').exists())
-        self.assertIn(['systemctl', '--user', 'restart', 'workstation-tunnel.service'], self.commands())
-        self.assertIn('Include ~/.ssh/config.d/workstation', (self.home / '.ssh/config').read_text())
 
 
 if __name__ == '__main__':

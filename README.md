@@ -12,24 +12,50 @@ This is a [stow](https://www.gnu.org/software/stow/) based dotfiles repo with bo
 - Uses a guarded interactive Bash-to-Zsh handoff, so a persistent home can keep
   Zsh as the user shell when an ephemeral host resets its passwd entry to Bash
 - Syncs dotfiles with `stow` (primarily `~/.config/nvim/...`)
-- Copies allowlisted Claude and Codex settings, global instructions (`CLAUDE.md` / `AGENTS.md`), and skills without linking their runtime directories into this repo
-- Links the shell startup files directly when `stow` is temporarily unavailable
+- Seeds missing Claude/Codex settings, updates repository-managed skills with backups, and syncs global instructions (`CLAUDE.md` / `AGENTS.md`)
+- Uses relative fallback links when `stow` is temporarily unavailable; later Stow runs accept them
 - Bootstraps NeoVim Lazy plugins
 
-## Workstation configuration
+## Bootstrap entry points
 
-Update dotfiles and run `bash bootstrap.sh` on both the laptop and workstation.
-Bootstrap delegates work-specific setup to `workstation.sh --auto`: Chainguard
-hosts get the gitsign fork, credential cache, and remote browser commands; a
-laptop with the `workstation` SSH alias gets the local relay and SSH tunnel.
-Other hosts skip workstation configuration.
-On a fresh Linux laptop, run `bash workstation.sh --local` once to opt in.
-Run `bash workstation.sh --remote` to install just the remote components.
+Run `bash bootstrap.sh` on every machine, including non-work machines. It installs
+shared shell/editor tools, syncs the `home` Stow package, and sets up Claude/Codex
+and FritzWorks. It does not select a work role from the OS or SSH configuration.
+
+After general bootstrap, run the appropriate work script:
+
+| Machine | Command | Additional setup |
+| --- | --- | --- |
+| Work laptop | `bash bootstrap-worklaptop.sh` | `ssh workstation`, local browser relay/socket, persistent SSH tunnel |
+| Cloud workstation | `bash bootstrap-workstation.sh` | Remote browser commands, gitsign fork and credential cache |
+
+Both work scripts also install Linear and configure Sheets MCP when credentials
+are available. They assume general bootstrap has already run and do not invoke it.
+Run shared setup first, then exactly one role. Both sequences are additive:
+rerunning shared setup preserves the selected role's files.
+Rerun the relevant scripts after pulling changes. Existing MCP registrations,
+client settings, unrelated skills, and FritzWorks configuration are preserved.
+Bootstrap does not start OAuth login, clear tokens, or upgrade an existing
+Codex/FritzWorks installation. Repository-managed skills and global instructions
+sync from this repo; FritzWorks refreshes its hooks and adds missing MCP registrations.
+
+The `home`, `worklaptop`, and `workstation` directories are separate Stow packages.
+`bin/sync-dotfiles` migrates old absolute links, unfolds managed directory links,
+and backs up conflicting files as `.bak`, `.bak.1`, etc. It installs relative file
+links and validates their ownership with Stow when available. Failed syncs roll
+back their changes. Unfolding copies only the linked directory, preserving its
+ignored configuration and runtime files without importing other machine roles.
+Python 3 is required and installed by general bootstrap. Generated
+Python bytecode is ignored by both Git and Stow. The old `workstation.sh --local`
+and `--remote` commands forward to the new scripts; automatic role detection is
+removed.
+
+## Workstation browser relay
 
 The laptop needs Python 3, OpenSSH, `xdg-open`, a graphical session with user
 systemd, and authenticated gcloud. The checked-in SSH configuration targets
 `nathan-fritz-work-v2` in `chainguard-workstations/us-central1-a`; edit
-`home/.scripts/workstation-ssh-proxy` and `home/.ssh/config.d/workstation` to
+`worklaptop/.scripts/workstation-ssh-proxy` and `worklaptop/.ssh/config.d/workstation` to
 change the destination. Setup migrates the two workstation SSH aliases into
 that managed include, backs up existing files, and preserves other SSH hosts.
 The existing FritzWorks forward at `127.1.1.2:7337` is retained.
@@ -74,9 +100,9 @@ Protocol references: [gh browser selection](https://cli.github.com/manual/gh_hel
 
 ## Gitsign fork
 
-`bash bootstrap.sh` on a Chainguard workstation, or `bash workstation.sh --remote`
-explicitly, runs `bin/install-gitsign-fork --system`. Git, Go 1.21+ and sudo must
-be available. No existing fork checkout or manual build is needed.
+`bash bootstrap-workstation.sh` runs `bin/install-gitsign-fork --system`.
+Git, Go 1.21+ and sudo must be available. No existing fork checkout or manual build
+is needed.
 
 The installer clones the [fork](https://github.com/fritzy/gitsign) at commit
 `48435a8f7995eabe5d1f7dde9a74ae7905c985e1` and builds both binaries with Go 1.27.1
@@ -116,20 +142,26 @@ Installer and wrapper tests: `python3 -m unittest discover -s tests -p 'test_git
 
 ## Codex and npm
 
-Bootstrap installs Codex before registering MCP servers. If npm's global install
-directories are not writable, it sets the user npm prefix to `~/.local` and
-installs Codex there. Existing writable prefixes, including active Node version
-manager installations, are preserved. Bash and Zsh put `~/.local/bin` ahead of
+General bootstrap installs Codex only when it is missing from PATH. An existing
+command is checked with `--version`; its npm prefix is left unchanged. For a new
+installation, if npm's global directories are not writable, setup sets the user
+npm prefix to `~/.local` and installs Codex there. Existing writable prefixes,
+including active Node version managers, are preserved. Bash and Zsh put `~/.local/bin` ahead of
 system executables. Node.js and npm must already be installed.
 
-Run `bash bin/setup-codex` to repair just the npm/Codex installation, then open a
-new shell. Updates use `npm install --global @openai/codex@latest` without sudo.
+Run `bash bin/setup-codex` to install a missing Codex command, then open a new
+shell. An existing command that fails `--version` is reported for manual repair.
+Updates use `npm install --global @openai/codex@latest` without sudo.
 The system copy remains installed. This follows
 [npm's user-prefix setup](https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally/).
 
-Bootstrap preserves an existing `$CODEX_HOME/config.toml` (default `~/.codex`);
-an optional `codex/config.toml` seed is used only on first setup. Keep that seed
-free of credentials and machine-specific MCP paths. FritzWorks and Sheets setup
+Bootstrap seeds settings only when absent: `$CODEX_HOME/config.toml` (default
+`~/.codex`), Claude's `settings.json`, and its plugin marketplace registry
+(`CLAUDE_CONFIG_DIR` is honored). Repository-managed skills are refreshed when their
+contents change; previous copies are saved under each client's `skill-backups`
+directory. Unrelated skills stay intact. Symlinked skill roots are materialized
+before updating them, and unchanged skills are not rewritten.
+Keep repository seeds free of credentials and machine-specific MCP paths. FritzWorks and Sheets setup
 generate their own local paths. Bootstrap does not copy auth files, keyrings,
 OAuth tokens, or credentials from another machine.
 
@@ -164,11 +196,18 @@ Claude login also requires `ssh -t`. Restart existing agent sessions after login
 
 ## FritzWorks
 
-Bootstrap installs or upgrades [FritzWorks](https://github.com/chainguard-sandbox/fritzworks)
-in `~/fritzworks` using `bin/install-fritzworks`. The repository currently requires
-GitHub access; the default clone uses SSH. Node.js and npm must already be installed.
-The installer runs `npm ci` and package setup, preserving configuration and local
-checkout edits. It never restarts the daemon automatically.
+Bootstrap installs [FritzWorks](https://github.com/chainguard-sandbox/fritzworks)
+only when `fw` is missing. Existing installations keep their checkout and
+dependencies. `bin/setup-fritzworks` validates the configuration, refreshes
+FritzWorks hooks, and registers MCP only for clients without an existing `fw`
+entry. Custom registrations are preserved. Its config file is seeded only when
+absent, using explicit paths, rather than replaced by Stow. Invalid configuration
+or a broken configuration symlink stops setup.
+
+For an intentional upgrade or repair, run `bash bin/install-fritzworks --desktop`.
+That command updates `~/fritzworks` and runs `npm ci` and package setup. It requires
+GitHub SSH access, Node.js, and npm, preserves local checkout edits, and never
+restarts the daemon automatically.
 
 Override `FRITZWORKS_CHECKOUT`, `FRITZWORKS_REPOSITORY`, or `FRITZWORKS_BRANCH` to use
 another directory, clone URL, or branch. `packages/fritzworks` remains a compatibility
@@ -177,12 +216,16 @@ status, or `fw doctor --fix` to repair the installation.
 
 ## Google Sheets MCP
 
-Bootstrap installs a pinned `mcp-remote` adapter and registers `sheets` with both
+The work bootstraps install a pinned `mcp-remote` adapter and register `sheets` with both
 Claude Code (user scope) and Codex when a local OAuth client file is present.
-Without that file, setup defers registration and removes stale registrations
-pointing to this package, preserving independently configured servers. Both
-clients use the same private OAuth credentials and token cache on that machine.
-Registration does not open a browser or start sign-in.
+Dependency setup reruns `npm ci` when the package manifest or lockfile changes,
+or an installed package is missing or has the wrong version.
+Existing `sheets` registrations are always preserved, including custom commands,
+environment variables, and disabled servers. Without credentials, missing
+registrations are deferred; existing entries are never removed. The adapter is
+installed only if needed and absent. Both clients use the same private OAuth
+credentials and token cache on that machine. Setup does not start sign-in or
+rewrite existing credentials unless `--credentials` is supplied explicitly.
 
 1. In your Google Cloud project, enable the Sheets API and Sheets MCP API and
    configure the OAuth consent screen. The server currently requires Workspace
@@ -196,9 +239,12 @@ Registration does not open a browser or start sign-in.
    metadata; listing MCP tools alone does not verify authentication. Restart
    Claude Code and Codex to load the server.
 
-Requires Node.js 20.18.1+ and npm. Run setup again after installing either CLI or
-moving the checkout. It updates only the `sheets` registration and preserves
-other MCP servers. Bootstrap runs the same setup after copying client settings.
+Requires Node.js 20.18.1+ and npm. Run setup again after installing either CLI to
+add a missing `sheets` registration. To repair an old registration after moving
+the checkout, remove that entry explicitly in the affected client, then rerun
+setup. Adapter upgrades are explicit: run `npm ci --ignore-scripts --no-audit
+--no-fund` in `packages/google-sheets-mcp`. Both work bootstraps run setup after
+general bootstrap.
 
 Credentials live in `~/.config/google-sheets-mcp/oauth-client.json` (mode `600`);
 tokens live in `~/.local/state/google-sheets-mcp/` (mode `700`). The corresponding

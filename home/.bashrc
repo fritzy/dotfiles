@@ -1,5 +1,6 @@
 export PATH="$HOME/.local/bin:$PATH"
 [ ! -r "$HOME/.config/shell/browser.sh" ] || . "$HOME/.config/shell/browser.sh"
+[ ! -r "$HOME/.config/shell/tmpdir.sh" ] || . "$HOME/.config/shell/tmpdir.sh"
 
 # Keep the persistent home directory authoritative on hosts whose passwd entry
 # is rebuilt with /bin/bash. Restrict the handoff to interactive shells so

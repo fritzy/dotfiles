@@ -20,3 +20,7 @@ codex/*
 !codex/AGENTS.md
 !codex/config.toml
 !codex/skills/
+
+# Python runtime artifacts.
+__pycache__/
+*.py[cod]

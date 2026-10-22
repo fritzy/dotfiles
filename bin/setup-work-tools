@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+export PATH="$HOME/.local/bin:$PATH"
+machine_os=$(uname)
+machine_arch=$(uname -m)
+[[ $machine_os != Darwin ]] || machine_os=macos
+[[ $machine_arch != aarch64 ]] || machine_arch=arm64
+eget_bin="$HOME/.local/bin/eget"
+if command -v eget >/dev/null; then eget_bin=$(command -v eget); fi
+
+# Install linear CLI (schpet/linear-cli; used by the `linear` skill)
+if ! command -v linear &> /dev/null && [[ ! -f $HOME/.local/bin/linear ]]; then
+  echo
+  [[ -x $eget_bin ]] || { echo 'Run bootstrap.sh first to install eget.' >&2; exit 1; }
+  echo "Installing linear CLI..."
+  if [[ $machine_arch == "arm64" ]]; then
+    linear_arch="aarch64"
+  else
+    linear_arch="x86_64"
+  fi
+  if [[ $machine_os == "macos" ]]; then
+    linear_triple="${linear_arch}-apple-darwin"
+  else
+    linear_triple="${linear_arch}-unknown-linux-gnu"
+  fi
+  "$eget_bin" schpet/linear-cli --to "$HOME/.local/bin" \
+    --asset "linear-${linear_triple}.tar.xz" --file linear
+fi
+
+if command -v node >/dev/null && command -v npm >/dev/null; then
+  echo 'Setting up Google Sheets MCP...'
+  bash "$root/packages/google-sheets-mcp/setup.sh"
+else
+  echo 'Skipping Sheets MCP: install Node.js and npm, then rerun this work bootstrap.'
+fi

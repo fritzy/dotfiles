@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-loader = importlib.machinery.SourceFileLoader('relay', str(ROOT / 'home/.scripts/url-dispatch'))
+loader = importlib.machinery.SourceFileLoader('relay', str(ROOT / 'worklaptop/.scripts/url-dispatch'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 relay = importlib.util.module_from_spec(spec)
 loader.exec_module(relay)
@@ -84,7 +84,7 @@ class RelayTests(unittest.TestCase):
                 self.assertFalse(thread.is_alive())
 
     def test_client_rejects_invalid_urls(self):
-        result = subprocess.run([str(ROOT / 'home/.scripts/url-open'), 'file:///tmp/test'],
+        result = subprocess.run([str(ROOT / 'workstation/.scripts/url-open'), 'file:///tmp/test'],
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('expected an HTTP(S) URL', result.stderr)
