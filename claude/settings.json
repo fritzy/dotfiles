@@ -6,6 +6,7 @@
     }
   },
   "theme": "dark",
+  "enableAllProjectMcpServers": true,
   "hooks": {
     "SessionStart": [
       {
