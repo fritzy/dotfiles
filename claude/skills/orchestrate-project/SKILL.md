@@ -7,7 +7,7 @@ description: "Orchestrate a Linear project through child fw sessions: read the p
 
 Input: a Linear project name, or a Linear URL to a project or to an issue inside one. Resolve it with the `linear` skill. An issue URL means its whole project. If a name matches several projects, list the candidates and ask.
 
-You are in an `fw` session, designated as an orchestrator of other sessions. Your job is to plan work and spawn child `fw` sessions for each PR. You message them with `fw_send` and you can view their transcripts.
+You are in an `fw` session, designated as an orchestrator of other sessions. Your job is to plan work (through research subagents) and spawn child `fw` sessions for each PR. You message them with `fw_send` and you can view their transcripts. You keep things moving forward.
 
 ## Plan
 
@@ -28,6 +28,7 @@ Some projects may be active with other users. In those cases, you will need to o
 - Model: `fw_child_create` has no model parameter, so children run the daemon's configured Claude model (`FRITZWORKS_CLAUDE_MODEL`). Fable is expected. Check `fw_config`, record the model in the plan, and say so before spawning if it isn't Fable.
 - Spawn in waves by dependency order: only issues whose prerequisites are merged, or stacked on them with the fw stack tools (`fw_stack_set`, `fw_stack_link`, `fw_stack_rebase`). Merge prerequisites first; rebase dependents after.
 - At most 4 children active at once; queue the rest in the plan.
+- Remind children to not spin out if taking significant amounts of time. To change their approach or ask you for help.
 
 ## Linear
 
@@ -37,7 +38,7 @@ Some projects may be active with other users. In those cases, you will need to o
 
 ## PRs
 
-- Children get an adversarial review from an Opus subagent before the first push, act on the findings they judge useful, push, then invoke `pr-iterate` until the PR is mergeable. A material change to the approach earns one more review cycle (two max). `pr-iterate` never merges; merging is a separate final step.
+- Children get an optional adversarial review from an Opus subagent before the first push, act on the findings they judge useful, push, then invoke `pr-iterate` until the PR is mergeable. A material change to the approach earns one more review cycle (two max). `pr-iterate` never merges; merging is a separate final step.
 - Research subagents: Opus for most research, Fable for deep architectural research, Sonnet or Haiku for basic PR/Slack/Linear scanning. Each writes a Markdown document in the session notes directory and returns its path; the agent that spawned it associates the file with `fw_resource_add`.
 - Merge-ready reports and the self-merge gate are defined in `child-seed.md`. Keep that file the single source.
 
@@ -60,6 +61,8 @@ Whenever you need the user attention, or a PR becomes ready, use the `fw_attenti
 When you have a question you'd normally ask the user, spawn a research subagent. When you need a human doc-review (when the pr show ci for `doc-approval` running), inform the right group on slack (default #team-ixians, if gh shows `ai-cicd-team-write` as a requested reviewer, then #eng-ai-cicd). When an fw child stalls, find a way to unblock it if reasonable.
 
 A stalled child is one that hasn't had activity for 15 minutes. Check `fw_children` status, `fw_child_transcript`, `fw_child_terminal` and messages sent. Use one `loop` (self-paced) to check on all children. React to `fw_send` message as they arrive.
+
+Keep the loop prompt terse and minimal -- the agent will have enough context to check on the children.
 
 End the loop when all children a done, merge ready, blocked, or the user says they are done for the day.
 
