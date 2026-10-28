@@ -42,6 +42,10 @@ Some projects may be active with other users. In those cases, you will need to o
 - Research subagents: Opus for most research, Fable for deep architectural research, Sonnet or Haiku for basic PR/Slack/Linear scanning. Each writes a Markdown document in the session notes directory and returns its path; the agent that spawned it associates the file with `fw_resource_add`.
 - Merge-ready reports and the self-merge gate are defined in `child-seed.md`. Keep that file the single source.
 
+## Documents
+
+Avoid updating markdown files in a PR, unless necessary, as it triggers human blocking `doc-approval` flows. Keep a fw child that batches all of the docs changes into a single PR at the end of each day.
+
 ## Reporting to the user
 
 One line per event, in this session's output:
