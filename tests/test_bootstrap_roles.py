@@ -66,7 +66,7 @@ class BootstrapRoleTests(unittest.TestCase):
     def test_general_package_does_not_install_work_roles(self):
         self.run_script('bin/sync-dotfiles', 'home')
         self.assertTrue((self.home / '.bashrc').is_symlink())
-        for name in ('.ssh', '.config/systemd', '.config/shell/browser.sh', '.scripts/url-open'):
+        for name in ('.ssh', '.config/systemd', '.config/shell/browser.sh', '.config/shell/timezone.sh', '.scripts/url-open'):
             self.assertFalse((self.home / name).exists(), name)
         self.assertFalse((self.home / '.gitconfig').exists())
 
@@ -95,9 +95,11 @@ class BootstrapRoleTests(unittest.TestCase):
                         self.assertTrue((case.home / '.config/systemd/user/url-open.socket').is_file())
                         self.assertFalse((case.home / '.local/bin/xdg-open').exists())
                         self.assertFalse((case.home / '.config/shell/browser.sh').exists())
+                        self.assertFalse((case.home / '.config/shell/timezone.sh').exists())
                     else:
                         self.assertTrue((case.home / '.local/bin/xdg-open').is_file())
                         self.assertTrue((case.home / '.config/shell/browser.sh').is_file())
+                        self.assertTrue((case.home / '.config/shell/timezone.sh').is_file())
                         self.assertFalse((case.home / '.ssh/config.d/workstation').exists())
                         self.assertFalse((case.home / '.config/systemd/user/url-open.socket').exists())
                 finally:
@@ -440,6 +442,45 @@ fi''')
         result = self.run_script('workstation.sh', '--auto', success=False)
         self.assertEqual(result.returncode, 2)
         self.assertFalse((self.home / 'setup-calls').exists())
+
+
+class ShellStartupTests(unittest.TestCase):
+    """home/.bashrc and home/.zshenv are global; the snippets they source belong to one role's package."""
+
+    def tz(self, shell, startup, snippet=True, tz=None):
+        with tempfile.TemporaryDirectory() as home:
+            if snippet:
+                target = Path(home) / '.config/shell/timezone.sh'
+                target.parent.mkdir(parents=True)
+                shutil.copyfile(ROOT / 'workstation/.config/shell/timezone.sh', target)
+            env = {'HOME': home, 'PATH': '/usr/bin:/bin', **({'TZ': tz} if tz else {})}
+            result = subprocess.run([shell, '-c', '. "$1"; printf %s "${TZ-unset}"', shell, str(ROOT / 'home' / startup)],
+                                    env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+    def shells(self):
+        pairs = [('bash', '.bashrc'), ('sh', '.zshenv')]
+        if shutil.which('zsh'):
+            pairs.append(('zsh', '.zshenv'))
+        return [(shutil.which(shell, path='/usr/bin:/bin') or shell, startup) for shell, startup in pairs]
+
+    def test_timezone_snippet_is_the_workstation_packages_alone(self):
+        self.assertTrue((ROOT / 'workstation/.config/shell/timezone.sh').is_file())
+        for package in ('home', 'worklaptop'):
+            self.assertFalse((ROOT / package / '.config/shell/timezone.sh').exists(), package)
+
+    def test_workstation_shells_default_to_pacific_time_and_keep_an_explicit_tz(self):
+        for shell, startup in self.shells():
+            with self.subTest(shell=shell, startup=startup):
+                self.assertEqual(self.tz(shell, startup), 'America/Los_Angeles')
+                self.assertEqual(self.tz(shell, startup, tz='UTC'), 'UTC')
+
+    def test_machines_without_the_snippet_leave_tz_alone(self):
+        for shell, startup in self.shells():
+            with self.subTest(shell=shell, startup=startup):
+                self.assertEqual(self.tz(shell, startup, snippet=False), 'unset')
+                self.assertEqual(self.tz(shell, startup, snippet=False, tz='Europe/Berlin'), 'Europe/Berlin')
 
 
 if __name__ == '__main__':
