@@ -13,10 +13,12 @@ Input: a PR URL or `owner/repo#N`; with none, the current branch's PR. Scripts a
 **In an fw session** (the `fw_*` tools are available), rounds are driven by PR-change
 messages, not a loop:
 
-- First invocation: `fw_pr_add` the PR. That makes you its handler and subscribes you.
-  Then run a round.
+- First invocation: `fw_pr_add` the PR. That makes you its handler and subscribes you
+  (a child's orchestrator is subscribed too). Then run a round.
+- Run rounds only for PRs you added yourself. A PR you merely follow, like an
+  orchestrator watching a child's PR, sends the same messages as awareness, not work.
 - Each later round starts from an `[fw message …]` from `fw pull requests` that names
-  this PR (`PR changed: <pr> <url>`). Invoke `/pr-iterate <url>` and run one round.
+  your PR (`PR changed: <pr> <url>`). Invoke `/pr-iterate <url>` and run one round.
   Messages that queue up together take one round.
 - The daemon refreshes the PR every few minutes and messages you when CI, reviews,
   threads, merge state, readiness, or merged/closed status change. So never use
@@ -122,7 +124,7 @@ and one status line:
 | Status | Next |
 |---|---|
 | `READY`, `WAITING ON CI`, `WAITING ON REVIEW` | Nothing. Stay subscribed. The next change (CI result, review, new thread, conflict, merge) arrives as a message. |
-| `STUCK` | `fw_pr_unsubscribe` the PR and `fw_attention` with the reason. |
+| `STUCK` | `fw_pr_unsubscribe` the PR (an orchestrator stays subscribed) and report the reason to your parent orchestrator if you have one, else `fw_attention`. Once helped, `fw_pr_subscribe` again. |
 | `MERGED`, `CLOSED` | Nothing. The daemon's last message already unsubscribed you. |
 
 Waiting costs nothing in fw, so there is no 24-hour stop.
